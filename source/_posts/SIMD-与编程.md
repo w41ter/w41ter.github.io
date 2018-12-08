@@ -1,0 +1,78 @@
+---
+title: SIMD 与编程
+date: 2017-05-07 14:33:49
+tags: Architecture
+---
+
+# SIMD 简介
+
+在谈 SIMD 之前，不得不谈一谈计算机体系结构的分类。常见的体系结构分类方法有两种：冯氏分类法和 Flynn 分类法。
+
+冯氏分类法使用系统的最大并行度对计算机进行分类。最大并行度的定义是：计算机系统在单位时间内能够处理的最大的二进制位数。
+
+Flynn 分类法则是按照指令流和数据流的多倍性进行分类。在 Flynn 中有定义：
+
+- 指令流（instruction stream），即计算机执行的指令序列
+- 数据流（data stream），即由指令流调用的数据序列
+- 多倍性（multiplicity），即在系统受限的部件上，同时处于同一执行阶段的指令或数据的最大数目
+
+Flynn 把计算机系统结构分为4类：
+
+- 单指令流单数据流（single instruction stream single data stream, SISD)
+- 单指令流多数据流（single instruction stream multiple data stream, SIMD)
+- 多指令流单数据流（multiple instruction stream single data stream, MISD)
+- 多指令流多数据流（multiple instruction stream multiple data stream, MIMD)
+
+其中 SIMD 就是今天的主角：单指令流多数据流是一种采用一个控制器来控制多个处理器，同时对一组数据（又称“数据向量”）中的每一个分别执行相同的操作从而实现空间上的并行性的技术。在微处理器中，单指令流多数据流技术则是一个控制器控制多个平行的处理微元。
+
+SIMD 技术的关键是在一条单独的指令中同时执行多个运算操作，以增加处理器的吞吐量。为此，SIMD 结构的 CPU 有多个执行部件，但都在同一个指令部件的控制之下，中央控制器向各个处理单元发送指令，整个系统只要求有一个中央控制器，只要求存储一份程序，所有的计算都是同步的。
+
+为了了解 SIMD 在性能上的优势，我们以加法指令为例进行说明：单指令流单数据流型 CPU 对加法指令译码后，执行部件先访问主存，取得第一个操作数，之后再一次访问主存，取得第二个操作数，随后才能进行求和运算；而在 SIMD 型 CPU 中，指令译码后，几个执行部件同时访问主存，一次性获得所有操作数进行运算。这一特点使得 SIMD 技术特别适合于多媒体应用等数据密集型运算，比如可以在 libx264、ffmpeg 等中看到其身影。
+
+# SIMD 在现代处理器上的应用
+
+SIMD 在现代处理器上得到了广泛的应用，其中 Intel 开发了 MMX、SSE、SSE2 等等，AMD 开发了 3D Now! ，而 neon 则是 ARM 在 Cortex-A 系列机上的 SIMD 支持。
+
+## MMX 
+
+MMX 是 Intel 于1996年在奔腾上设计开发的 SIMD 支持，通过一次处理多个数据，增强了多媒体处理方面的能力。然而 MMX 占用浮点数寄存器进行运算，使得 MMX 指令和浮点操作指令不能同时运行，必须做密集的切换。
+
+> MMX 寄存器，称作 MM0-MM7，实际上就是处理器内部 80 比特字长的浮点寄存器栈 st（0）到 st (7)的尾数部分（64 比特长）的复用。由于浮点栈寄存器的高16位未被 MMX 技术使用，因此这 16 位都置为 1，因此从栈寄存器的角度看，其浮点值为 NaN 或 Infinities，这可用于区分寄存器是处于浮点栈状态还是 MMX 状态。利用了装配数据类型（packed data type）的概念，每个 MMX 寄存器的 64 比特字长可以看作是 2 个 32 位整数、或者 4 个 16 位整数、或者 8 个 8 位整数，从而可以执行整数 SIMD 运算。
+
+## SSE
+
+1999年，Intel在其Pentium III微处理器中集成了 SSE（Streaming SIMD Extensions）技术，有效增强了 CPU 浮点运算的能力。SSE兼容MMX指令，可以通过 SIMD 和单时钟周期并行处理多个浮点数据来有效提高浮点运算速度。具有 SSE 指令集支持的处理器有 8 个 128 位的寄存器，每一个寄存器可以存放 4 个单精度（32位）浮点数。SSE同时提供了一个指令集，其中的指令允许把浮点数加载到这些 128 位寄存器中，这些数就可以在这些寄存器中进行算术逻辑运算，然后把结果送回主存。也就是说，SSE 中的所有计算都可以针对 4 个浮点数一次性完成。
+
+在 SSE 之后，Intel 对 SSE 进行了拓展。时至今日已经发展到了AVX（Advanced Vector Extensions）。
+
+## 3D Now!
+
+3DNow!（据称是“3D No Waiting!”的缩写）是由AMD开发的一套SIMD多媒体指令集，支持单精度浮点数的矢量运算，用于增强x86架构的计算机在三维图像处理上的性能
+
+## NEON 
+
+ARM CPU 最开始只有普通的寄存器，可以进行基本数据类型的基本运算。自 ARMv5 开始引入了 VFP（Vector Floating Point）指令，该指令用于向量化加速浮点运算。自ARMv7开始正式引入 NEON 指令，NEON 性能远超 VFP，因此 VFP 指令被废弃。
+
+# SIMD 与编程
+
+```
+TODO: 自己都还没学会
+```
+
+入门可以参考[在C/C++代码中使用SSE等指令集的指令(1)介绍](http://blog.csdn.net/gengshenghong/article/details/7007100)
+
+简单应用可以参考[YUV视频格式到RGB32格式转换的速度优化 中篇](http://blog.csdn.net/housisong/article/details/1866970)
+
+在 Intel 上与 SIMD 相关可以参考[Intel Intrinsics Guide](https://software.intel.com/sites/landingpage/IntrinsicsGuide)。
+
+源码阅读可以参考[DirectXMath](https://github.com/Microsoft/DirectXMath)。
+
+# References
+
+[1] 计算机系统结构 高等教育出版社 王志英
+[2] [单指令多数据流 - wiki](https://zh.wikipedia.org/wiki/%E5%8D%95%E6%8C%87%E4%BB%A4%E6%B5%81%E5%A4%9A%E6%95%B0%E6%8D%AE%E6%B5%81)
+[3] [SIMD 技术 - 上海交通大学](http://share.onlinesjtu.com/mod/tab/view.php?id=303)
+[4] [Neon ARM架构处理器扩展结构 - 百度百科](http://baike.baidu.com/link?url=q7oQjCLR8a8YYzM0tW5bUBln2J1rEKXXxjjhmv1eQoZYaJwMrOT8mp88qvXx1Q8_cnOh_WlsNS9XDbIRqLBbUK)
+[5] [MMX - wiki](https://zh.wikipedia.org/wiki/MMX)
+[6] [SSE - wiki](https://zh.wikipedia.org/wiki/SSE)
+[7] [3DNow! - wiki](https://zh.wikipedia.org/wiki/3DNow!)

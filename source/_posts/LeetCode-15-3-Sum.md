@@ -1,0 +1,84 @@
+---
+title: LeetCode - 15-3 Sum
+date: 2017-03-08 12:53:40
+tags:
+    - Algorithm
+    - LeetCode
+categories: LeetCode
+
+---
+
+# problem 
+
+[3 Sum](https://leetcode.com/problems/3sum)
+
+<!-- more -->
+
+# solution 
+
+最简单的办法是 n^3。如果我们对数组排序，使用 n^2 生成和，logn 查找，则可以降到 n^2 * logn。如果对 n^2进行查找呢？那么可以将匹配部分降低到 2nlogn。所以问题变成了求n^2内生成一个有序的n^2数组，不过这个问题也很困难。
+
+```
+for (int i = 0; i < length - 2; ++i) 
+    for (int j = i+1; j < length - 1; ++j) 
+        cmp nums[i] + nums[j] 
+```
+
+通过上面的代码发现虽然无法将整个 n^2 数组排序，但是对于每一层的i，生成的和一定是有序的。也就是说 `nums[0] + nums[1]` 一定小于 `nums[0] + nums[2]`，那么我们不需要对 n 的数组使用二分查找，只需从后向前遍历。对于每一层 i ，只需要对 N 的数组编译一次， 总共 n^2 次。所以目前的总效率为排序 nlogn 加上 n^2。
+
+```
+for (int i = 0; i < length - 2; ++i) {
+    int k = length - 1;
+    for (int j = i + 1; j < length - 1; ++j) {
+        int sum = nums[i] + nums[j];
+        while (sum + nums[k] >= 0) {
+            if (sum + nums[k] == 0) {
+                // push i j k
+            }
+            else {
+                k--;
+            }
+        }
+    }
+}
+```
+
+上面是题解的大概逻辑。到这里我们可以发现等同于另外一种思路：对于 i ，存在 j 和 k，如果 `sum = nums[i] + nums[j] + nums[k]` 为 0 ，那么对于任意有 l,m (j < l, m < k)，至少要满足 `nums[j] < nums[l] & nums[k] > nums[m]` 才能为 0 。所以上述方法也可以写成下面的代码：
+
+# code
+
+```
+class Solution {
+public:
+    vector<vector<int>> threeSum(vector<int>& nums) {
+        vector<vector<int>> resultSet;
+        if (nums.size() < 3)
+            return resultSet;
+        
+        std::sort(nums.begin(), nums.end());
+        int length = nums.size();
+        for (int i = 0; i <= length - 3; ++i) {
+            int j = length - 1, k = i + 1;
+            while (k < j) {
+                int sum = nums[k] + nums[j] + nums[i];
+                if (sum == 0) {
+                    resultSet.push_back({nums[i], nums[k], nums[j]});
+                    k++, j--;
+                    while (k < j && nums[k] == nums[k-1]) k++;
+                    while (k < j && nums[j] == nums[j+1]) j--;
+                }
+                else if (sum > 0) {
+                    j--;
+                }
+                else {
+                    k++;
+                }
+            }
+            while (i <= length - 3 && nums[i] == nums[i+1]) ++i;
+        }
+        return resultSet;
+    }
+};
+```
+
+其中涉及到 i,j,k 的三个 while 主要用于避免重复。

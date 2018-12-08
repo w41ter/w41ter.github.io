@@ -1,0 +1,337 @@
+---
+title: CSKS-(三)、设计模式
+date: 2017-08-26 10:00:49
+tags: 
+categories: 总结 
+mathjax: true 
+
+---
+
+# 面对对象原则
+
+- 单一职责：不要存在多于一个导致类变更的原因；通俗的说，即一个类只负责一项职责；
+- 里氏替换：所有引用基类的地方必须能透明地使用其子类的对象；通俗的来讲就是：子类可以扩展父类的功能，但不能改变父类原有的功能；
+- 依赖倒置：高层模块不应该依赖低层模块，二者都应该依赖其抽象；抽象不应该依赖细节；细节应该依赖抽象；
+- 接口隔离：客户端不应该依赖它不需要的接口；一个类对另一个类的依赖应该建立在最小的接口上；
+- 迪米特法则：一个对象应该对其他对象保持最少的了解；
+- 开闭原则：一个软件实体如类、模块和函数应该对扩展开放，对修改关闭；
+
+# 23种设计模式
+
+_References_
+
+- [设计模式大总汇](http://www.jianshu.com/p/dbc8a279165d)
+
+- 单例模式：确保整个程序中只有一个实例，并自行实例化以向整个体统提供实例
+- 工厂方法模式：将实例的创建延迟到子类
+- 抽象工厂模式：为创建一组相互依赖的对象提供一个接口，并将创建过程延迟到子类
+- 建造者模式：将一个复杂对象的创建和表示分离开来，使得同一个创建过程可以得到不同的表示
+- 原型模式：
+- 迭代器模式：在不暴露内部实现的情况下，使客户可以遍历容器内部对象
+- 责任联模式：将对象连成一条链，并沿着这条链传递该请求，直到有对象处理该请求位置，解决了发送方和接收方的耦合
+- 桥梁模式：将抽象和实现解耦，使两者可以独立变化
+- 适配器模式：将一个对象的接口转换成另一个对象期待的接口，从而使原本不匹配的对象能在一起工作
+- 中介者模式：将一系列对象的交互封装起来，使其耦合松散，而且可以独立变化
+- 观察者模式：定义一种1-N的关系，使得当一个对象更新时，所有依赖它的对象都能收到通知并响应
+- 命令模式：将客户参数化，使得客户请求可以记录、排队，并能实现撤销，恢复等功能
+- 亨元模式：使用共享对象可以有效的支持大量细粒度的对象
+- 状态模式：当一个对象状态改变时改变其行为，使得对象看起来像是改变了类
+- 解释器模式：定义一组语言及其解释器
+- 访问者模式：定义一组接口，从而是现在不改变数据结构自身的情况下添加职责
+- 装饰器模式：动态的为一个对象添加一些额外的职责，比生成子类要简单
+- 代理模式：提供一种代理以控制对对象的访问
+- 策略模式：定义并封装一组可以互换的算法
+- 模板方法模式：定义一个算法的骨架，将一些具体步骤延迟到子类。使得子类可以不改变算法结构即重定义算法特定步骤
+- 组合模式：
+- 门面模式：
+- 备忘录模式：
+
+## 单例模式
+
+单例模式重点在两个方面：
+
+- 系统只有一个实例；
+- 自行实例化并向整个系统提供这个实例；
+
+单例模式的实现上有两个重要的因素：
+
+- 线程安全；
+- 延迟加载；
+
+延迟加载技术可以解耦依赖链与初始化顺序。如果单例在程序执行前就进行初始化，某一个单例的初始化过程中，又引用到了另一个单例，便出现了加载顺序的决议问题。而使用延迟加载技术将这种依赖过程与初始化顺序进行了自动决议。
+
+```java
+void instance() {
+  static Singleston * sing = NULL;
+  if (sing == NULL) {
+    sing = new Singleston;
+  }
+  return sing;
+}
+```
+
+线程安全方面则根据语言不同而有所差异，以 C++ 为例，C++11 标准规定了局部静态变量初始化的线程安全特性，所以写起来非常方便：
+
+```c++
+void instance() {
+  static Class ins;
+  return ins;
+}
+```
+
+按照这种写法不仅线程安全，同时还解决了依赖问题。如果不想用这种办法，也可以使用标准库提供的：`call_once()` 函数。
+
+Java 在方面就要麻烦得多，我个人比较偏爱的是 DCL 这种方式：
+
+```java
+public class Singleston {
+  private static volatile Singleston instance;
+
+  public static getInstance() {
+    if (instance == null) synchronized(Singleston.class) {
+      if (instance == null) 
+        instance = new Singleston;
+    }
+    return instance;
+  } 
+}
+```
+
+Java 版本的 DCL 需要注意使用 `volatile` 修饰，从 1.5 版本开始这种写法已经不存在问题了。
+
+## 建造者模式
+
+建造者模式用于将一个复杂对象的建造过程和表示过程分开。这种比较适合一旦创建好后不会怎么更改的对象。在 Android 中的 `AlertDialg` 就使用这种方式：
+
+```java
+protected void dialog() {
+  new Builder(this)
+      .setMessage("are you sure?")
+      .setTitle("tips")
+      .setPositiveButtion("yes", new OnClickListener() {
+        @Override
+        public void onClick(DialogInterface dialog, int which) {
+          dialog.dismiss();
+          Main.this.finish();
+        }
+      })
+      .setNegativeButton("No", new OnClickListener() {
+        @Override
+        public void onClick(DialogInterface dialog, int which) {
+          dialog.dismiss();
+        }
+      })
+      .create()
+      .show();
+}
+```
+
+无独有偶，在 Java 著名网络库 Netty 中，创建 `Channel` 也是使用建造者模式：
+
+```java
+Bootstrap b = new Bootstrap();  
+b.group(group)  
+    .channel(NioSocketChannel.class)  
+    .option(ChannelOption.TCP_NODELAY, true)  
+    .handler(new ChannelInitializer<SocketChannel>() {  
+        @Override  
+        public void initChannel(SocketChannel ch) throws Exception {  
+          // ...
+        }  
+    });  
+
+ChannelFuture f = b.connect(host, port).sync();  
+```
+
+## 迭代器模式
+
+容器需要提供用户一个访问机制，而又不暴露内部细节，这种方法就叫迭代器模式。C++ 和 Java 中均有迭代器模式的影子：
+
+```c++
+// C++
+vector<int> arrays;
+// ...
+auto it = arrays.begin();
+
+// Java
+ArrayList<Integer> arrays = new ArrayList<Integer>();
+// ...
+Iterator<Integer> it = arrays.iterator();
+while (it.hasNext()) {
+  ...
+}
+```
+
+## 责任链模式
+
+如其名，整个处理过程就像链一样，一级一级传递下去，从而接触了发送方和接收方的耦合。责任链模式常见于各种事件处理机制，比如 Android 的事件处理机制、Win32 中的消息机制。责任链模式的显著特点是如果一个事件（消息）在当前处理逻辑中不处理，就将其传递给下一级处理逻辑。
+
+```c++
+void slove(Message msg, Handler handle) {
+  switch (msg) {
+    case xxx: ...; break;
+    default: handle.slove(msg);
+  }
+}
+```
+
+## 桥梁模式
+
+将抽象和实现解耦的就是桥梁模式。通常在设计时，不要传播设计，而桥梁模式正好可以处理。比如一开始只有一台实验仪器，所以用单例模式来表示，某一天实验室又购进了一台新的仪器，那么之前所有引用单例的代码都要修改。而设计时如果将获取设备接口和单例分开，就没有这么多麻烦了：
+
+```c++
+public class Device {
+  
+  private class SingleDevice {
+    // singleston 
+  }
+
+  public static Device getByRandom() {
+    return SingleDevice.getInstance();
+  }
+}
+```
+
+桥梁模式的另一个常见用途在 C++ 中，常用于实现减少 C++ 头文件编译负担：
+
+```c++
+// a.h 中
+class A {
+  class AImpl;
+public:
+  void do();
+
+private:
+  std::shared_ptr<AImpl> impl;
+};
+
+// A.cpp 中
+class A::AImpl {
+public:
+  void do() {
+    ...
+  }
+};
+
+void A::do() {
+  impl->do();
+}
+```
+
+## 适配器模式
+
+适配器模式可以使两个不兼容的接口一起工作，有 Andoird 开发经验的一定对 Adaptor 非常熟悉，这里不细讲。
+
+## 中介者模式
+
+中介者模式把两个独立对象的一系列操作封装起来，把这两个对象之间的联系解耦，这样两个对象不依赖对方，可以独立变化。
+
+## 观察者模式
+
+解耦操作最好的还属观察者模式。观察者模式重新定义了对象之间的依赖关系，将原有的监听操作转变为通知操作。
+
+关于使用观察者模式，比较典型的例子是控件事件的监听--在指定控件上绑定一个回调函数，事件发生的时候，控件负责调用该函数通知用户。在 Java 中大名鼎鼎的响应式库 RxJava 就是以观察者模式为基础，还解决了长期以来困扰的 Callback hell 问题。Vue.js 中实现数据绑定也是以观察者模式为基础的。
+
+## 命令模式
+
+命令模式最重要的一点就是将客户端的请求参数化，从而实现请求排队、记录回滚等。在游戏中，命令模式可以将用户对角色控制的输入进行参数化，实现死亡回放等。在服务器开发中，将客户端的请求参数化，并放入请求队列，实现流量控制。
+
+## 状态模式
+
+说到命令模式不得不提状态模式，以任务操纵为例，人在地面上可以进行跳跃，而在跳跃的过程中则不可以。那么对于相同的命令，在不同的状态下有不同的响应，这就是状态模式。状态模式可以在改变对象状态的同时改变对象的行为。
+
+## 享元模式
+
+游戏中地图大量元素存在重复的情况，大量创建相同的对象非常浪费内存，此时可以创建几个单例，让地图引用具体的单例，这就是享元模式。
+
+## 解释器模式
+
+现在很多游戏的基本框架由 C/C++ 来写，具体业务逻辑则交给 lua 之类的脚本处理。如果是自己设计的脚本，那么就需要写出对应的解释器： 
+
+```c++
+class Expr {
+public:
+  Value execute();
+
+private: 
+  char c;
+  Expr * left, * right;
+};
+// 解释器模式
+```
+
+## 访问者模式
+
+一开始我们只提供了游戏脚本解释器的解释功能，某次调试的时候希望将具体的抽象语法书打印出来，所以在每个元素类中添加了打印支持：
+
+```c++
+class Expr {
+public:
+  Value execute();
+  Value dump() {
+    left->dump();
+    cout << c ;
+    right->dump();
+  }
+
+private: 
+  char c;
+  Expr * left, * right;
+};
+```
+
+每当出现一个新的需求时，都要对原有的数据结构进行修改。而访问者模式为我们提供了遍历，可以在不修改数据结构的同时增加数据结构上的操作。
+
+```c++
+class Visitor {
+public:
+  virtual void visit(Expr *ptr);
+  virtual void visit(Value *ptr);
+};
+
+class Visitable {
+public:
+  virtual void accept(Visitor *visitor);
+};
+
+//...
+class Expr : public Visitable {
+public:
+  void accept(Visitor *visitor) {
+    visitor->visit(this);
+  }
+};
+
+class Dump : public Visitor {
+public:
+  void visit(Value * v);
+
+  void visit(Expr * e) {
+    e->left->accept(this);
+    cout << e->c;
+    e->right->accept(this);
+  }
+};
+```
+
+## 装饰器模式
+
+装饰器模式可以在不继承对象的同时给对象增加操作。Python 中有一个装饰器的概念，比如我们要给原来的函数添加上调用记录到日志的功能：
+
+```python
+def log(func):
+    def wrapper(*args, **kw):
+        print('call %s():' % func.__name__)
+        return func(*args, **kw)
+    return wrapper
+
+@log
+def do():
+  pass
+```
+
+与之类似的还有 Java 提供的注解功能，这里不展开。
+
+## 代理模式
+
+说到代理，常见有 VPN、HTTP Proxy ，代理模式用于控制对对象的访问。比如实现一个 RPC 功能，在客户端定义一个接口，由代理服务生成接口对应的实例。客户在调用接口时，代理服务监测并将请求转发给服务器，等到服务端计算完成并返回时，代理服务把结果返回给客户端。从客户端的角度上，这个过程和调用一个耗时的函数没有区别。
