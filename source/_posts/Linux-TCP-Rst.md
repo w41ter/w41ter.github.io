@@ -13,7 +13,7 @@ mathjax: true
 
 作为 TCP 不可或缺的一部分，TCP 包头的 `RST` 为 $1$ 时，表示重置，关闭异常链接。发送 RST 包关闭连接时，不必等缓冲区的包都发出去，直接就丢弃缓存区的包发送 `RST` 包。而接收端收到 `RST` 包后，也不必发送 `ACK` 包来确认。TCP 处理程序会在自己认为的异常时刻发送 `RST` 包。
 
-```tcpdump
+```shell
 14:59:23.379829 IP localhost.62412 > localhost.9490: Flags [R], seq 4127385762, win 0, length 0
 ```
 
@@ -80,7 +80,7 @@ int client() {
 
 通过 tcpdump 观察程序运行时请求：
 
-```bash
+```shell
 $ sudo tcpdump -i lo '(src host 127.0.0.1) and (port 9490)'  -B 4096
 14:59:13.376906 IP localhost.62412 > localhost.9490: Flags [S], seq 4127385760, win 43690, options [mss 65495,sackOK,TS val 168040030 ecr 0,nop,wscale 10], length 0
 14:59:13.376919 IP localhost.9490 > localhost.62412: Flags [S.], seq 2306780414, ack 4127385761, win 43690, options [mss 65495,sackOK,TS val 168040030 ecr 168040030,nop,wscale 10], length 0
@@ -119,7 +119,7 @@ int main(int argc, char** argv) {
 
 按照预期，当 socket 抛出 `broken pipe` 时，会被最外层 `try` 和 `catch` 抓住，并输出。实际上运行结果为：
 
-```bash
+```shell
 $ ./server
 $ 
 $ echo $?
@@ -175,7 +175,7 @@ int client() {
 
 这里构造了这样一个场景，与客户端建立连接后，服务端由于不可抗力，比如断电，未能发送 `FIN` 给客户端。当服务器重启后，内核中 TCP 协议栈收到了客户端的数据包，回应 `RST`，此时客户端抛出 `connection reset by peer`。
 
-```bash
+```shell
 $ sudo tcpdump -i lo '(src host 127.0.0.1) and (port 9490)'  -B 4096
 15:43:12.638464 IP localhost.21316 > localhost.9490: Flags [S], seq 3640034867, win 43690, options [mss 65495,sackOK,TS val 168699846 ecr 0,nop,wscale 10], length 0
 15:43:12.638478 IP localhost.9490 > localhost.21316: Flags [S.], seq 485213568, ack 3640034868, win 43690, options [mss 65495,sackOK,TS val 168699846 ecr 168699846,nop,wscale 10], length 0
@@ -203,7 +203,7 @@ $ sudo tcpdump -i lo '(src host 127.0.0.1) and (port 9490)'  -B 4096
 
 ### 强行关闭
 
-正常关闭 TCP 链接时，主动关闭一方会进入 `TIME_WAIT` 状态，等待 2MSL（报文段最大生存时间-Maximum Segment Lifetime，根据具体的实现不同，这个值会不同，在 RFC 1122 建议为 $2$ 分钟，但在 Berkeley 的实现上使用的值为 30s ，具体可以看 www.rfc.net ，要是没有耐心去看英文的可以看这个网站 www.cnpaf.net 里面有协议说明以及相应的源码），此时该端口处于不可用状态。
+正常关闭 TCP 链接时，主动关闭一方会进入 `TIME_WAIT` 状态，等待 2MSL（报文段最大生存时间-Maximum Segment Lifetime，根据具体的实现不同，这个值会不同），此时该端口处于不可用状态。
 
 解决 `TIME_WAIT` 有三种手段：
 
