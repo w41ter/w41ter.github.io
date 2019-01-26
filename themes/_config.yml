@@ -218,7 +218,7 @@ excerpt_description: true
 # Please use <!-- more --> in the post to control excerpt accurately.
 auto_excerpt:
   enable: false
-  length: 250
+  length: 500
 
 # Post meta display settings
 post_meta:
@@ -294,7 +294,7 @@ highlight_theme: normal
 # Arial | Tahoma | Helvetica | Times New Roman | Courier New | Verdana | Georgia | Palatino | Garamond | Comic Sans MS | Trebuchet MS
 # ---------------------------------------------------------------
 font:
-  enable: false
+  enable: true
 
   # Uri of fonts host. E.g. //fonts.googleapis.com (Default).
   host:
@@ -307,8 +307,8 @@ font:
   # Global font settings used on <body> element.
   global:
     external: true
-    family: Lato
-    size:
+    family: Lato | Open Sans
+    size: 20
 
   # Font settings for Headlines (h1, h2, h3, h4, h5, h6).
   # Fallback to `global` font settings.
@@ -328,13 +328,13 @@ font:
   logo:
     external: true
     family:
-    size:
+    size: 
 
   # Font settings for <code> and code blocks.
   codes:
     external: true
-    family:
-    size:
+    family: Courier New bold
+    size: 20
 
 
 # ---------------------------------------------------------------
@@ -408,7 +408,7 @@ gitment:
   lazy: true # Comments lazy loading with a button
   cleanly: false # Hide 'Powered by ...' on footer, and more
   language: # Force language, or auto switch by theme
-  github_user: thinkermao # MUST HAVE, Your Github Username
+  github_user: PatrickNicholas # MUST HAVE, Your Github Username
   github_repo: thinkermao.github.io # MUST HAVE, The name of the repo you use to store Gitment comments
   client_id: a09944366bdbb5736e67 # MUST HAVE, Github client id for the Gitment
   client_secret: cb84897d09ba53f3c37f9244556c6998fb5017ea # EITHER this or proxy_gateway, Github access secret token for the Gitment
