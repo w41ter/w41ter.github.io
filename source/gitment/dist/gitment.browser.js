@@ -3413,7 +3413,7 @@ var Gitment = function () {
       }, options);
 
       this.state.user.isLoggingIn = true;
-      _utils.http.post('https://cors.wenjunjiang.win/', {
+      _utils.http.post('https://cors.hashcoding.net:8080/', {
         code: code,
         client_id: client_id,
         client_secret: client_secret
