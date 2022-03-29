@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Clang - Source Code Analysis (1) | W41ter’s Bistro</title>
+<meta name="generator" content="Jekyll v4.2.2" />
+<meta property="og:title" content="Clang - Source Code Analysis (1)" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="前言 读 Clang 源代码是最近一直想做的事情，无奈种种原因一直拖到现在。正好这几天获得了几天喘息时间，便开始了 Clang 源码阅读之旅。" />
+<meta property="og:description" content="前言 读 Clang 源代码是最近一直想做的事情，无奈种种原因一直拖到现在。正好这几天获得了几天喘息时间，便开始了 Clang 源码阅读之旅。" />
+<link rel="canonical" href="/clang/%E6%BA%90%E7%A0%81%E5%88%86%E6%9E%90/2016/05/14/Clang-Source-Code-Analysis-1.html" />
+<meta property="og:url" content="/clang/%E6%BA%90%E7%A0%81%E5%88%86%E6%9E%90/2016/05/14/Clang-Source-Code-Analysis-1.html" />
+<meta property="og:site_name" content="W41ter’s Bistro" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2016-05-14T04:21:38+08:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Clang - Source Code Analysis (1)" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2016-05-14T04:21:38+08:00","datePublished":"2016-05-14T04:21:38+08:00","description":"前言 读 Clang 源代码是最近一直想做的事情，无奈种种原因一直拖到现在。正好这几天获得了几天喘息时间，便开始了 Clang 源码阅读之旅。","headline":"Clang - Source Code Analysis (1)","mainEntityOfPage":{"@type":"WebPage","@id":"/clang/%E6%BA%90%E7%A0%81%E5%88%86%E6%9E%90/2016/05/14/Clang-Source-Code-Analysis-1.html"},"url":"/clang/%E6%BA%90%E7%A0%81%E5%88%86%E6%9E%90/2016/05/14/Clang-Source-Code-Analysis-1.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="/feed.xml" title="W41ter's Bistro" /><!-- for mathjax support -->
+  
+</head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">W41ter&#39;s Bistro</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">Clang - Source Code Analysis (1)</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2016-05-14T04:21:38+08:00" itemprop="datePublished">May 14, 2016
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <h1 id="前言">前言</h1>
+
+<p>读 Clang 源代码是最近一直想做的事情，无奈种种原因一直拖到现在。正好这几天获得了几天喘息时间，便开始了 Clang 源码阅读之旅。</p>
+
+<!-- more -->
+
+<p>Clang 的源代码可以从 github 上的 <a href="https://github.com/llvm-mirror/clang">Clang</a> 得到。这里我使用的是 Clang 3.9 版本的源代码，如果你使用相近版本，我想问题不会太大。我主要的时间是在 Windows 上工作，所以源代码阅读工作也放到了 Windows 下，毕竟 VS 大法好。具体在 Windows 下如何编译 Clang 请参考 <a href="/2015/12/23/Clang-for-windows/">Clang for windows</a>。</p>
+
+<p>想要研究 Clang 源代码，官方文档便是最好的学习资料，除此之外，你还可以订阅 Clang 邮件组(cfe-dev,cfe-commit)。这里首先建议看一看 <a href="http://clang.llvm.org/docs/InternalsManual.html">Clang internals Manual</a> 对基础结构有所把握。</p>
+
+<p>我的着手点是来自知乎上的一篇回答 <a href="https://www.zhihu.com/question/31425289">Clang 真正的前端是什么？</a>。</p>
+
+<h1 id="总体结构">总体结构</h1>
+
+<p>Clang 只是一个编译器前端，它获取用户输入，生成语法树，在语义检查和各种诊断后产生 llvm IR。剩下的工作则交给 llvm 完成，而这一切通过 Drive 组织起来。</p>
+
+<p>Clang 默认只进行一遍 parse，你需要通过 Action 来指定完成 parse 后应该干些什么。值得注意的是 Clang 的 Action 穿插在各种 parse 结构中，比如 parse 过程总便对函数声明进行检查。</p>
+
+<p>所以，Clang 的运行流程如下：</p>
+
+<ol>
+  <li>解析命令参数，分别为 Analyzer, Migrator, DependencyOutput, Diagnostic, Comment, FileSystem, Frontend, CodeGen, HeaderSearch, LangOpt 等多种类型参数;</li>
+  <li>根据解析的命令执行相应 Act，进而执行 ParseAST;</li>
+  <li>ParseAST 分为三个部分，前两个部分分别是 ParseTopLevelDecl和 HandleTopLevelDecl;</li>
+  <li>最后 HandleTranslationUnit 进行检查优化并生成对应的 llvm IR；</li>
+</ol>
+
+<p>下面，我们将通过实际调试来跟踪 Clang 执行流程，首先，写上测试代码：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>int function(int x, int y) {
+    return x + y;
+}
+
+int main() {
+    int a = 0;
+    a = function(a, a);
+    return 0;
+}
+</code></pre></div></div>
+
+<p>保存为 test.cc 然后我们通过如下命令进行编译并调试 Clang :</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>clang -cc1 -S -emit-llvm test.cc
+</code></pre></div></div>
+
+<p>然后我们进入调试模式。</p>
+
+<p>首先进入的是位于 driver.cpp 中的 main 函数:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>int main(int argc_, const char **argv_) {
+  llvm::sys::PrintStackTraceOnErrorSignal();
+  llvm::PrettyStackTraceProgram X(argc_, argv_);
+</code></pre></div></div>
+
+<p>然后进一步跟踪，看到下面部分代码：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>  // Handle -cc1 integrated tools, even if -cc1 was expanded from a response
+  // file.
+  auto FirstArg = std::find_if(argv.begin() + 1, argv.end(),
+                               [](const char *A) { return A != nullptr; });
+  if (FirstArg != argv.end() &amp;&amp; StringRef(*FirstArg).startswith("-cc1")) {
+    // If -cc1 came from a response file, remove the EOL sentinels.
+    if (MarkEOLs) {
+      auto newEnd = std::remove(argv.begin(), argv.end(), nullptr);
+      argv.resize(newEnd - argv.begin());
+    }
+    return ExecuteCC1Tool(argv, argv[1] + 4);
+  }
+</code></pre></div></div>
+
+<p>这里通过判断第一个 argument 是否为以 <code class="language-plaintext highlighter-rouge">-cc1</code> 为前缀，是则调用 <code class="language-plaintext highlighter-rouge">ExecuteCC1Tool</code>，而我们命令中第一个参数正好为 <code class="language-plaintext highlighter-rouge">-cc1</code>，然后跟进 <code class="language-plaintext highlighter-rouge">ExecuteCC1Tool</code> 会进入到 <code class="language-plaintext highlighter-rouge">cc1_main</code>：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>int cc1_main(ArrayRef&lt;const char *&gt; Argv, const char *Argv0, void *MainAddr) {
+  std::unique_ptr&lt;CompilerInstance&gt; Clang(new CompilerInstance());
+  IntrusiveRefCntPtr&lt;DiagnosticIDs&gt; DiagID(new DiagnosticIDs());
+</code></pre></div></div>
+
+<p>这个函数第一行代码便生成了一个 <code class="language-plaintext highlighter-rouge">CompilerInstance</code> 对象 <code class="language-plaintext highlighter-rouge">Clang</code>，继续跟进会发现下面代码：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>  bool Success = CompilerInvocation::CreateFromArgs(
+      Clang-&gt;getInvocation(), Argv.begin(), Argv.end(), Diags);
+</code></pre></div></div>
+
+<p>这里是根据 argument 为 <code class="language-plaintext highlighter-rouge">CompilerInstance</code> 创建一个 <code class="language-plaintext highlighter-rouge">CompilerInvocation</code> 实例，想来处理 argument 的代码就在里面。所以进入 <code class="language-plaintext highlighter-rouge">CreateFromArgs</code>：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>  Success &amp;= ParseAnalyzerArgs(*Res.getAnalyzerOpts(), Args, Diags);
+  Success &amp;= ParseMigratorArgs(Res.getMigratorOpts(), Args);
+  ParseDependencyOutputArgs(Res.getDependencyOutputOpts(), Args);
+  Success &amp;= ParseDiagnosticArgs(Res.getDiagnosticOpts(), Args, &amp;Diags);
+  ParseCommentArgs(LangOpts.CommentOpts, Args);
+  ParseFileSystemArgs(Res.getFileSystemOpts(), Args);
+  // FIXME: We shouldn't have to pass the DashX option around here
+  InputKind DashX = ParseFrontendArgs(Res.getFrontendOpts(), Args, Diags);
+  ParseTargetArgs(Res.getTargetOpts(), Args, Diags);
+  Success &amp;= ParseCodeGenArgs(Res.getCodeGenOpts(), Args, DashX, Diags,
+                              Res.getTargetOpts());
+  ParseHeaderSearchArgs(Res.getHeaderSearchOpts(), Args);
+  if (DashX == IK_AST || DashX == IK_LLVM_IR) {
+    // ObjCAAutoRefCount and Sanitize LangOpts are used to setup the
+    // PassManager in BackendUtil.cpp. They need to be initializd no matter
+    // what the input type is.
+    if (Args.hasArg(OPT_fobjc_arc))
+      LangOpts.ObjCAutoRefCount = 1;
+    // PIClevel and PIELevel are needed during code generation and this should be
+    // set regardless of the input type.
+    LangOpts.PICLevel = getLastArgIntValue(Args, OPT_pic_level, 0, Diags);
+    LangOpts.PIELevel = getLastArgIntValue(Args, OPT_pie_level, 0, Diags);
+    parseSanitizerKinds("-fsanitize=", Args.getAllArgValues(OPT_fsanitize_EQ),
+                        Diags, LangOpts.Sanitize);
+  } else {
+    // Other LangOpts are only initialzed when the input is not AST or LLVM IR.
+    ParseLangArgs(LangOpts, Args, DashX, Res.getTargetOpts(), Diags);
+    if (Res.getFrontendOpts().ProgramAction == frontend::RewriteObjC)
+      LangOpts.ObjCExceptions = 1;
+  }
+</code></pre></div></div>
+
+<p>通过名称就可以猜出每行代码做了些什么功能，所以这里就不一一跟进，只看一下 <code class="language-plaintext highlighter-rouge">ParseFrontendArgs</code>：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>static InputKind ParseFrontendArgs(FrontendOptions &amp;Opts, ArgList &amp;Args,
+                                   DiagnosticsEngine &amp;Diags) {
+  using namespace options;
+  Opts.ProgramAction = frontend::ParseSyntaxOnly;
+  if (const Arg *A = Args.getLastArg(OPT_Action_Group)) {
+    switch (A-&gt;getOption().getID()) {
+    default:
+      llvm_unreachable("Invalid option in group!");
+    case OPT_ast_list:
+      Opts.ProgramAction = frontend::ASTDeclList; break;
+    case OPT_ast_dump:
+    case OPT_ast_dump_lookups:
+      Opts.ProgramAction = frontend::ASTDump; break;
+    case OPT_ast_print:
+      Opts.ProgramAction = frontend::ASTPrint; break;
+    case OPT_ast_view:
+      Opts.ProgramAction = frontend::ASTView; break;
+    case OPT_dump_raw_tokens:
+      Opts.ProgramAction = frontend::DumpRawTokens; break;
+    case OPT_dump_tokens:
+      Opts.ProgramAction = frontend::DumpTokens; break;
+    case OPT_S:
+      Opts.ProgramAction = frontend::EmitAssembly; break;
+    case OPT_emit_llvm_bc:
+      Opts.ProgramAction = frontend::EmitBC; break;
+    case OPT_emit_html:
+      Opts.ProgramAction = frontend::EmitHTML; break;
+    case OPT_emit_llvm:
+      Opts.ProgramAction = frontend::EmitLLVM; break;
+    case OPT_emit_llvm_only:
+      Opts.ProgramAction = frontend::EmitLLVMOnly; break;
+    case OPT_emit_codegen_only:
+      Opts.ProgramAction = frontend::EmitCodeGenOnly; break;
+    case OPT_emit_obj:
+      Opts.ProgramAction = frontend::EmitObj; break;
+    case OPT_fixit_EQ:
+      Opts.FixItSuffix = A-&gt;getValue();
+      // fall-through!
+    case OPT_fixit:
+      Opts.ProgramAction = frontend::FixIt; break;
+    case OPT_emit_module:
+      Opts.ProgramAction = frontend::GenerateModule; break;
+    case OPT_emit_pch:
+      Opts.ProgramAction = frontend::GeneratePCH; break;
+    case OPT_emit_pth:
+      Opts.ProgramAction = frontend::GeneratePTH; break;
+    case OPT_init_only:
+      Opts.ProgramAction = frontend::InitOnly; break;
+    case OPT_fsyntax_only:
+      Opts.ProgramAction = frontend::ParseSyntaxOnly; break;
+    case OPT_module_file_info:
+      Opts.ProgramAction = frontend::ModuleFileInfo; break;
+    case OPT_verify_pch:
+      Opts.ProgramAction = frontend::VerifyPCH; break;
+    case OPT_print_decl_contexts:
+      Opts.ProgramAction = frontend::PrintDeclContext; break;
+    case OPT_print_preamble:
+      Opts.ProgramAction = frontend::PrintPreamble; break;
+    case OPT_E:
+      Opts.ProgramAction = frontend::PrintPreprocessedInput; break;
+    case OPT_rewrite_macros:
+      Opts.ProgramAction = frontend::RewriteMacros; break;
+    case OPT_rewrite_objc:
+      Opts.ProgramAction = frontend::RewriteObjC; break;
+    case OPT_rewrite_test:
+      Opts.ProgramAction = frontend::RewriteTest; break;
+    case OPT_analyze:
+      Opts.ProgramAction = frontend::RunAnalysis; break;
+    case OPT_migrate:
+      Opts.ProgramAction = frontend::MigrateSource; break;
+    case OPT_Eonly:
+      Opts.ProgramAction = frontend::RunPreprocessorOnly; break;
+    }
+  }
+</code></pre></div></div>
+
+<p>这里便是指定 Action 的地方，我们使用的 <code class="language-plaintext highlighter-rouge">-emit-llvm</code> ，则 <code class="language-plaintext highlighter-rouge">ProgramAction</code> 表示 <code class="language-plaintext highlighter-rouge">frontend::EmitLLVM</code>。</p>
+
+<p>现在回到 <code class="language-plaintext highlighter-rouge">cc1_main</code>，紧急着便是执行 <code class="language-plaintext highlighter-rouge">frontend actions</code>：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>  // Execute the frontend actions.
+  Success = ExecuteCompilerInvocation(Clang.get());
+</code></pre></div></div>
+
+<p>目前为止，初始化编译器部分工作已经完成，下面就是执行部分。跟进 <code class="language-plaintext highlighter-rouge">ExecuteCompilerInvocation</code>，注意到下面一段代码：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>  // Create and execute the frontend action.
+  std::unique_ptr&lt;FrontendAction&gt; Act(CreateFrontendAction(*Clang));
+  if (!Act)
+    return false;
+  bool Success = Clang-&gt;ExecuteAction(*Act);
+</code></pre></div></div>
+
+<p>这里就是根据 <code class="language-plaintext highlighter-rouge">ParseFrontendArgs</code> 中得到的 <code class="language-plaintext highlighter-rouge">ProgramAction</code> 来生成对应的 <code class="language-plaintext highlighter-rouge">Act</code>。紧接着，通过该  <code class="language-plaintext highlighter-rouge">Act</code> 调用 <code class="language-plaintext highlighter-rouge">ExecuteAction</code> 正式开始工作。</p>
+
+<p><code class="language-plaintext highlighter-rouge">CreateFrontendAction</code> 通过进一步调用 <code class="language-plaintext highlighter-rouge">CreateFrontendBaseAction</code> 来生成 <code class="language-plaintext highlighter-rouge">Act</code>，<code class="language-plaintext highlighter-rouge">CreateFrontendBaseAction</code> 中对应部分代码为：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>switch (CI.getFrontendOpts().ProgramAction) {
+  case ASTDeclList:            return llvm::make_unique&lt;ASTDeclListAction&gt;();
+  case ASTDump:                return llvm::make_unique&lt;ASTDumpAction&gt;();
+  case ASTPrint:               return llvm::make_unique&lt;ASTPrintAction&gt;();
+  case ASTView:                return llvm::make_unique&lt;ASTViewAction&gt;();
+  case DumpRawTokens:          return llvm::make_unique&lt;DumpRawTokensAction&gt;();
+  case DumpTokens:             return llvm::make_unique&lt;DumpTokensAction&gt;();
+  case EmitAssembly:           return llvm::make_unique&lt;EmitAssemblyAction&gt;();
+  case EmitBC:                 return llvm::make_unique&lt;EmitBCAction&gt;();
+  case EmitHTML:               return llvm::make_unique&lt;HTMLPrintAction&gt;();
+  case EmitLLVM:               return llvm::make_unique&lt;EmitLLVMAction&gt;();
+  case EmitLLVMOnly:           return llvm::make_unique&lt;EmitLLVMOnlyAction&gt;();
+  case EmitCodeGenOnly:        return llvm::make_unique&lt;EmitCodeGenOnlyAction&gt;();
+  case EmitObj:                return llvm::make_unique&lt;EmitObjAction&gt;();
+  case FixIt:                  return llvm::make_unique&lt;FixItAction&gt;();
+  case GenerateModule:         return llvm::make_unique&lt;GenerateModuleAction&gt;();
+  case GeneratePCH:            return llvm::make_unique&lt;GeneratePCHAction&gt;();
+  case GeneratePTH:            return llvm::make_unique&lt;GeneratePTHAction&gt;();
+  case InitOnly:               return llvm::make_unique&lt;InitOnlyAction&gt;();
+  case ParseSyntaxOnly:        return llvm::make_unique&lt;SyntaxOnlyAction&gt;();
+  case ModuleFileInfo:         return llvm::make_unique&lt;DumpModuleInfoAction&gt;();
+  case VerifyPCH:              return llvm::make_unique&lt;VerifyPCHAction&gt;();
+</code></pre></div></div>
+
+<p>在这里，就可以找到所有的 <code class="language-plaintext highlighter-rouge">Action</code> 方便后面使用。</p>
+
+<p><code class="language-plaintext highlighter-rouge">ExecuteAction</code> 中通过对每一个文件执行一次 <code class="language-plaintext highlighter-rouge">Execute</code> 来进行编译：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>  for (const FrontendInputFile &amp;FIF : getFrontendOpts().Inputs) {
+    // Reset the ID tables if we are reusing the SourceManager and parsing
+    // regular files.
+    if (hasSourceManager() &amp;&amp; !Act.isModelParsingAction())
+      getSourceManager().clearIDTables();
+
+    if (Act.BeginSourceFile(*this, FIF)) {
+      Act.Execute();
+      Act.EndSourceFile();
+    }
+  }
+</code></pre></div></div>
+
+<p><code class="language-plaintext highlighter-rouge">Execute</code> 中，通过进一步调用所对应实例的 <code class="language-plaintext highlighter-rouge">ExecuteAction</code> 来具体执行，所以这里紧接着关心的便是每个 <code class="language-plaintext highlighter-rouge">Action</code> 对应的 <code class="language-plaintext highlighter-rouge">ExecuteAction</code> 部分。到此为止，工作流程部分告一段落，接下来具体分析的是对应的 <code class="language-plaintext highlighter-rouge">Action</code>。</p>
+
+  </div><a class="u-url" href="/clang/%E6%BA%90%E7%A0%81%E5%88%86%E6%9E%90/2016/05/14/Clang-Source-Code-Analysis-1.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">W41ter&#39;s Bistro</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">W41ter&#39;s Bistro</li><li><a class="u-email" href="mailto:w41ter.l@gmail.com">w41ter.l@gmail.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/w41ter"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">w41ter</span></a></li><li><a href="https://www.twitter.com/WalterM56697798"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">WalterM56697798</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Focus on distributed storage system, compiler.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>

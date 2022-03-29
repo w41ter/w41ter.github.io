@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>LL-Script implements | W41ter’s Bistro</title>
+<meta name="generator" content="Jekyll v4.2.2" />
+<meta property="og:title" content="LL-Script implements" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="LL-Script 是一个简单的脚本语言，最初写的时候是为了给游戏做脚本，后来还是使用lua替代。很久后又重新开始按照规范写了一次，这次整体流程走通了，但是设计杂乱无章。前些日子从新写了一次，采用了一些良好的设计，这就是先在这个版本。 脚本源码在github上，访问这里。" />
+<meta property="og:description" content="LL-Script 是一个简单的脚本语言，最初写的时候是为了给游戏做脚本，后来还是使用lua替代。很久后又重新开始按照规范写了一次，这次整体流程走通了，但是设计杂乱无章。前些日子从新写了一次，采用了一些良好的设计，这就是先在这个版本。 脚本源码在github上，访问这里。" />
+<link rel="canonical" href="/%E7%BC%96%E8%AF%91%E5%99%A8%E5%AE%9E%E7%8E%B0/2016/11/29/LL-Script-implements.html" />
+<meta property="og:url" content="/%E7%BC%96%E8%AF%91%E5%99%A8%E5%AE%9E%E7%8E%B0/2016/11/29/LL-Script-implements.html" />
+<meta property="og:site_name" content="W41ter’s Bistro" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2016-11-29T02:54:01+08:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="LL-Script implements" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2016-11-29T02:54:01+08:00","datePublished":"2016-11-29T02:54:01+08:00","description":"LL-Script 是一个简单的脚本语言，最初写的时候是为了给游戏做脚本，后来还是使用lua替代。很久后又重新开始按照规范写了一次，这次整体流程走通了，但是设计杂乱无章。前些日子从新写了一次，采用了一些良好的设计，这就是先在这个版本。 脚本源码在github上，访问这里。","headline":"LL-Script implements","mainEntityOfPage":{"@type":"WebPage","@id":"/%E7%BC%96%E8%AF%91%E5%99%A8%E5%AE%9E%E7%8E%B0/2016/11/29/LL-Script-implements.html"},"url":"/%E7%BC%96%E8%AF%91%E5%99%A8%E5%AE%9E%E7%8E%B0/2016/11/29/LL-Script-implements.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="/feed.xml" title="W41ter's Bistro" /><!-- for mathjax support -->
+  
+</head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">W41ter&#39;s Bistro</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">LL-Script implements</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2016-11-29T02:54:01+08:00" itemprop="datePublished">Nov 29, 2016
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p>LL-Script 是一个简单的脚本语言，最初写的时候是为了给游戏做脚本，后来还是使用lua替代。很久后又重新开始按照规范写了一次，这次整体流程走通了，但是设计杂乱无章。前些日子从新写了一次，采用了一些良好的设计，这就是先在这个版本。</p>
+
+<p>脚本源码在github上，访问<a href="https://github.com/thinkermao/LL-Script">这里</a>。</p>
+
+<!-- more -->
+
+<h2 id="概述">概述</h2>
+
+<p>首先看整体流程：输入代码、输出opcode并执行</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Lexer(source code) =&gt; token stream
+Parser(token stream) =&gt; SSA (static single assginment form)
+CodeGen(SSA) =&gt; opcode
+VirtualMachine(opcode) =&gt; result
+</code></pre></div></div>
+
+<p>这里直接从源码构造中间代码，省去了语法树部分。另外Parser后应该为优化阶段，其输出为优化后的 SSA IR。</p>
+
+<h2 id="词法分析语法分析">词法分析、语法分析</h2>
+
+<p>词法分析部分是简单的 ad-hoc 生成 token stream。Parser 按照 LL(1) 文法分析，并直接生成 SSA IR。</p>
+
+<p>Script 只有最基本的作用域，没有块级作用域，整个函数中的变量在函数任意位置均可访问。<code class="language-plaintext highlighter-rouge">FunctionScope</code> 表示一个函数作用域，其原型如下：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>struct FunctionScope {
+    typedef std::unordered_map&lt;std::string, unsigned&gt; Symbols;
+
+    // symbol type
+    enum { None, Define, Let };
+
+    FunctionScope()
+        : cfg_(nullptr)
+        , block_(nullptr)
+    {}
+
+    CFG *cfg_;
+    Symbols symbolTable_;
+    BasicBlock *block_;
+    std::unordered_set&lt;std::string&gt; captures_;
+};
+</code></pre></div></div>
+
+<p><code class="language-plaintext highlighter-rouge">cfg</code> 表示函数对应 SSA 的控制流程图，主要用于提供源代码直接到IR的转换，<code class="language-plaintext highlighter-rouge">block_</code> 表示当前翻译过程中源代码对应IR所在的基本块。<code class="language-plaintext highlighter-rouge">Symbols</code> 使用 <code class="language-plaintext highlighter-rouge">unordered_map</code> 来表示符号容器，其中<code class="language-plaintext highlighter-rouge">first</code>表示符号名，<code class="language-plaintext highlighter-rouge">second</code>表示符号类别，由<code class="language-plaintext highlighter-rouge">enum { None, Define, Let };</code>决定。<code class="language-plaintext highlighter-rouge">symbolTable_</code> 就是主要的符号表，函数作用域中定义的符号均记录在此。<code class="language-plaintext highlighter-rouge">captures_</code>表示函数的捕获(c++名词)列表，记录在此，给翻译收尾工作提供必要的信息。</p>
+
+<p>在翻译过程中，主要用到查找符号原型如下：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>bool tryToCatchID(std::string &amp;name);
+bool tryToCatchID(scope_iterator iter, std::string &amp;name);
+</code></pre></div></div>
+
+<p>首先通过原型1在当前作用域中查找，如果找到返回true，如果没有，则从里向外递归地遍历函数作用域栈。找到后，如果为外部符号，则加入捕获列表，否则返回false。</p>
+
+<h2 id="ssa-形式中间代码生成">SSA 形式中间代码生成</h2>
+
+<p>从源代码直接生成 SSA 形式代码可以参考论文：</p>
+
+<blockquote>
+  <p>Simple and Efficient Construction of Static Single Assignment Form 
+Matthias Braun1, Sebastian Buchwald1, Sebastian Hack2, Roland Leißa2, Christoph Mallon2, and Andreas Zwinkau1</p>
+</blockquote>
+
+<p>Script 中涉及到的代码主要在 Parser 分析过程中以及 CFG 中，CFG 部分内容如下：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>class CFG
+{
+public:
+    // ....
+    // SSA form construction.
+    void sealOthersBlock();
+    void sealBlock(BasicBlock *block);
+    void saveVariableDef(std::string name, BasicBlock *block, Value *value);
+    Value *readVariableDef(std::string name, BasicBlock *block);
+protected:
+    // SSA
+    Value *readVariableRecurisive(std::string name, BasicBlock *block);
+    Value *addPhiOperands(std::string name, Phi *phi);
+    Value *tryRemoveTrivialPhi(const std::string &amp;name, Phi *phi);
+    // ....
+};
+</code></pre></div></div>
+
+<p>这部分代码详细使用请看论文或<a href="/2016/08/18/Simple-and-Direction-SSA-Constriruction-Algorithm/">博客</a>。</p>
+
+<h3 id="ssa-ir">SSA IR</h3>
+
+<p>SSA IR 的 use-def chain 主要参考 LLVM 2.0 源码。SSA IR 中基础数据结构有 <code class="language-plaintext highlighter-rouge">Use</code>、<code class="language-plaintext highlighter-rouge">Value</code>、<code class="language-plaintext highlighter-rouge">User</code>，每一条 <code class="language-plaintext highlighter-rouge">Instruction</code> 既是 <code class="language-plaintext highlighter-rouge">Value</code> 又是 <code class="language-plaintext highlighter-rouge">User</code>，<code class="language-plaintext highlighter-rouge">User</code> 和 <code class="language-plaintext highlighter-rouge">Value</code> 通过 <code class="language-plaintext highlighter-rouge">Use</code> 关联起来。一些列指令组成 <code class="language-plaintext highlighter-rouge">BasicBlock</code>，一些列 <code class="language-plaintext highlighter-rouge">BasicBlock</code> 组成 <code class="language-plaintext highlighter-rouge">CFG</code>。<code class="language-plaintext highlighter-rouge">IRContext</code>包装了<code class="language-plaintext highlighter-rouge">Instruction</code>创建的工作。每一个函数由一个 <code class="language-plaintext highlighter-rouge">CFG</code> 组成，所有函数一起组成 <code class="language-plaintext highlighter-rouge">IRModule</code>。也就是说 Parser 输出为 <code class="language-plaintext highlighter-rouge">IRModule</code>。</p>
+
+<h3 id="函数处理">函数处理</h3>
+
+<p>生成 SSA IR 部分内容并不复杂，除了有关函数、Lambda部分。Script中无论函数定义可以看作如下替换(步骤1)：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>function bar() {}
+=&gt;
+function $lambda_1_bar() {}
+define bar = $lambda_1_bar;
+</code></pre></div></div>
+
+<p>因为闭包对于普通变量通过拷贝、对于复合变量通过引用(实际实现为指针)实现。所以可以通过类似于C++<code class="language-plaintext highlighter-rouge">std::bind</code>的机制实现 closure(步骤2)。</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>let a = 10;
+define call = lambda(x) {
+    return x + a;
+}
+=&gt;
+let call_tmp = lambda(a, x) ....
+ define call = call_tmp(a);
+</code></pre></div></div>
+
+<p>不过这样处理就会涉及到函数中访问其自己名字的问题，或者说叫访问lambda函数自己。这个问题可以通过 Y combinator 解决。Script 中使用的办法比较简单(步骤3)：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>let fib = lambda(n) {
+    if (n &lt; 2)	return 0;
+    return fib(n-1) + fib(n-2);
+}
+=&gt;
+let tmp = lambda(fib, n) {
+    fib = fib(fib);
+    if (n &lt; 2) return 0;
+    return fib(n-1) + fib(n-2);
+}
+let fib = tmp(fib);
+</code></pre></div></div>
+
+<p>有了上述基础，就可以看相关代码：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Value *Parser::parseFunctionCommon(const std::string &amp;name)
+{
+    // create function and generate parallel invoke.
+    // for module require, need insert file name
+    IRFunction *function = module_.createFunction(
+        Combinator(lexer_.filename(), name));
+    pushFunctionScopeAndInit(function);
+
+    Strings params;
+    getFunctionParamsAndBody(params, function);
+
+    // save current captures.
+    std::vector&lt;std::string&gt; prototype;
+    getFunctionPrototype(name, prototype, params);
+    function-&gt;setParams(std::move(prototype));
+
+    std::unordered_set&lt;std::string&gt; captures;
+    std::swap(captures, scope-&gt;captures_);
+    if (captures.find(name) != captures.end())
+        dealRecursiveDecl(name);
+    popFunctionScope(function);
+
+    // create closure for function.
+    return createClosureForFunction(name, captures);
+}
+</code></pre></div></div>
+
+<p><code class="language-plaintext highlighter-rouge">parseFunctionCommon</code> 首先分析函数参数和函数体，然后获取函数原型(步骤2)，根据函数是否递归调用自身，调用<code class="language-plaintext highlighter-rouge">dealRecursiveDecl</code>(步骤3)，最后为函数创建闭包(步骤1)。</p>
+
+<p>在函数原型部分，Script 将自身的名字放到 capture 列表的最后部分位置，这样使得处理递归调用变得简单。</p>
+
+<h2 id="目标代码生成">目标代码生成</h2>
+
+<p>代码生成流程如下:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>void CodeGen::runOnFunction(IRFunction *func)
+{
+    std::list&lt;LiveInterval&gt; intervals;
+    {
+        LiveIntervalAnalysis analysis;
+        analysis.runOnFunction(func);
+        analysis.swapIntervals(intervals);
+    }
+
+    SimpleRegisterAllocation RA(255, intervals);
+    RA.runOnFunction(func);
+    PhiElimination PE;
+    PE.runOnFunction(func);
+
+    numOfRegister = RA.totalRegister();
+    genFunction(func);
+}
+</code></pre></div></div>
+
+<p>首先是分析变量活性区间，然后通过活性区间进行寄存器分配，最后消除 Phi 结点，此时 IR 退出 SSA 形式。然后在这个基础上以函数为单位进行代码生成。</p>
+
+<p>CodeGen 目标为opcode，而opcode相关操作包装在OPBuilder中。具体逻辑比较简单，请直接看源码。</p>
+
+<h3 id="活性区间计算与寄存器分配">活性区间计算与寄存器分配</h3>
+
+<p>活性区间及寄存器分配以:</p>
+
+<blockquote>
+  <p>Linear Scan Register Allocation for the Java HotSpot™ Client Compiler - Christian Wimmer</p>
+</blockquote>
+
+<p>论文为基础，详细逻辑可以参考该论文。</p>
+
+<p>活性区间计算涉及到函数如下：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>void buildIntervals(IRFunction *func);
+void computeLocalLiveSet(IRFunction *func);
+void computeGlobalLiveSet(IRFunction *func);
+</code></pre></div></div>
+
+<p>按照论文，首先计算 <code class="language-plaintext highlighter-rouge">BasicBlock</code> 顺序并编号，然后依次计算本地活性集和全局活性集，最后才建立活性区间。</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>void LiveIntervalAnalysis::runOnFunction(IRFunction *func)
+{
+    func-&gt;computeBlockOrder();
+    computeLocalLiveSet(func);
+    computeGlobalLiveSet(func);
+    buildIntervals(func);
+}
+</code></pre></div></div>
+
+<p>寄存器分配部分，原先的想法是使用线性扫描寄存器分配方法，在实现过程中，部分细节不知道怎么处理，所以就使用了比较简单的分配方式，将所有变量放到栈上，所有临时变量才分配寄存器，由 VM 约定最多255个寄存器。在 <code class="language-plaintext highlighter-rouge">SimpleRegisterAllocation</code> 中具体操作如下：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>void initAndSortIntervals();
+void assignRegister(IRFunction *func);
+void allocateNewRegister(LiveInterval &amp;interval);
+void expiredOldIntervals(unsigned current, ActiveSet &amp;active, ActiveSet &amp;inactive);
+bool tryToAllocateRegister(LiveInterval &amp;interval, ActiveSet &amp;active, ActiveSet &amp;inactive);
+</code></pre></div></div>
+
+<p>具体实现过程，参考<a href="/2016/09/06/Linear-Scan-Register-Allocation/">博客</a>;</p>
+
+<h2 id="runtime">Runtime</h2>
+
+<p>虚拟机的数据对象采用 Tagging 标记方式，整个 Runtime 以 C 语言为主实现，封装后供 C++ 使用。对象基本结构如下：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>enum Tag {
+    TagNot = 0,
+    TagFixnum = 1,
+    TagReal = 2,
+    TagSpec = 3,
+
+    TagNil = 7,
+
+    TagShift = 2,
+    TagMask = 3,
+
+    TagSpecalMask = 0xf,
+    TagSpecalShift = 4,
+};
+
+// 8bits
+enum Type {
+    TypeString = 0,
+    TypeArray = TypeString + 1,
+    TypeClosure = TypeString + 2,
+    TypeUserFunc = TypeString + 3,
+    TypeHashNode = TypeString + 4,
+    TypeUserData = TypeString + 5,
+    TypeHashTable = TypeString + 6,
+};
+
+// common property of heap object
+// obType_ is the type of object
+#define HEAP_OBJECT_HEAD   \
+    int8_t obType;         \
+    int8_t resv1;          \
+    int8_t resv2;          \
+    int8_t resv3
+
+typedef struct {
+    HEAP_OBJECT_HEAD;
+} CommonObject;
+</code></pre></div></div>
+
+<p><code class="language-plaintext highlighter-rouge">Tag</code> 用于标记简单对象类型，复合对象继承自 <code class="language-plaintext highlighter-rouge">CommonObject</code>，使用 <code class="language-plaintext highlighter-rouge">obType</code> 表示具体对象类型即 <code class="language-plaintext highlighter-rouge">Type</code> 中对应的类型。</p>
+
+<p>以String为例 ：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>typedef struct
+{
+    HEAP_OBJECT_HEAD;
+    size_t length;
+    char str[];
+} String;
+</code></pre></div></div>
+
+<p>任何一个 String 对象长度为 <code class="language-plaintext highlighter-rouge">sizeof(String) + String.length</code>。所有数据结构中，最为复杂的是 Hash 表的设计。</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>typedef struct HashNodeList
+{
+    HEAP_OBJECT_HEAD;
+    size_t capacity;
+    HashNode content[0];
+} HashNodeList;
+
+typedef struct Hash
+{
+    HEAP_OBJECT_HEAD;
+    size_t capacity;
+    size_t size;
+    size_t max_idx;
+    HashNodeList *content;
+} Hash;
+</code></pre></div></div>
+
+<p>Hash 是 Hash 表的数据结构，其中数据存放在 HashNodeList 部分，这样设计是用于后面的 Expand 以及 Shrink 操作。这里说明 hash 表 set 操作：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>
+static void HashSet(Object self, uintptr_t key, Object value)
+{
+    assert(IsFixnum(value));
+
+    Hash *hash = (Hash*)self;
+    uintptr_t index = key % hash-&gt;capacity;
+    uintptr_t slot = hash-&gt;capacity;
+
+    if (IsNil(value)) {
+        value = CreateUndef();
+    }
+
+    HashNodeList *list = hash-&gt;content;
+    while (list-&gt;content[index].key != key
+        &amp;&amp; !IsNil(list-&gt;content[index].value)) {
+        if (slot == hash-&gt;capacity
+            &amp;&amp; IsUndef(list-&gt;content[index].value)) {
+            slot = index;
+            break;
+        }
+        index = HashNextIndex(index, hash-&gt;capacity);
+    }
+
+    if (list-&gt;content[index].key == key)
+        slot = index;
+    if (slot == hash-&gt;capacity)
+        slot = index;
+
+    if (!IsUndef(value) &amp;&amp; (IsNil(list-&gt;content[slot].value)
+        || IsUndef(list-&gt;content[slot].value))) {
+        assert(hash-&gt;size != hash-&gt;capacity);
+        if (key == HashKey(CreateFixnum(hash-&gt;max_idx)))
+            hash-&gt;max_idx++;
+        hash-&gt;size++;
+    }
+
+    if (IsUndef(value) &amp;&amp; !IsUndef(list-&gt;content[slot].value)
+        &amp;&amp; !IsNil(list-&gt;content[slot].value)) {
+        assert(hash-&gt;size);
+        if (key == HashKey(CreateFixnum(hash-&gt;max_idx - 1)))
+            hash-&gt;max_idx--;
+        hash-&gt;size--;
+    }
+
+    list-&gt;content[slot].value = value;
+    list-&gt;content[slot].key = key;
+}
+</code></pre></div></div>
+
+<p>首先计算hash对象所在 HashNodeList 中的 slot，如果当前位置已经被占用，则计算下一个 slot 所在位置。找到位置后，根据是否 nil 判断是否删除结点。</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Object HashFind(Object self, Object key)
+{
+    assert(IsHash(self));
+    Hash *hash = (Hash*)self; 
+    uint32_t hash_key = HashKey(key);
+    uintptr_t index = hash_key % hash-&gt;capacity;
+
+    HashNodeList *list = hash-&gt;content;
+    while (list-&gt;content[index].key != hash_key
+        &amp;&amp; !IsNil(list-&gt;content[index].value)) {
+        if (IsUndef(list-&gt;content[index].value))
+            break;
+        index = HashNextIndex(index, list-&gt;capacity);
+    }
+
+    if (IsNil(list-&gt;content[index].value))
+        return CreateUndef();
+    else
+        return list-&gt;content[index].value;
+}
+</code></pre></div></div>
+
+<p>find 操作查找部分与 set 类似，最后直接返回对象值。实际上对外暴露的接口是：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>void HashSetAndUpdate(Object self, Object key, Object value)
+{
+    assert(IsHash(self));
+
+    if (key == CreateFixnum(-1))
+        key = CreateFixnum(((Hash*)self)-&gt;max_idx);
+    uint32_t hash_key = HashKey(key);
+    HashSet(self, hash_key, value);
+    if (HashNeedExpand(self)) 
+        HashExpand(self);
+    else if (HashNeedShrink(self)) 
+        HashShrink(self);
+}
+</code></pre></div></div>
+
+<p>这里对 set 后的表进行判断，并根据结果伸展或者收缩表。伸展表时，目标容积为原容积的 3/2，收缩时，目标容积为原容积的 2/3。</p>
+
+<p>需要注意的是 Runtime 中申请内存也必须在 Runtime 中，保证 GC 能够访问到该内存。所以 Runtime 设计中出现的内存分配必须使用 GC 提供的接口。另外，如果分配过程中发生了 GC，也需要保证所有指针均指向正确的位置。</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>// 
+// just expand content.
+static void HashExpand(Object self)
+{
+    assert(IsHash(self));
+    Hash *hash = (Hash*)self;
+    size_t future_capacity = HashExpandSize(hash-&gt;capacity);
+
+    // before gc, save it as global object
+    GlobalObjectBuffer = &amp;self;
+    HashNodeList *cap = (HashNodeList*)HashNewNodeList(future_capacity);
+    GlobalObjectBuffer = NULL;
+
+    HashRehash(self, cap);
+}
+</code></pre></div></div>
+
+<p>因此，在 Runtime 中提供了一个特殊的对象 <code class="language-plaintext highlighter-rouge">GlobalObjectBuffer</code>来保证内存指针始终指向正确的位置。</p>
+
+<h2 id="virtual-machine--gc">Virtual Machine &amp; GC</h2>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>typedef int8_t Byte;
+
+enum Opcode {
+    OK_Goto = 0,    // goto lable@_addr
+
+    // operator
+    // single 
+    OK_Not,         // temp = !temp
+    // binary 
+    OK_Add,         // temp = temp + temp
+    OK_Sub,         // temp = temp - temp
+    OK_Mul,         // temp = temp * temp
+    OK_Div,         // temp = temp / temp
+    // relop
+    OK_Great,       // temp = temp &gt; temp
+    OK_GreatThan,   // temp = temp &gt;= temp
+    OK_Less,        // temp = temp &lt; temp
+    OK_LessThan,    // temp = temp &lt;= temp
+    OK_Equal,       // temp = temp == temp
+    OK_NotEqual,    // temp = temp != temp
+
+    // move
+    OK_MoveS,       // temp = string index
+    OK_MoveI,       // temp = constant
+    OK_MoveF,		// temp = float
+    OK_MoveN,		// temp = null
+    OK_Move,        // temp = temp
+
+    // memory
+    OK_Load,        // load id to temp
+    OK_Index,       // load id [ temp ] to temp
+    OK_Store,       // store id from temp
+    OK_SetIndex,      // store id [ temp ] from temp
+
+    // condition jmp
+    OK_If,          // if temp goto label
+
+    // call 
+    OK_Param,       // push temp
+    OK_Call,        // temp = call Label in num params
+    OK_TailCall,
+    OK_Return,      // return temp
+    OK_NewHash,		// tmp = new hash
+    OK_NewClosure,	// tmp = new string(idx)
+    OK_UserClosure, // tmp = new user closure
+    OK_Halt,        // stop
+};
+</code></pre></div></div>
+
+<p>opcode 设计如上，VM 对其加以解释执行。</p>
+
+<p>VM 中有三个重要的数据结构，VMFrame、VMScene、VMState，VMFrame 是运行时的一个调用栈帧，保存了当前所在位置的运行时数据。VMScene是一个运行场景，每一个程序一个运行场景，当前场景运行不会影响到后续场景的运行。VMState是opcode解释器，绑定VMScene运行。在同一时刻，只能有一个VMState运行，因为需要涉及到Runtime中的设计。当然这中设计导致了这种缺陷，但是目前是最简单的实现方式。</p>
+
+<p>GC 采用了semi-space swap算法，</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>struct Semispace
+{
+    Object allocateMemory(size_t size);
+    bool contains(Object obj);
+    void reset();
+};
+
+class GarbageCollector
+{
+public:
+    Object allocate(size_t size);
+
+    void bindReference(std::function&lt;VariableReference&gt; call);
+    void bindGlobals(std::function&lt;GloablVariable&gt; call);
+    void processReference(Object *slot);
+
+private:
+    void garbageCollect();
+
+    void swapSpace();
+    void cleanSpace(Semispace *space);
+
+    bool isForwarded(Object obj);
+    void forwardTo(Object obj, Object new_addr);
+    Object forwardee(Object obj);
+
+    Object swap(Object obj, size_t size);
+
+    Semispace *from_space_;
+    Semispace *to_space_;
+};
+</code></pre></div></div>
+
+<p>主要数据结构如上。其中有两个回掉函数，其中<code class="language-plaintext highlighter-rouge">GloablVariable</code>用于与VM沟通，获取根结点数据;<code class="language-plaintext highlighter-rouge">VariableReference</code>用于与Runtime沟通，处理变量引用，这样将GC与VM和Runtime解耦，以后修改GC更为方便。GC详细介绍可以看<a href="http://hllvm.group.iteye.com/group/topic/39376">文章</a>。</p>
+
+<p>在 buildin.cpp 中提供了 Runtime 涉及到的操作和 GC 耦合部分内容:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>void ProcessGlobals(void *scene)
+{
+    using script::VMFrame;
+    using script::VMScene;
+    using script::GarbageCollector;
+
+    VMScene *vmscene = static_cast&lt;VMScene*&gt;(scene);
+    GarbageCollector *GC = &amp;vmscene-&gt;GC;
+    for (auto &amp;frame : vmscene-&gt;frames) {
+        GC-&gt;processReference(&amp;frame.params);
+        GC-&gt;processReference(&amp;frame.registers);
+    }
+    for (auto &amp;object : vmscene-&gt;paramsStack) {
+        GC-&gt;processReference(&amp;object);
+    }
+    if (GlobalObjectBuffer != NULL)
+        GC-&gt;processReference(GlobalObjectBuffer);
+}
+
+void ProcessVariableReference(void *scene, Object *object)
+{
+    using script::VMScene;
+    using script::GarbageCollector;
+
+    VMScene *vmscene = static_cast&lt;VMScene*&gt;(scene);
+    GarbageCollector *GC = &amp;vmscene-&gt;GC;
+    if (IsClosure(*object)) {
+        size_t hold = ClosureHold(*object);
+        Object *params = ClosureParams(*object);
+        for (size_t idx = 0; idx &lt; hold; ++idx) {
+            GC-&gt;processReference(&amp;(params[idx]));
+        }
+    }
+    else if (IsArray(*object)) {
+        size_t length = ArraySize(*object);
+        Object *array = ArrayPointer(*object);
+        for (size_t idx = 0; idx &lt; length; ++idx) {
+            GC-&gt;processReference(&amp;array[idx]);
+        }
+    }
+    else if (IsHash(*object)) {
+        GC-&gt;processReference(HashNodeListGet(*object));
+    }
+    else if (IsHashNodeList(*object)) {
+        size_t size = NodeListElementCapacity(*object);
+        HashNode *nodes = HashNodeListElement(*object);
+        for (size_t idx = 0; idx &lt; size; ++idx) {
+            GC-&gt;processReference(&amp;nodes[idx].value);
+        }
+    }
+}
+</code></pre></div></div>
+
+<p>上面代码就是用于处理 GC 的回掉工作。</p>
+
+<p>在 VM 当中提供了 tailCall 指令用于尾调用(并不局限与尾递归)优化，对于那些在返回语句中调用了其他函数的调用语句均可以优化。具体VM中则是重复利用当前 VMFrame ，达到尾调用的目的。</p>
+
+<p>仍然需要注意的是使用 GC 出现的具有迷惑性的问题，如果某条指令执行过程中，创建了对象，就要保证创建前后指针值的位置正确。</p>
+
+<h2 id="ffi-支持">FFI 支持</h2>
+
+<p>在Runtime和VM中提供了FFI支持：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>///
+/// user func object
+///
+typedef struct
+{
+    HEAP_OBJECT_HEAD;
+    void *content;
+} UserClosure;
+</code></pre></div></div>
+
+<p>该结构用于包装用户函数，然后 VM 中可以使用 callUserClosure 与用户定义函数进行交互。</p>
+
+<p>这些用户定义函数需要在编译器中先进行注册后才能被编译器识别：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Object lib_require(VMState *state, size_t paramsNums)
+{
+    assert(globalReguireCallback);
+    if (paramsNums != 1) {
+        state-&gt;runtimeError("require only takes one parameter");
+    }
+
+    Object res = state-&gt;getScene()-&gt;paramsStack.back();
+    if (IsString(res)) {
+        // save it.
+        std::string filename = StringGet(res); 
+        VMScene *scene = state-&gt;getScene();
+        unsigned resReg = static_cast&lt;unsigned&gt;(scene-&gt;lastValue);
+        globalReguireCallback(filename.c_str(), resReg);
+    }
+    return CreateUndef();
+}
+
+static Lib libs[] = {
+    { "require", lib_require },
+    { nullptr, nullptr }
+};
+
+void RegisterLibrary(LibRegister lib_register)
+{
+    Lib *lib = libs;
+    while (lib-&gt;name) {
+        lib_register(lib-&gt;name, lib-&gt;closure);
+        lib++;
+    }
+}
+
+void RegisterRequire(RequireCallback require)
+{
+    globalReguireCallback = require;
+}
+</code></pre></div></div>
+
+<p>这里是对脚本提供了模块加载功能，首先用用户提供自定义函数(原型与lib_require一致)，然后保存在<code class="language-plaintext highlighter-rouge">libs[]</code>中，编译器初始化时，会将具体的注册函数传递给RegisterLibrary并一一注册。</p>
+
+<p>对于一个C函数的定义，在注册过程中需要向Parser和opcode中注册，方便符号查找。</p>
+
+
+  </div><a class="u-url" href="/%E7%BC%96%E8%AF%91%E5%99%A8%E5%AE%9E%E7%8E%B0/2016/11/29/LL-Script-implements.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">W41ter&#39;s Bistro</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">W41ter&#39;s Bistro</li><li><a class="u-email" href="mailto:w41ter.l@gmail.com">w41ter.l@gmail.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/w41ter"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">w41ter</span></a></li><li><a href="https://www.twitter.com/WalterM56697798"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">WalterM56697798</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Focus on distributed storage system, compiler.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>

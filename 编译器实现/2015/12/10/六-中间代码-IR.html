@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>六、中间代码(IR) | W41ter’s Bistro</title>
+<meta name="generator" content="Jekyll v4.2.2" />
+<meta property="og:title" content="六、中间代码(IR)" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="中间代码 中间代码的地位和作用 中间代码的作用是可使程序的结构在逻辑上更为简单明确，特别是可使目标代码的优化比较容易实现中间代码，即为中间语言程序，中间语言的复杂性介于源程序语言和机器语言之间。" />
+<meta property="og:description" content="中间代码 中间代码的地位和作用 中间代码的作用是可使程序的结构在逻辑上更为简单明确，特别是可使目标代码的优化比较容易实现中间代码，即为中间语言程序，中间语言的复杂性介于源程序语言和机器语言之间。" />
+<link rel="canonical" href="/%E7%BC%96%E8%AF%91%E5%99%A8%E5%AE%9E%E7%8E%B0/2015/12/10/%E5%85%AD-%E4%B8%AD%E9%97%B4%E4%BB%A3%E7%A0%81-IR.html" />
+<meta property="og:url" content="/%E7%BC%96%E8%AF%91%E5%99%A8%E5%AE%9E%E7%8E%B0/2015/12/10/%E5%85%AD-%E4%B8%AD%E9%97%B4%E4%BB%A3%E7%A0%81-IR.html" />
+<meta property="og:site_name" content="W41ter’s Bistro" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2015-12-10T19:52:14+08:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="六、中间代码(IR)" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2015-12-10T19:52:14+08:00","datePublished":"2015-12-10T19:52:14+08:00","description":"中间代码 中间代码的地位和作用 中间代码的作用是可使程序的结构在逻辑上更为简单明确，特别是可使目标代码的优化比较容易实现中间代码，即为中间语言程序，中间语言的复杂性介于源程序语言和机器语言之间。","headline":"六、中间代码(IR)","mainEntityOfPage":{"@type":"WebPage","@id":"/%E7%BC%96%E8%AF%91%E5%99%A8%E5%AE%9E%E7%8E%B0/2015/12/10/%E5%85%AD-%E4%B8%AD%E9%97%B4%E4%BB%A3%E7%A0%81-IR.html"},"url":"/%E7%BC%96%E8%AF%91%E5%99%A8%E5%AE%9E%E7%8E%B0/2015/12/10/%E5%85%AD-%E4%B8%AD%E9%97%B4%E4%BB%A3%E7%A0%81-IR.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="/feed.xml" title="W41ter's Bistro" /><!-- for mathjax support -->
+  
+</head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">W41ter&#39;s Bistro</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">六、中间代码(IR)</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2015-12-10T19:52:14+08:00" itemprop="datePublished">Dec 10, 2015
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <h2 id="中间代码">中间代码</h2>
+
+<h3 id="中间代码的地位和作用">中间代码的地位和作用</h3>
+
+<p>中间代码的作用是可使程序的结构在逻辑上更为简单明确，特别是可使目标代码的优化比较容易实现中间代码，即为中间语言程序，中间语言的复杂性介于源程序语言和机器语言之间。</p>
+
+<!-- more -->
+
+<h3 id="中间代码形式">中间代码形式</h3>
+
+<p>1、树和有向无环图(DAG) 其优点是高层表示，使用与源程序代码。
+2、三地址码 底层表示，接近于目标机器。
+3、控制流图(CFG) 更精细的三地址码，程序的图状表示，适合做程序分析、程序优化。
+4、静态单赋值形式(SSA) 更佳精细的控制流图，同时编码控制流信息和数据流信息。
+5、连续传递风格(CPS) 多用于函数式编程中，更一般的SSA。可以表达跨模块、函数的控制流。</p>
+
+<p>程序优化和代码优化正是基于中间代码进行的。不同的中间代码在不同优化方面各有优劣，所以在做优化时常常需要在多种IR中进行转换。</p>
+
+<h3 id="dag">DAG</h3>
+
+<p>DAG和抽象语法树的不同之处在于，如果DAG中的一个节点N表示一个公共表达式，则N可能有多个父节点。因此DAG不仅更简洁的表示了表达式，而且可以为最终生成的表达式的高效代码提供重要的信息。</p>
+
+<h4 id="dag构造">DAG构造</h4>
+
+<p>在处理表达式部分抽象语法树时，我们把所有节点放入一个数组中，父节点通过数组索引找到其子节点。这种就称为该表达式的值编码。这个时候，就可以改变语法制导翻译时的代码，使得在为表达式创建节点时，先在数组中寻找是否有指定的<code class="language-plaintext highlighter-rouge">&lt;op, l, r&gt;</code>节点，然后决定是否创建。需要注意到是，每次定位一个节点都需要搜索整个数组，这个开销是非常大的，当一个数组中存放了整个程序所用的表达式时更是如此。更高效的办法是使用散列表，将节点放入若干桶中，每个桶通常只包含少量的节点。要给DAG中的节点构造散列表，首先需要建立散列函数(hash function)h。这个函数为形如<code class="language-plaintext highlighter-rouge">&lt;op, l, r&gt;</code>的三元组计算桶的索引。</p>
+
+<h3 id="三地址码">三地址码</h3>
+
+<p>三地址码拆分了多运算符算数表达式以及控制流语句嵌套的结构，所以适用于目标代码的生成和优化。其基于两个基本概念：地址和指令。地址描述了指令所在的位置信息，指令描述了该表达式进行的运算。</p>
+
+<p>下面是常见的三地址指令形式：</p>
+
+<ol>
+  <li>形如<code class="language-plaintext highlighter-rouge">x = y op z</code>的赋值指令；</li>
+  <li>单目运算<code class="language-plaintext highlighter-rouge">x = op y</code>；</li>
+  <li>赋值指令<code class="language-plaintext highlighter-rouge">x = y</code>；</li>
+  <li>无条件转移指令<code class="language-plaintext highlighter-rouge">goto L</code>, 其中<code class="language-plaintext highlighter-rouge">L</code>表示下一部将要执行的指令是带有标号<code class="language-plaintext highlighter-rouge">L</code>的三地址指令；</li>
+  <li>条件转移指令<code class="language-plaintext highlighter-rouge">if x goto L</code>和<code class="language-plaintext highlighter-rouge">iffalse x goto L</code>；</li>
+  <li>形如<code class="language-plaintext highlighter-rouge">if x relop y goto L</code>的条件转移指令。它对<code class="language-plaintext highlighter-rouge">x</code>和<code class="language-plaintext highlighter-rouge">y</code>应用于一个关系运算符(&lt;,&lt;=,&gt;,&gt;=,!=,==)，然后根据结果跳转；</li>
+  <li>过程调用和返回系列指令，<code class="language-plaintext highlighter-rouge">param x</code>进行参数传递，<code class="language-plaintext highlighter-rouge">call p, n</code>和<code class="language-plaintext highlighter-rouge">y = call p, n</code>表示进行过程调用(其中n表示参数数目)，<code class="language-plaintext highlighter-rouge">return x</code>表示返回操作<code class="language-plaintext highlighter-rouge">y</code>是返回值；</li>
+  <li>带下标的复制指令<code class="language-plaintext highlighter-rouge">x = y[i]</code>和<code class="language-plaintext highlighter-rouge">y[i] = x</code>；</li>
+  <li>形如<code class="language-plaintext highlighter-rouge">x = &amp;y</code>、<code class="language-plaintext highlighter-rouge">x = *y</code>和<code class="language-plaintext highlighter-rouge">*x = y</code>的指令及指针赋值指令；</li>
+</ol>
+
+<p>表示三地址码的表示方式有多种，如果需要有变量这个概念，则可以用四元组表示。</p>
+
+<h4 id="四元组表示">四元组表示</h4>
+
+<p>一个四元式(quadruple)有四个字段，分别称为：op、arg1、arg2、result。这种方式表示的三地址码再做寄存器分配时会更优一点。该方法在描述三地址码是存在一些特例：</p>
+
+<ol>
+  <li>形如<code class="language-plaintext highlighter-rouge">x = -y</code>的单目运算指令和复制指令都不使用arg2；</li>
+  <li><code class="language-plaintext highlighter-rouge">param x</code>这类指令既不是用arg2，也不使用<code class="language-plaintext highlighter-rouge">result</code>；</li>
+  <li>条件转移指令将目标标号放入result中；</li>
+</ol>
+
+<p>如果不需要变量概念，直接使用运算结果隐式地表示临时变量，则可以使用三元组表示。</p>
+
+<h4 id="三元组表示">三元组表示</h4>
+
+<p>三元式(triple)只有三个字段，即没有<code class="language-plaintext highlighter-rouge">result</code>，而使用其位置来表示它的结果。也就是：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>对于 
+1 x = y op z
+2 a = x op 1
+可以写成
+1 y op z
+2 (1) op 1
+其中(1)表示该位置的值为位于地址1的指令的结果
+</code></pre></div></div>
+
+<p>在高层优化时，使用这种方式会比较简单。需要注意的是，在优化编译器时，由于指令的位置常常会发生变化，四元式相对于三元式的优势就体现出来了。使用四元式时，可以不需要修改。使用三元式时需要修改所有引用其位置的指令。当然可以使用 <em>间接三元式</em> 来解决这个问题。间接三元式包含了一个指向三元式的指针列表，而不是三元式序列本身。这样，在修改时，只需要修改指针指向位置即可。</p>
+
+<h3 id="控制流图">控制流图</h3>
+
+<p>三地址码结构并不明显，在控制流优化、数据流分析中并不方便。而控制流图则利于做控制流优化和数据流分析。在控制流图中，一个语句序列，能够从头执行到尾（即跳转指令只能出现在末尾）被称为基本块。而控制流图就是以基本块为节点，跳转信息为边的图。</p>
+
+<h4 id="控制流图构造方法">控制流图构造方法</h4>
+
+<p>首先找出基本块，然后建立连接。基本块算法如下：</p>
+
+<ol>
+  <li>找基本块入口源代码的首行或者转移代码（有条件和无条件）或者转移代码的下一行</li>
+  <li>基本块构造：通过入口点开始，将其组成各自的基本块。基本块语句序列的特征：从不包含它本身的进入点到其他进入点或者到某条转移语句或者到某条停止语句</li>
+  <li>如果有语句不在任一基本块中，那么它为”死代码“，删除</li>
+</ol>
+
+<p>然后就是控制流图构造。如果在一个有序代码中，基本块B2跟在B1后，那么产生一个由B1到B2的有向边。</p>
+
+<ol>
+  <li>有跳转点。这个点从B1的结束点跳到B2的开始点</li>
+  <li>无跳转点（有序代码中），B2跟在B1后，且B1的结束点不是无条件跳转语句</li>
+</ol>
+
+<h3 id="静态单赋值形式">静态单赋值形式</h3>
+
+<p>在数据流分析中需要寻找表达式中每个定值的使用点。定值-使用链(def-use chain)是一种能够高效获取这些信息的数据结构：对流图中的每条语句，编译器能够保存两个由指针组成的列表，其中一个列表中的指针指向在该语句中定值的变量的所有使用点，另一个列表中的指针指向该语句中使用的变量的所有定值点。而静态单赋值形式(static single assignment from)是对def-use chain的一种改进思想。SSA形式是这样一种中间表示：在程序正文中，每个变量只有一个定值，而这个定值可能位于一个可动态执行多次的循环中，因此称为静态单赋值形式，而不是单赋值。在用SSA形式表示的过程中，def-use chain是显示的：变量的使用可能用到一个特定定值产生的值，当且仅当在该过程的SSA形式中此变量的定值和使用具有完全相同的名字。</p>
+
+<p>将普通代码转换为SSA形式代码标准方法是每一个赋值的变量带上一个下标，并在流图中的汇合点使用Ø函数（即形式为Ø（x,x,x…,x）的函数），以区分对一个变量的多种赋值。每一个函数具有的参数个数同汇合到那一点的该变量的不同版本个数一样多，并且每一个参数与该点的一个特定控制流前驱相对应。</p>
+
+<h3 id="抽象语法书到三地址码">抽象语法书到三地址码</h3>
+
+<p>首先是设计三地址码，这里采用的三地址码和龙书提到的并不完全一样，为了简化工作，将<code class="language-plaintext highlighter-rouge">Relop</code>部分和数组相关部分也译成运算，即没有<code class="language-plaintext highlighter-rouge">IfRelop</code>运算。三地址部分结构如下：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>public class IR {
+    public static abstract class Quad implements Acceptable {
+        public Quad prev = null;
+        public Quad next = null;
+        
+        public Quad() { prev = this; next = this; }
+    }
+    
+    public static class Var {
+    }
+    
+    public static class FVar extends Var {
+        public Float fnum;
+        public FVar(float f) {
+            this.fnum = f;
+        }
+        public String toString() {
+            return "" + this.fnum;
+        }
+    }
+    
+    public static class IVar extends Var {
+        public Integer num;
+        public IVar(int num) {
+            this.num = num;
+        }
+        public String toString() {
+            return "" + this.num;
+        }
+    }
+    
+    public static class CVar extends Var {
+        public char c;
+        public CVar(char c) {
+            this.c = c;
+        }
+        public String toString() {
+            return "" + c;
+        }
+    }
+    
+    public static class ID extends Var {
+        public String name;
+        
+        public ID(String name) {
+            this.name = name;
+        }
+        public String toString() { return name; }
+    }
+    
+    public static class Str extends Var {
+        public String str;
+        public Str(String str) {
+            this.str = str;
+        }
+        public String toString() { return "\"" + str + "\""; }
+    }
+    
+    public static class Temp extends Var {
+        public String name;
+        
+        public Temp() {
+            name = "t" + getIndex();
+        }
+        public static int index = 0;
+        public static int getIndex() { return index++; }
+        public String toString() { return name; }
+    }
+    
+    public static class Array extends Var {
+        public Var exp;
+        public Var index;
+        public Array(Var e, Var i) {
+            this.exp = e;
+            this.index = i;
+        }
+        public String toString() { 
+            return exp.toString() + "[" + index.toString() + "]";
+        }
+    }
+    
+    public static class Label extends Quad {
+        public String address;
+        
+        public Label() {
+            address = "L" + getIndex();
+        }
+        public void accept(Visitor v) {
+        v.visit(this);
+        }
+        public static int index = 0;
+        public static int getIndex() { return index++; }
+    }
+    
+    public static class Assign extends Quad {
+        public Op op;
+        public Var arg1;
+        public Var arg2;
+        public Var result;
+        
+        public Assign(Op o, Var a1, Var a2, Var res) {
+            this.op = o;
+            this.arg1 = a1;
+            this.arg2 = a2;
+            this.result = res;
+        }
+        
+        public void accept(Visitor v) {
+            v.visit(this);
+        }
+        
+        enum Op {
+            Add,
+            Sub,
+            Mul,
+            Div
+        }
+    }
+    
+    public static class SingleAssign extends Quad {
+        public Var arg;
+        public Var result;
+        
+        public SingleAssign(Var arg, Var res) {
+            this.arg = arg;
+            this.result = res;
+        }
+        
+        public void accept(Visitor v) {
+            v.visit(this);
+        }
+    }
+    
+    public static class Copy extends Quad {
+        public Var arg;
+        public Var result;
+        
+        public Copy(Var arg, Var res) {
+            this.arg = arg;
+            this.result = res;
+        }
+        public void accept(Visitor v) {
+            v.visit(this);
+        }
+    }
+
+    public static class Goto extends Quad {
+        public Label label;
+        
+        public Goto(Label label) {
+            this.label = label;
+        }
+        public void accept(Visitor v) {
+            v.visit(this);
+        }
+    }
+    
+    public static class If extends Quad {
+        public Var condition;
+        public Label label;
+        
+        public If(Var con, Label label) {
+            this.condition = con;
+            this.label = label;
+        }
+        public void accept(Visitor v) {
+            v.visit(this);
+        }
+    }
+    
+    public static class IfFalse extends If {
+        public IfFalse(Var con, Label label) {
+            super(con, label);
+        }
+        public void accept(Visitor v) {
+            v.visit(this);
+        }
+    }
+    
+    public static class RelopCopy extends Quad {
+        public Var arg1;
+        public Var arg2;
+        public Relop relop;
+        public Var result;
+        
+        public RelopCopy(Var a1, Var a2, Relop relop, Var result) {
+            this.arg1 = a1;
+            this.arg2 = a2;
+            this.relop = relop;
+            this.result = result;
+        }
+        
+        public void accept(Visitor v) {
+            v.visit(this);
+        }
+        
+        enum Relop {
+            GT,
+            GEQT,
+            LT,
+            LEQT,
+            EQ,
+        }
+    }
+    
+    public static class Param extends Quad {
+        public Var val;
+        public Param(Var v) {
+            val = v;
+        }
+        public void accept(Visitor v) {
+            v.accept(this);
+        }
+    }
+    
+    public static class Call extends Quad {
+        public Var name;
+        public int num;
+        public Var result;
+        
+        public Call(Var name, int num, Var res) {
+            this.name = name;
+            this.result = res;
+            this.num = num;
+        }
+        
+        public Call(Var name, int num) {
+            this(name, num, null);
+        }
+        
+        public void accept(Visitor v) {
+            v.visit(this);
+        }
+    }
+    
+    public static class Return extends Quad {
+        public Var arg;
+        public Return(Var a) {
+            this.arg = a;
+        }
+        public void accept(Visitor v) {
+            v.visit(this);
+        }
+    }
+}
+</code></pre></div></div>
+
+<p>其中关于值的部分设计是以<code class="language-plaintext highlighter-rouge">Var</code>作为父类，派生出不同的类型。其中<code class="language-plaintext highlighter-rouge">Temp</code>表示在翻译过程中产生的临时变量。所有的指令都继承自<code class="language-plaintext highlighter-rouge">Quad</code>，整体采用双向链表实现。需要注意的是为了方便起见，我将<code class="language-plaintext highlighter-rouge">Label</code>也加入<code class="language-plaintext highlighter-rouge">Quad</code>中。</p>
+
+<p>再翻译过程中，使用<code class="language-plaintext highlighter-rouge">this.var</code>保存该语法树节点返回值。对于一般的运算，直接翻译并存储到临时变量中：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>public void visit(AddSubExp exp) {
+    exp.left.accept(this);
+    Var l = this.var;
+    exp.right.accept(this);
+    Var r = this.var;
+    this.var = new IR.Temp();
+    IR.Assign.Op op = exp.isAdd ? IR.Assign.Op.Add : IR.Assign.Op.Sub;
+    quad.add(new IR.Assign(op, l, r, this.var));
+}
+</code></pre></div></div>
+
+<p>对于<code class="language-plaintext highlighter-rouge">if</code>需要记录条件成功和失败时跳转的标签位置(如果有<code class="language-plaintext highlighter-rouge">else</code>，还需要结束位置，而没有<code class="language-plaintext highlighter-rouge">else</code>时，结束位置就是失败时跳转位置)。为了处理嵌套结构，我是用栈来记录当前活跃的跳转地址：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>public void visit(IfStatement s) {
+    Label true_ = new Label();
+    Label false_ = new Label();
+    Label next = new Label();
+    stack.push(true_);
+    stack.push(false_);
+    s.condition.accept(this);
+    if (this.var != null) {
+        quad.add(new IR.If(this.var, true_));
+        quad.add(new IR.Goto(false_));
+    }
+    stack.pop();
+    stack.pop();
+    quad.add(true_);
+    s.ifStatements.accept(this);
+    if (s.hasElse) {
+        quad.add(new IR.Goto(next));
+        quad.add(false_);
+        s.elseStatements.accept(this);
+        quad.add(next);
+    } else {
+        quad.add(false_);
+    }
+}
+</code></pre></div></div>
+
+<p>当我们后续处理完condition部分时，<code class="language-plaintext highlighter-rouge">this.var</code>为空，表示并没有返回值，而此处<code class="language-plaintext highlighter-rouge">if (this.var != null)</code>是为了处理<code class="language-plaintext highlighter-rouge">if (1)</code>这样的没有生成condition的节点。如果有<code class="language-plaintext highlighter-rouge">else</code>，需要在<code class="language-plaintext highlighter-rouge">else</code>所属语句块前加上跳转指令，以跳转到<code class="language-plaintext highlighter-rouge">if</code>结束。</p>
+
+<p><code class="language-plaintext highlighter-rouge">while</code>部分结构和<code class="language-plaintext highlighter-rouge">if</code>类似，不过还需要记录整个语句开头位置，并在语句执行完下一句添加无条件转移，从而形成循环。当<code class="language-plaintext highlighter-rouge">while</code>中出现<code class="language-plaintext highlighter-rouge">break</code>和<code class="language-plaintext highlighter-rouge">continue</code>指令时，需要分别跳转到末尾和开头。</p>
+
+<p>在处理与和或指令时，分别对前面记录的栈顶位置进行跳转即可：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>public void visit(AndOrExp exp) {
+    if (exp.isAnd) {
+        for (Exp.T t : exp.exps) {
+            t.accept(this);
+            if (this.var == null) continue;
+            quad.add(new IR.IfFalse(this.var, stack.peek()));
+        }
+        if (this.var == null) return;
+        quad.add(new IR.Goto(stack.elementAt(stack.size()-2)));
+    } else {
+        for (Exp.T t : exp.exps) {
+            t.accept(this);
+            if (this.var == null) continue;
+            quad.add(new IR.If(this.var, stack.elementAt(stack.size()-2)));
+        }
+        if (this.var == null) return;
+        quad.add(new IR.Goto(stack.peek()));
+    }
+    this.var = null;
+}
+</code></pre></div></div>
+
+<p>其中如果出现嵌套结构，那么返回值可能为空，此时不需要生成相关指令，忽略。</p>
+
+<p>最后需要注意到的是我对每一个作用于进行了命名，并且对在作用于声明的变量统一添加上该作用于名称的，这样做是为了防止名称冲突：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>var a = 0;
+if (a) {
+    var a = "asdf";
+}
+</code></pre></div></div>
+
+<p>上面部分展示了名称冲突。</p>
+
+<p>当这里为止，前端部分基本上完成，关于后续部分，交给另外两个阶段完成。</p>
+
+  </div><a class="u-url" href="/%E7%BC%96%E8%AF%91%E5%99%A8%E5%AE%9E%E7%8E%B0/2015/12/10/%E5%85%AD-%E4%B8%AD%E9%97%B4%E4%BB%A3%E7%A0%81-IR.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">W41ter&#39;s Bistro</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">W41ter&#39;s Bistro</li><li><a class="u-email" href="mailto:w41ter.l@gmail.com">w41ter.l@gmail.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/w41ter"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">w41ter</span></a></li><li><a href="https://www.twitter.com/WalterM56697798"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">WalterM56697798</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Focus on distributed storage system, compiler.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>

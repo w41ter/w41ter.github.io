@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Laravel5.2+Dingo/API+JWTauth 的坑 | W41ter’s Bistro</title>
+<meta name="generator" content="Jekyll v4.2.2" />
+<meta property="og:title" content="Laravel5.2+Dingo/API+JWTauth 的坑" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="最近着手做一款应用后端，在否定了 BaaS 后，决定用 Laravel 框架自己做一个 RESTful API。我的环境是 Laravel 5.2 ，另外使用了 Dingo/API 和 JWTAuth。不过在使用的过程中遇到了很多的坑，所以在这里记录一下。" />
+<meta property="og:description" content="最近着手做一款应用后端，在否定了 BaaS 后，决定用 Laravel 框架自己做一个 RESTful API。我的环境是 Laravel 5.2 ，另外使用了 Dingo/API 和 JWTAuth。不过在使用的过程中遇到了很多的坑，所以在这里记录一下。" />
+<link rel="canonical" href="/2016/04/29/Laravel5-2-Dingo-API-JWTauth-%E7%9A%84%E5%9D%91.html" />
+<meta property="og:url" content="/2016/04/29/Laravel5-2-Dingo-API-JWTauth-%E7%9A%84%E5%9D%91.html" />
+<meta property="og:site_name" content="W41ter’s Bistro" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2016-04-29T01:41:15+08:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Laravel5.2+Dingo/API+JWTauth 的坑" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2016-04-29T01:41:15+08:00","datePublished":"2016-04-29T01:41:15+08:00","description":"最近着手做一款应用后端，在否定了 BaaS 后，决定用 Laravel 框架自己做一个 RESTful API。我的环境是 Laravel 5.2 ，另外使用了 Dingo/API 和 JWTAuth。不过在使用的过程中遇到了很多的坑，所以在这里记录一下。","headline":"Laravel5.2+Dingo/API+JWTauth 的坑","mainEntityOfPage":{"@type":"WebPage","@id":"/2016/04/29/Laravel5-2-Dingo-API-JWTauth-%E7%9A%84%E5%9D%91.html"},"url":"/2016/04/29/Laravel5-2-Dingo-API-JWTauth-%E7%9A%84%E5%9D%91.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="/feed.xml" title="W41ter's Bistro" /><!-- for mathjax support -->
+  
+</head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">W41ter&#39;s Bistro</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">Laravel5.2+Dingo/API+JWTauth 的坑</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2016-04-29T01:41:15+08:00" itemprop="datePublished">Apr 29, 2016
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p>最近着手做一款应用后端，在否定了 BaaS 后，决定用 Laravel 框架自己做一个 RESTful API。我的环境是 Laravel 5.2 ，另外使用了 Dingo/API 和 JWTAuth。不过在使用的过程中遇到了很多的坑，所以在这里记录一下。</p>
+
+<!-- more -->
+
+<p>JWTAuth 默认使用 Users 表做为登录认证的表。而我的需求比较奇葩，共有两个不同的表；除此之外，还需要对 JWTAuth 的错误进行自定义。在搜索无果后，只好自己动手实现这两个需求。</p>
+
+<p>首先解决第二个问题，对 JWTAuth 进行错误自定义。这种情况下，我们可以自己去添加一个中间件处理身份认证。</p>
+
+<h3 id="添加中间件处理身份验证">添加中间件处理身份验证</h3>
+
+<p>1、添加一个 Middleware</p>
+
+<p>可以使用命令行添加：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>php artisan make:middleware GetUserFromToken
+</code></pre></div></div>
+
+<p>此命令将会在 <code class="language-plaintext highlighter-rouge">app/Http/Middleware</code> 目录内置立一个名称为 <code class="language-plaintext highlighter-rouge">GetUserFromToken</code> 的类。</p>
+
+<p>2、在 <code class="language-plaintext highlighter-rouge">GetUserFromToken</code> 中编辑代码，这里仿照 JWTAuth 写了 <code class="language-plaintext highlighter-rouge">Middleware</code></p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>&lt;?php
+
+namespace App\Http\Middleware;
+
+use Closure;
+use JWTAuth;
+use Tymon\JWTAuth\Exceptions\JWTException;
+use Tymon\JWTAuth\Exceptions\TokenExpiredException;
+use Tymon\JWTAuth\Exceptions\TokenInvalidException;
+
+class GetUserFromToken
+{
+    public function handle($request, Closure $next)
+    {
+        $auth = JWTAuth::parseToken();
+        if (! $token = $auth-&gt;setRequest($request)-&gt;getToken()) {
+            return response()-&gt;json([
+                'code' =&gt; '',
+                'message' =&gt; 'token_not_provided',
+                'data' =&gt; '',
+            ]);
+        }
+        
+        try {
+            $user = $auth-&gt;authenticate($token);
+        } catch (TokenExpiredException $e) {
+            return response()-&gt;json([
+                'code' =&gt; '',
+                'message' =&gt; 'token_expired',
+                'data' =&gt; '',
+            ]);
+        } catch (JWTException $e) {
+            return response()-&gt;json([
+                'code' =&gt; '',
+                'message' =&gt; 'token_invalid',
+                'data' =&gt; '',
+            ]);
+        }
+
+        if (! $user) {
+            return response()-&gt;json([
+                'code' =&gt; '',
+                'message' =&gt; 'user_not_found',
+                'data' =&gt; '',
+            ]);
+        }
+
+        //$this-&gt;events-&gt;fire('tymon.jwt.valid', $user);
+
+        return $next($request);
+    }
+}
+</code></pre></div></div>
+
+<p>我将每次错误返回数据替换成自己设置的错误信息。</p>
+
+<p>3、在 <code class="language-plaintext highlighter-rouge">/app/Http/Kernel.php</code> 中 <code class="language-plaintext highlighter-rouge">$routeMiddleware</code> 新增如下内容：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>protected $routeMiddleware = [
+    ...
+    'jwt.api.auth' =&gt; \App\Http\Middleware\GetUserFromToken::class, //新增注册的中间件
+];
+</code></pre></div></div>
+
+<p>4、在路由中指定使用 <code class="language-plaintext highlighter-rouge">jwt.api.auth</code></p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>['middleware' =&gt; 'jwt.api.auth']
+</code></pre></div></div>
+
+<p>完成上面的操作，我们新增处理接口身份认证中间件就完成了。</p>
+
+<p>现在需要处理前一个问题。</p>
+
+<h3 id="多表配置">多表配置</h3>
+
+<p>在 JWTAuth 中，可以在配置文件 jwt.php 中设置 <code class="language-plaintext highlighter-rouge">User Model namespace</code>，所以可以在 <code class="language-plaintext highlighter-rouge">Middleware</code> 中 <code class="language-plaintext highlighter-rouge">handle</code> 部分添加如下代码来动态配置 <code class="language-plaintext highlighter-rouge">User Model namespace</code></p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>config(['jwt.user' =&gt; 'App\Models\User']);
+</code></pre></div></div>
+
+<p>这里，我把 User 表放到了 <code class="language-plaintext highlighter-rouge">App\Models\</code> 中和其他的统一进行管理。不过我在测试中一直出现 <code class="language-plaintext highlighter-rouge">App\User</code> 未定义错误。然后就开始了漫长的定位之旅。首先在访问 <code class="language-plaintext highlighter-rouge">authenticate</code> 得到</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>public function authenticate($token = false)
+{
+    $id = $this-&gt;getPayload($token)-&gt;get('sub');
+
+    if (! $this-&gt;auth-&gt;byId($id)) {
+        return false;
+    }
+
+    return $this-&gt;auth-&gt;user();
+}
+</code></pre></div></div>
+
+<p>然后，在 <code class="language-plaintext highlighter-rouge">Tymon\JWTAuth\Providers\Auth\IlluminateAuthAdapter</code> 中找到 <code class="language-plaintext highlighter-rouge">byId</code> 和 <code class="language-plaintext highlighter-rouge">user</code> 对应代码如下</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>public function byId($id)
+{
+    return $this-&gt;auth-&gt;onceUsingId($id);
+}
+
+public function user()
+{
+    return $this-&gt;auth-&gt;user();
+}
+</code></pre></div></div>
+
+<p>经过测试发现 auth 实际上是一个 <code class="language-plaintext highlighter-rouge">Illuminate\Auth\SessionGuard</code> 实例，然后在其中发现了 <code class="language-plaintext highlighter-rouge">onceUsingId</code> 和 <code class="language-plaintext highlighter-rouge">user</code> 部分代码</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>public function onceUsingId($id)
+{
+    if (! is_null($user = $this-&gt;provider-&gt;retrieveById($id))) {
+        $this-&gt;setUser($user);
+
+        return true;
+    }
+
+    return false;
+}
+</code></pre></div></div>
+
+<p>在查找 <code class="language-plaintext highlighter-rouge">provider</code> 所在位置时定位到文件 <code class="language-plaintext highlighter-rouge">Illuminate\Auth\CreatesUserProviders.php</code> 中找到如下代码</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>public function createUserProvider($provider)
+{
+    $config = $this-&gt;app['config']['auth.providers.'.$provider];
+    if (isset($this-&gt;customProviderCreators[$config['driver']])) {
+        return call_user_func(
+            $this-&gt;customProviderCreators[$config['driver']], $this-&gt;app, $config
+        );
+    }
+
+    switch ($config['driver']) {
+        case 'database':
+            return $this-&gt;createDatabaseProvider($config);
+        case 'eloquent':
+            return $this-&gt;createEloquentProvider($config);
+        default:
+            throw new InvalidArgumentException("Authentication user provider [{$config['driver']}] is not defined.");
+    }
+}
+</code></pre></div></div>
+
+<p>这里通过 <code class="language-plaintext highlighter-rouge">auth.providers.users</code> 配置设置 <code class="language-plaintext highlighter-rouge">$config</code>，而 <code class="language-plaintext highlighter-rouge">auth.providers.users</code> 在文件 auth.php 中默认配置如下</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>'providers' =&gt; [
+    'users' =&gt; [
+        'driver' =&gt; 'eloquent',
+        'model' =&gt; App\User::class,
+    ],
+]
+</code></pre></div></div>
+
+<p>所以程序走到了 <code class="language-plaintext highlighter-rouge">return $this-&gt;createEloquentProvider($config);</code> 这一步，继续跟踪得到:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>protected function createEloquentProvider($config)
+{
+    return new EloquentUserProvider($this-&gt;app['hash'], $config['model']);
+}
+</code></pre></div></div>
+
+<p>其中 <code class="language-plaintext highlighter-rouge">$config['model']</code> 则就是原型:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>public function __construct(HasherContract $hasher, $model)
+{
+    $this-&gt;model = $model;
+    $this-&gt;hasher = $hasher;
+}
+</code></pre></div></div>
+
+<p>到此，确定了 <code class="language-plaintext highlighter-rouge">model</code> 所在位置，只需要在 <code class="language-plaintext highlighter-rouge">Middleware</code> 中添加如下配置</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>config(['auth.providers.users.model' =&gt; \App\Models\User::class]);
+</code></pre></div></div>
+
+<p>最终代码如下</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>config(['jwt.user' =&gt; '\App\Models\User']);
+config(['auth.providers.users.model' =&gt; \App\Models\User::class]);
+$auth = JWTAuth::parseToken();
+if (! $token = $auth-&gt;setRequest($request)-&gt;getToken()) {
+    return response()-&gt;json([
+        'code' =&gt; '',
+        'message' =&gt; 'token_not_provided',
+        'data' =&gt; '',
+    ]);
+}
+
+try {
+    $user = $auth-&gt;authenticate($token);
+} catch (TokenExpiredException $e) {
+    return response()-&gt;json([
+        'code' =&gt; '',
+        'message' =&gt; 'token_expired',
+        'data' =&gt; '',
+    ]);
+} catch (JWTException $e) {
+    return response()-&gt;json([
+        'code' =&gt; '',
+        'message' =&gt; 'token_invalid',
+        'data' =&gt; '',
+    ]);
+}
+
+if (! $user) {
+    return response()-&gt;json([
+        'code' =&gt; '',
+        'message' =&gt; 'user_not_found',
+        'data' =&gt; '',
+    ]);
+}
+
+//$this-&gt;events-&gt;fire('tymon.jwt.valid', $user);
+
+return $next($request);
+</code></pre></div></div>
+
+<p>到这里为止，实现了自定义表名功能，在结合自定义 <code class="language-plaintext highlighter-rouge">Middleware</code> 部分，就可以实现多表认证。只需要对每一种认证都实现对应的 <code class="language-plaintext highlighter-rouge">Middleware</code> ，在接口处分别对不同接口使用不同的 <code class="language-plaintext highlighter-rouge">Middleware</code> 进行验证就好。</p>
+
+<p>当然，这样的实现肯定不完美，因为所有的事件部分代码全部删除了。这部分还没有想到什么好的解决办法，自己实现 event 应该是可行的，这里就么有尝试。</p>
+
+  </div><a class="u-url" href="/2016/04/29/Laravel5-2-Dingo-API-JWTauth-%E7%9A%84%E5%9D%91.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">W41ter&#39;s Bistro</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">W41ter&#39;s Bistro</li><li><a class="u-email" href="mailto:w41ter.l@gmail.com">w41ter.l@gmail.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/w41ter"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">w41ter</span></a></li><li><a href="https://www.twitter.com/WalterM56697798"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">WalterM56697798</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Focus on distributed storage system, compiler.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>

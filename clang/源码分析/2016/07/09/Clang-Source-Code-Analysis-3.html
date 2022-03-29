@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Clang Source Code Analysis (3) | W41ter’s Bistro</title>
+<meta name="generator" content="Jekyll v4.2.2" />
+<meta property="og:title" content="Clang Source Code Analysis (3)" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="在 ParseAST 中，前面通过 P.ParseTopLevelDecl(ADecl) 对源代码进行了分析，紧接着就是调用 HandleTopLevelDecl(ADecl.get()) 进行处理。" />
+<meta property="og:description" content="在 ParseAST 中，前面通过 P.ParseTopLevelDecl(ADecl) 对源代码进行了分析，紧接着就是调用 HandleTopLevelDecl(ADecl.get()) 进行处理。" />
+<link rel="canonical" href="/clang/%E6%BA%90%E7%A0%81%E5%88%86%E6%9E%90/2016/07/09/Clang-Source-Code-Analysis-3.html" />
+<meta property="og:url" content="/clang/%E6%BA%90%E7%A0%81%E5%88%86%E6%9E%90/2016/07/09/Clang-Source-Code-Analysis-3.html" />
+<meta property="og:site_name" content="W41ter’s Bistro" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2016-07-09T21:29:02+08:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Clang Source Code Analysis (3)" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2016-07-09T21:29:02+08:00","datePublished":"2016-07-09T21:29:02+08:00","description":"在 ParseAST 中，前面通过 P.ParseTopLevelDecl(ADecl) 对源代码进行了分析，紧接着就是调用 HandleTopLevelDecl(ADecl.get()) 进行处理。","headline":"Clang Source Code Analysis (3)","mainEntityOfPage":{"@type":"WebPage","@id":"/clang/%E6%BA%90%E7%A0%81%E5%88%86%E6%9E%90/2016/07/09/Clang-Source-Code-Analysis-3.html"},"url":"/clang/%E6%BA%90%E7%A0%81%E5%88%86%E6%9E%90/2016/07/09/Clang-Source-Code-Analysis-3.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="/feed.xml" title="W41ter's Bistro" /><!-- for mathjax support -->
+  
+</head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">W41ter&#39;s Bistro</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">Clang Source Code Analysis (3)</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2016-07-09T21:29:02+08:00" itemprop="datePublished">Jul 9, 2016
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p>在 <code class="language-plaintext highlighter-rouge">ParseAST</code> 中，前面通过 <code class="language-plaintext highlighter-rouge">P.ParseTopLevelDecl(ADecl)</code> 对源代码进行了分析，紧接着就是调用 <code class="language-plaintext highlighter-rouge">HandleTopLevelDecl(ADecl.get())</code> 进行处理。</p>
+
+<!-- more -->
+
+<p>代码生成的部分由 <code class="language-plaintext highlighter-rouge">HandleTopLevelDecl</code> 负责，而 <code class="language-plaintext highlighter-rouge">ASTConsumer</code> 是一个虚基类，所以需要从其他地方入手。这里以 <code class="language-plaintext highlighter-rouge">ASTConsumer</code> 为切入点，找到创建位置。</p>
+
+<p>假设我们使用的是 –emit-llvm 模式，而 <code class="language-plaintext highlighter-rouge">EmitLLVMAction</code> 继承自 <code class="language-plaintext highlighter-rouge">CodeGenAction</code>。在 <code class="language-plaintext highlighter-rouge">CodeGenAction</code> 中找到创建 <code class="language-plaintext highlighter-rouge">ASTConsumer</code> 的 <code class="language-plaintext highlighter-rouge">CreateASTConsumer</code>。</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>std::unique_ptr&lt;ASTConsumer&gt;
+CodeGenAction::CreateASTConsumer(CompilerInstance &amp;CI, StringRef InFile) {
+  // ...
+  std::unique_ptr&lt;BackendConsumer&gt; Result(new BackendConsumer(
+      BA, CI.getDiagnostics(), CI.getHeaderSearchOpts(),
+      CI.getPreprocessorOpts(), CI.getCodeGenOpts(), CI.getTargetOpts(),
+      CI.getLangOpts(), CI.getFrontendOpts().ShowTimers, InFile, LinkModules,
+      OS, *VMContext, CoverageInfo));
+  BEConsumer = Result.get();
+  return std::move(Result);
+}
+</code></pre></div></div>
+
+<p>实际上是一个 <code class="language-plaintext highlighter-rouge">BackendConsumer</code> 实例。另外观察 <code class="language-plaintext highlighter-rouge">CodeGenAction::ExecuteAction</code> :</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>void CodeGenAction::ExecuteAction() {
+  // If this is an IR file, we have to treat it specially.
+  if (getCurrentFileKind() == IK_LLVM_IR) {
+    // ...
+  }
+
+  // Otherwise follow the normal AST path.
+  this-&gt;ASTFrontendAction::ExecuteAction();
+}
+</code></pre></div></div>
+
+<p>发现其实际上是执行的 <code class="language-plaintext highlighter-rouge">ASTFrontendAction::ExecuteAction</code>，所以原来分析的部分仍然可以使用。现在，找到 <code class="language-plaintext highlighter-rouge">BackendConsumer::HandleTopLevelDecl</code>：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>bool HandleTopLevelDecl(DeclGroupRef D) override {
+    Gen-&gt;HandleTopLevelDecl(D);
+    return true;
+}
+</code></pre></div></div>
+
+<p>这里进一步调用 <code class="language-plaintext highlighter-rouge">CodeGenerator::HandleTopLevelDecl</code>，而 <code class="language-plaintext highlighter-rouge">Gen</code> 由 <code class="language-plaintext highlighter-rouge">CreateLLVMCodeGen</code> 得到：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>CodeGenerator *clang::CreateLLVMCodeGen(
+    DiagnosticsEngine &amp;Diags, const std::string &amp;ModuleName,
+    const HeaderSearchOptions &amp;HeaderSearchOpts,
+    const PreprocessorOptions &amp;PreprocessorOpts, const CodeGenOptions &amp;CGO,
+    llvm::LLVMContext &amp;C, CoverageSourceInfo *CoverageInfo) {
+  return new CodeGeneratorImpl(Diags, ModuleName, HeaderSearchOpts,
+                               PreprocessorOpts, CGO, C, CoverageInfo);
+}
+</code></pre></div></div>
+
+<p>所以，<code class="language-plaintext highlighter-rouge">Gen</code> 实际上是一个 <code class="language-plaintext highlighter-rouge">CodeGeneratorImpl</code> 实例。</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>bool HandleTopLevelDecl(DeclGroupRef DG) override {
+    if (Diags.hasErrorOccurred())
+    return true;
+
+    HandlingTopLevelDeclRAII HandlingDecl(*this);
+
+    // Make sure to emit all elements of a Decl.
+    for (DeclGroupRef::iterator I = DG.begin(), E = DG.end(); I != E; ++I)
+        Builder-&gt;EmitTopLevelDecl(*I);
+
+    return true;
+}
+</code></pre></div></div>
+
+<p>上面是 <code class="language-plaintext highlighter-rouge">CodeGeneratorImpl::HandleTopLevelDecl</code> 部分，这里对每个声明部分调用 <code class="language-plaintext highlighter-rouge">EmitTopLevelDecl</code> 处理。<code class="language-plaintext highlighter-rouge">Builder</code> 是 <code class="language-plaintext highlighter-rouge">CodeGenModule</code> 类对象。</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>void CodeGenModule::EmitTopLevelDecl(Decl *D) {
+  // Ignore dependent declarations.
+  if (D-&gt;getDeclContext() &amp;&amp; D-&gt;getDeclContext()-&gt;isDependentContext())
+    return;
+
+  switch (D-&gt;getKind()) {
+  case Decl::CXXConversion:
+  case Decl::CXXMethod:
+  case Decl::Function:
+    // Skip function templates
+    if (cast&lt;FunctionDecl&gt;(D)-&gt;getDescribedFunctionTemplate() ||
+        cast&lt;FunctionDecl&gt;(D)-&gt;isLateTemplateParsed())
+      return;
+
+    EmitGlobal(cast&lt;FunctionDecl&gt;(D));
+    // Always provide some coverage mapping
+    // even for the functions that aren't emitted.
+    AddDeferredUnusedCoverageMapping(D);
+    break;
+
+  case Decl::Var:
+    // Skip variable templates
+    if (cast&lt;VarDecl&gt;(D)-&gt;getDescribedVarTemplate())
+      return;
+  case Decl::VarTemplateSpecialization:
+    EmitGlobal(cast&lt;VarDecl&gt;(D));
+    break;
+
+  // Indirect fields from global anonymous structs and unions can be
+  // ignored; only the actual variable requires IR gen support.
+  case Decl::IndirectField:
+    break;
+  }
+}
+</code></pre></div></div>
+
+<p>在 <code class="language-plaintext highlighter-rouge">CodeGenModule::EmitTopLevelDecl</code> 中，可以发现对函数和变量等而言，调用的其实是 <code class="language-plaintext highlighter-rouge">EmitGlobal</code>。跟进 <code class="language-plaintext highlighter-rouge">EmitGlobal</code>，发现最终的调用实际上是 <code class="language-plaintext highlighter-rouge">EmitGlobalDefinition</code>。</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>void CodeGenModule::EmitGlobalDefinition(GlobalDecl GD, llvm::GlobalValue *GV) {
+  const auto *D = cast&lt;ValueDecl&gt;(GD.getDecl());
+
+  if (isa&lt;FunctionDecl&gt;(D)) {
+    return EmitGlobalFunctionDefinition(GD, GV);
+  }
+
+  if (const auto *VD = dyn_cast&lt;VarDecl&gt;(D))
+    return EmitGlobalVarDefinition(VD, !VD-&gt;hasDefinition());
+  
+  llvm_unreachable("Invalid argument to EmitGlobalDefinition()");
+}
+</code></pre></div></div>
+
+<p>可以发现最终的调用分别为 <code class="language-plaintext highlighter-rouge">EmitGlobalFunctionDefinition</code> 和 <code class="language-plaintext highlighter-rouge">EmitGlobalVarDefinition</code>。这两个函数调用很明显，一个是函数定义，一个是变量定义。</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>void CodeGenModule::EmitGlobalFunctionDefinition(GlobalDecl GD,
+                                                 llvm::GlobalValue *GV) {
+  const auto *D = cast&lt;FunctionDecl&gt;(GD.getDecl());
+
+  // Compute the function info and LLVM type.
+  const CGFunctionInfo &amp;FI = getTypes().arrangeGlobalDeclaration(GD);
+  llvm::FunctionType *Ty = getTypes().GetFunctionType(FI);
+
+  // Get or create the prototype for the function.
+  if (!GV || (GV-&gt;getType()-&gt;getElementType() != Ty))
+    GV = cast&lt;llvm::GlobalValue&gt;(GetAddrOfFunction(GD, Ty, /*ForVTable=*/false,
+                                                   /*DontDefer=*/true,
+                                                   /*IsForDefinition=*/true));
+
+  // Already emitted.
+  if (!GV-&gt;isDeclaration())
+    return;
+
+  // We need to set linkage and visibility on the function before
+  // generating code for it because various parts of IR generation
+  // want to propagate this information down (e.g. to local static
+  // declarations).
+  auto *Fn = cast&lt;llvm::Function&gt;(GV);
+  setFunctionLinkage(GD, Fn);
+  setFunctionDLLStorageClass(GD, Fn);
+
+  // FIXME: this is redundant with part of setFunctionDefinitionAttributes
+  setGlobalVisibility(Fn, D);
+  // ...
+  CodeGenFunction(*this).GenerateCode(D, Fn, FI);
+  // ...
+}
+</code></pre></div></div>
+
+<p>这里先产生函数签名，最后调用 <code class="language-plaintext highlighter-rouge">CodeGenFunction::GenerateCode</code> 生成代码。</p>
+
+<p>具体的内容就不继续分析下去了，到这里为止，已经梳理了一边 Clang 执行流程，整理出一个具体框架。还有很多深入的等待继续挖掘。</p>
+
+  </div><a class="u-url" href="/clang/%E6%BA%90%E7%A0%81%E5%88%86%E6%9E%90/2016/07/09/Clang-Source-Code-Analysis-3.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">W41ter&#39;s Bistro</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">W41ter&#39;s Bistro</li><li><a class="u-email" href="mailto:w41ter.l@gmail.com">w41ter.l@gmail.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/w41ter"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">w41ter</span></a></li><li><a href="https://www.twitter.com/WalterM56697798"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">WalterM56697798</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Focus on distributed storage system, compiler.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>

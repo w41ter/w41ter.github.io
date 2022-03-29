@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>对比度线性展宽和动态范围调整 | W41ter’s Bistro</title>
+<meta name="generator" content="Jekyll v4.2.2" />
+<meta property="og:title" content="对比度线性展宽和动态范围调整" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="图像增强 图像增强是指对图像的某些特征进行强调或尖锐化，以便于显示、观察或进一步分析与处理。" />
+<meta property="og:description" content="图像增强 图像增强是指对图像的某些特征进行强调或尖锐化，以便于显示、观察或进一步分析与处理。" />
+<link rel="canonical" href="/2016/11/08/%E5%AF%B9%E6%AF%94%E5%BA%A6%E7%BA%BF%E6%80%A7%E5%B1%95%E5%AE%BD%E5%92%8C%E5%8A%A8%E6%80%81%E8%8C%83%E5%9B%B4%E8%B0%83%E6%95%B4.html" />
+<meta property="og:url" content="/2016/11/08/%E5%AF%B9%E6%AF%94%E5%BA%A6%E7%BA%BF%E6%80%A7%E5%B1%95%E5%AE%BD%E5%92%8C%E5%8A%A8%E6%80%81%E8%8C%83%E5%9B%B4%E8%B0%83%E6%95%B4.html" />
+<meta property="og:site_name" content="W41ter’s Bistro" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2016-11-08T18:40:21+08:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="对比度线性展宽和动态范围调整" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2016-11-08T18:40:21+08:00","datePublished":"2016-11-08T18:40:21+08:00","description":"图像增强 图像增强是指对图像的某些特征进行强调或尖锐化，以便于显示、观察或进一步分析与处理。","headline":"对比度线性展宽和动态范围调整","mainEntityOfPage":{"@type":"WebPage","@id":"/2016/11/08/%E5%AF%B9%E6%AF%94%E5%BA%A6%E7%BA%BF%E6%80%A7%E5%B1%95%E5%AE%BD%E5%92%8C%E5%8A%A8%E6%80%81%E8%8C%83%E5%9B%B4%E8%B0%83%E6%95%B4.html"},"url":"/2016/11/08/%E5%AF%B9%E6%AF%94%E5%BA%A6%E7%BA%BF%E6%80%A7%E5%B1%95%E5%AE%BD%E5%92%8C%E5%8A%A8%E6%80%81%E8%8C%83%E5%9B%B4%E8%B0%83%E6%95%B4.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="/feed.xml" title="W41ter's Bistro" /><!-- for mathjax support -->
+  
+    <script type="text/x-mathjax-config">
+      MathJax.Hub.Config({
+          extensions: [
+          "tex2jax.js",
+          "MathMenu.js",
+          "MathZoom.js",
+          "AssistiveMML.js",
+          "a11y/accessibility-menu.js"
+        ],
+        tex2jax: {      // AND HERE
+          inlineMath: [['$', '$']],
+          displayMath: [['$$', '$$']]
+        },
+        jax: ["input/TeX", "output/CommonHTML"],
+        TeX: {
+          extensions: [
+            "AMSmath.js",
+            "AMSsymbols.js",
+            "noErrors.js",
+            "noUndefined.js",
+          ],
+          equationNumbers: { autoNumber: "AMS" }
+        }
+      });
+    </script>
+    <script type="text/javascript" async src="http://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+  
+</head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">W41ter&#39;s Bistro</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">对比度线性展宽和动态范围调整</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2016-11-08T18:40:21+08:00" itemprop="datePublished">Nov 8, 2016
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <h2 id="图像增强">图像增强</h2>
+
+<p><strong>图像增强</strong>是指对图像的某些特征进行强调或尖锐化，以便于显示、观察或进一步分析与处理。</p>
+
+<!-- more -->
+
+<h2 id="对比度">对比度</h2>
+
+<p><strong>对比度</strong>是指一幅图像中明暗区域最亮的白和最暗的黑之间不同亮度层级的测量，即一幅图像中灰度反差的大小。<strong>对比度</strong>越大，渐变层级就越多，灰度表现力就越丰富，图像越醒目；否则，图像清晰度越低，层次感就差。</p>
+
+<p><strong>对比度调整</strong>通过调整图像对比度，达到改善图像质量的目的。<strong>对比度调整</strong>也属于<strong>图像增强</strong>的一种。</p>
+
+<h3 id="对比度线性展宽">对比度线性展宽</h3>
+
+<p><strong>对比度展宽</strong>实质上就是降低图像中不重要的信息的对比度，从而留出多余的空间，对重要的信息进行展宽。<strong>对比度线性展宽</strong>则是对<strong>对比度</strong>进行线性操作。</p>
+
+<h4 id="方法">方法</h4>
+
+<p>假设处理前后的图像都是 8 位图，即灰度范围的 [0, 255]。现在我们希望对图像中灰度级位 [a, b] 的范围进行展宽，使其变成 [a’, b’] {a’ &lt; a &amp;&amp; b’ &gt; b}。现在我们希望对图像中灰度级位进行展宽。</p>
+
+<p>这里定义图片灰度函数：</p>
+
+<p>\begin{equation}gray=f\left(x, y\right)\end{equation}</p>
+
+<p>其中 x, y 为像素位置，下面给出像素映射斜率：</p>
+
+<p>\begin{equation}K_1=\frac{a’}{a}\end{equation}</p>
+
+<p>及</p>
+
+<p>\begin{equation}K_2=\frac{b’-a’}{b-a}\end{equation}</p>
+
+<p>及</p>
+
+<p>\begin{equation}K_3=\frac{255-b’}{255-b}\end{equation}</p>
+
+<p>通过上述公式来计算目标灰度函数 <code class="language-plaintext highlighter-rouge">f'</code> :</p>
+
+<p>\begin{equation}f’ (x, y)=
+\begin{cases} 
+    &amp; K_1 \times  f(x,y), \text{ if } 0 \leq f(x,y) &lt; a \<br />
+    &amp; K_2 \times  (f(x,y)-a) + a’, \text{ if } a \leq f(x,y) &lt; b \<br />
+    &amp; K_3 \times  (f(x,y)-b) + b’, \text{ if } b \leq f(x,y) &lt; 255 
+\end{cases}\end{equation}</p>
+
+<p>上面就是目标灰度函数，通过这个可以求出目标图像。</p>
+
+<h3 id="动态范围调整">动态范围调整</h3>
+
+<p><strong>动态范围调整</strong>就是利用人眼的视觉特性，将动态范围进行压缩，将感兴趣的区域变化范围变大，从而达到改善图像质量的目的。因此，经过处理后的图形灰度分布与人眼视觉特性相匹配，能够获得较好的视觉质量。</p>
+
+<h4 id="方法-1">方法</h4>
+
+<p><strong>动态范围调整</strong> 可以直接给出公式：</p>
+
+<p>\begin{equation}f’(x,y)=c \times \lg (1 + f(x,y))\end{equation}</p>
+
+<p>其中 <code class="language-plaintext highlighter-rouge">c</code> 为增益系数。</p>
+
+
+  </div><a class="u-url" href="/2016/11/08/%E5%AF%B9%E6%AF%94%E5%BA%A6%E7%BA%BF%E6%80%A7%E5%B1%95%E5%AE%BD%E5%92%8C%E5%8A%A8%E6%80%81%E8%8C%83%E5%9B%B4%E8%B0%83%E6%95%B4.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">W41ter&#39;s Bistro</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">W41ter&#39;s Bistro</li><li><a class="u-email" href="mailto:w41ter.l@gmail.com">w41ter.l@gmail.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/w41ter"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">w41ter</span></a></li><li><a href="https://www.twitter.com/WalterM56697798"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">WalterM56697798</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Focus on distributed storage system, compiler.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>

@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>nsq read notes | W41ter’s Bistro</title>
+<meta name="generator" content="Jekyll v4.2.2" />
+<meta property="og:title" content="nsq read notes" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="nsqd topicMap map[string]*Topic clientMap map[id]*Client 初始化过程 new load meta data persist meta data main listen tcp &amp; http port, start server start queueScanLoop, lookupLoop, statsLoop 有新连接到达时，会生成 connection 的 client，保存到 nsqd 的 clientMap 中，同时启动 goroutine 负责 client 的 messagePump。conn 所在的 goroutine 之后会负责读客户端的命令，并执行以及返回结果。可执行命令如下： IDENTIFY: 表名身份 FIN: 在 client 绑定的 channel 上，完成一条消息（调用 channel.FinishMessage），同时会更新当前 client 的 metrics 信息，以及状态 RDY: 更新 client ready count REQ: 在 client 绑定的 channel 上，把一条消息重新送入队列（调用 channel.RequeueMessage），同时更新 metrics 和状态。这条消息会被放入 defered 队列，延后执行 PUB: 往某个 client 有权限的 topic 发送一条消息（调用 topic.PutMessage），更新 metrics 状态 MPUB: 和 PUB 一样，不过接收多条消息 DPUB: 和 PUB 一样，不过会被放入 defered 队列 NOP: 最简单，啥也不干 TOUCH: 在 client 绑定的 channel 上，重置一条消息的过期时间（调用 channel.TouchMessage) SUB: 将 client 绑定到 channel 上，如果 topic 和 channel 任一个属于 “”, 且 topic 或 channel 正在关闭， client 会不断重试绑定操作。 CLS: 关闭连接 AUTH: 授权 client 有多种状态：init, disconnect, connect, subscribe, closing ，状态迁移由一系列命令执行顺序决定。除此外还有 ready 状态，client 通过 RDY 更新了自己的 ready count，表示 client 最多同时处理多少条消息，如果 inflight count &gt;= ready count，则未 ready，需要等待。 client 使用 SUB 进入 subscribe 模式，该模式只能进入一次，进入后 messagePumb 会接收到 subEvent，然后从对应 channel 中读取 message 发送到 client 里。 topic messageChan chan *Message backendChan BackendChan channelsMap map[string]Channels topic 创建流程 new topic, save to topicMap lookup each lookupd, get all channels in topic $TOPIC skip “#ephemeral” and create channels start topic messagePump delete channel remove from topic channelsMap mark channel deleted if left channels is zero, and topic is ephemeral, delete topic self put messages try put message into memory message channel fallthrough into backend queue, most case into disk, but ephemeral just ignore update message count message pump read message from memory message channel else read from backend message else update channel status copy memory into each channels in current topic if message is defered, put into channels defered else put into normal channels channel clients map[string]Consumer backend BackendQueue memoryChan chan *Message deferedMessages map[MessageID]*Message defredPQ PriorityQueue inFlightMessages map[MessageID]*Message inFlightPQ PriorityQueue channel put message 和 topic put message 类似。put defered message 会把 message 放在deferedMessages 中，并加入 deferedPQ 中。如果 defered 时间到了，使用正常流程 put。clients 提供了 Add 和 Remove 接口，但管理职责不是 channel 的。 nsqlookupd nsqlookupd 数据组织方式 { {&quot;client&quot;, &quot;&quot;, &quot;&quot;} =&gt; { &quot;127.0.0.1:9490&quot; =&gt; Producer{&quot;127.0.0.1:8081&quot;}, &quot;127.0.0.1:9491&quot; =&gt; Producer{&quot;127.0.0.1:8081&quot;}, }, {&quot;channel&quot;, &quot;topic_a&quot;, &quot;channel_a&quot;} =&gt; { &quot;ip1&quot; =&gt; Producer{&quot;addr&quot;}, }, {&quot;topic&quot;, &quot;topic_a&quot;, &quot;&quot;} =&gt; { &quot;ip1&quot; =&gt; Producer{&quot;addr_1&quot;}, &quot;ip2&quot; =&gt; Producer{&quot;addr2&quot;}, }, } nsqd &lt;-&gt; nsqlookupd 交互 connect: send “ V1” ping: send “PING “ nsqlookupd update peer info’s lastUpdate response “OK” identify: send “IDENTIFY LEN(data) data” remote addr as id load broadcase address, tcp port, http port, version update peer info’s lastUpdate add producer to db: Registration{“client”} =&gt; PeerInfo{id} response {tcp_port, http_port, version, hostname, broadcast_address} register: send “REGISTER TOPIC [CHANNEL]” read topic and channel name if channel name exists: add producer to db: Registration{“channel”, $TOPIC, $CHANNEL} =&gt; PeerInfo{id} add producer to db: Registration{“topic”, $TOPIC, “”} =&gt; PeerInfo{id} response “OK” unregister: send “UNREGISTER TOPIC [CHANNEL]” read topic and channel name if channel name exists: remove producer from db: Registration{“channel”, $TOPIC, $CHANNEL} remove registration for channel has suffix “#ephemeral” if left producer is zero else: find all registrations of channel of $TOPIC remove all channels of current peer remove producer form db: Registration{“topic”, $TOPIC, “”} response “OK” nsqlookupd support http request GET /lookup?topic=topic_name { &quot;channels&quot;: [&quot;channel1&quot;], &quot;producers&quot;: [{ }], } GET /topics GET /channels?topic=topic_name GET /nodes POST /topic/create?topic= POST /topic/delete?topic= POST /channel/create?topic=topic&amp;channel=channel POST /channel/delete?topic=&amp;channel= POST /topic/tombstone?topic=topic_name&amp;node=node_id" />
+<meta property="og:description" content="nsqd topicMap map[string]*Topic clientMap map[id]*Client 初始化过程 new load meta data persist meta data main listen tcp &amp; http port, start server start queueScanLoop, lookupLoop, statsLoop 有新连接到达时，会生成 connection 的 client，保存到 nsqd 的 clientMap 中，同时启动 goroutine 负责 client 的 messagePump。conn 所在的 goroutine 之后会负责读客户端的命令，并执行以及返回结果。可执行命令如下： IDENTIFY: 表名身份 FIN: 在 client 绑定的 channel 上，完成一条消息（调用 channel.FinishMessage），同时会更新当前 client 的 metrics 信息，以及状态 RDY: 更新 client ready count REQ: 在 client 绑定的 channel 上，把一条消息重新送入队列（调用 channel.RequeueMessage），同时更新 metrics 和状态。这条消息会被放入 defered 队列，延后执行 PUB: 往某个 client 有权限的 topic 发送一条消息（调用 topic.PutMessage），更新 metrics 状态 MPUB: 和 PUB 一样，不过接收多条消息 DPUB: 和 PUB 一样，不过会被放入 defered 队列 NOP: 最简单，啥也不干 TOUCH: 在 client 绑定的 channel 上，重置一条消息的过期时间（调用 channel.TouchMessage) SUB: 将 client 绑定到 channel 上，如果 topic 和 channel 任一个属于 “”, 且 topic 或 channel 正在关闭， client 会不断重试绑定操作。 CLS: 关闭连接 AUTH: 授权 client 有多种状态：init, disconnect, connect, subscribe, closing ，状态迁移由一系列命令执行顺序决定。除此外还有 ready 状态，client 通过 RDY 更新了自己的 ready count，表示 client 最多同时处理多少条消息，如果 inflight count &gt;= ready count，则未 ready，需要等待。 client 使用 SUB 进入 subscribe 模式，该模式只能进入一次，进入后 messagePumb 会接收到 subEvent，然后从对应 channel 中读取 message 发送到 client 里。 topic messageChan chan *Message backendChan BackendChan channelsMap map[string]Channels topic 创建流程 new topic, save to topicMap lookup each lookupd, get all channels in topic $TOPIC skip “#ephemeral” and create channels start topic messagePump delete channel remove from topic channelsMap mark channel deleted if left channels is zero, and topic is ephemeral, delete topic self put messages try put message into memory message channel fallthrough into backend queue, most case into disk, but ephemeral just ignore update message count message pump read message from memory message channel else read from backend message else update channel status copy memory into each channels in current topic if message is defered, put into channels defered else put into normal channels channel clients map[string]Consumer backend BackendQueue memoryChan chan *Message deferedMessages map[MessageID]*Message defredPQ PriorityQueue inFlightMessages map[MessageID]*Message inFlightPQ PriorityQueue channel put message 和 topic put message 类似。put defered message 会把 message 放在deferedMessages 中，并加入 deferedPQ 中。如果 defered 时间到了，使用正常流程 put。clients 提供了 Add 和 Remove 接口，但管理职责不是 channel 的。 nsqlookupd nsqlookupd 数据组织方式 { {&quot;client&quot;, &quot;&quot;, &quot;&quot;} =&gt; { &quot;127.0.0.1:9490&quot; =&gt; Producer{&quot;127.0.0.1:8081&quot;}, &quot;127.0.0.1:9491&quot; =&gt; Producer{&quot;127.0.0.1:8081&quot;}, }, {&quot;channel&quot;, &quot;topic_a&quot;, &quot;channel_a&quot;} =&gt; { &quot;ip1&quot; =&gt; Producer{&quot;addr&quot;}, }, {&quot;topic&quot;, &quot;topic_a&quot;, &quot;&quot;} =&gt; { &quot;ip1&quot; =&gt; Producer{&quot;addr_1&quot;}, &quot;ip2&quot; =&gt; Producer{&quot;addr2&quot;}, }, } nsqd &lt;-&gt; nsqlookupd 交互 connect: send “ V1” ping: send “PING “ nsqlookupd update peer info’s lastUpdate response “OK” identify: send “IDENTIFY LEN(data) data” remote addr as id load broadcase address, tcp port, http port, version update peer info’s lastUpdate add producer to db: Registration{“client”} =&gt; PeerInfo{id} response {tcp_port, http_port, version, hostname, broadcast_address} register: send “REGISTER TOPIC [CHANNEL]” read topic and channel name if channel name exists: add producer to db: Registration{“channel”, $TOPIC, $CHANNEL} =&gt; PeerInfo{id} add producer to db: Registration{“topic”, $TOPIC, “”} =&gt; PeerInfo{id} response “OK” unregister: send “UNREGISTER TOPIC [CHANNEL]” read topic and channel name if channel name exists: remove producer from db: Registration{“channel”, $TOPIC, $CHANNEL} remove registration for channel has suffix “#ephemeral” if left producer is zero else: find all registrations of channel of $TOPIC remove all channels of current peer remove producer form db: Registration{“topic”, $TOPIC, “”} response “OK” nsqlookupd support http request GET /lookup?topic=topic_name { &quot;channels&quot;: [&quot;channel1&quot;], &quot;producers&quot;: [{ }], } GET /topics GET /channels?topic=topic_name GET /nodes POST /topic/create?topic= POST /topic/delete?topic= POST /channel/create?topic=topic&amp;channel=channel POST /channel/delete?topic=&amp;channel= POST /topic/tombstone?topic=topic_name&amp;node=node_id" />
+<link rel="canonical" href="/%E6%B6%88%E6%81%AF%E4%B8%AD%E9%97%B4%E4%BB%B6/2019/01/03/nsq-read-notes.html" />
+<meta property="og:url" content="/%E6%B6%88%E6%81%AF%E4%B8%AD%E9%97%B4%E4%BB%B6/2019/01/03/nsq-read-notes.html" />
+<meta property="og:site_name" content="W41ter’s Bistro" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2019-01-03T08:00:00+08:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="nsq read notes" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2019-01-03T08:00:00+08:00","datePublished":"2019-01-03T08:00:00+08:00","description":"nsqd topicMap map[string]*Topic clientMap map[id]*Client 初始化过程 new load meta data persist meta data main listen tcp &amp; http port, start server start queueScanLoop, lookupLoop, statsLoop 有新连接到达时，会生成 connection 的 client，保存到 nsqd 的 clientMap 中，同时启动 goroutine 负责 client 的 messagePump。conn 所在的 goroutine 之后会负责读客户端的命令，并执行以及返回结果。可执行命令如下： IDENTIFY: 表名身份 FIN: 在 client 绑定的 channel 上，完成一条消息（调用 channel.FinishMessage），同时会更新当前 client 的 metrics 信息，以及状态 RDY: 更新 client ready count REQ: 在 client 绑定的 channel 上，把一条消息重新送入队列（调用 channel.RequeueMessage），同时更新 metrics 和状态。这条消息会被放入 defered 队列，延后执行 PUB: 往某个 client 有权限的 topic 发送一条消息（调用 topic.PutMessage），更新 metrics 状态 MPUB: 和 PUB 一样，不过接收多条消息 DPUB: 和 PUB 一样，不过会被放入 defered 队列 NOP: 最简单，啥也不干 TOUCH: 在 client 绑定的 channel 上，重置一条消息的过期时间（调用 channel.TouchMessage) SUB: 将 client 绑定到 channel 上，如果 topic 和 channel 任一个属于 “”, 且 topic 或 channel 正在关闭， client 会不断重试绑定操作。 CLS: 关闭连接 AUTH: 授权 client 有多种状态：init, disconnect, connect, subscribe, closing ，状态迁移由一系列命令执行顺序决定。除此外还有 ready 状态，client 通过 RDY 更新了自己的 ready count，表示 client 最多同时处理多少条消息，如果 inflight count &gt;= ready count，则未 ready，需要等待。 client 使用 SUB 进入 subscribe 模式，该模式只能进入一次，进入后 messagePumb 会接收到 subEvent，然后从对应 channel 中读取 message 发送到 client 里。 topic messageChan chan *Message backendChan BackendChan channelsMap map[string]Channels topic 创建流程 new topic, save to topicMap lookup each lookupd, get all channels in topic $TOPIC skip “#ephemeral” and create channels start topic messagePump delete channel remove from topic channelsMap mark channel deleted if left channels is zero, and topic is ephemeral, delete topic self put messages try put message into memory message channel fallthrough into backend queue, most case into disk, but ephemeral just ignore update message count message pump read message from memory message channel else read from backend message else update channel status copy memory into each channels in current topic if message is defered, put into channels defered else put into normal channels channel clients map[string]Consumer backend BackendQueue memoryChan chan *Message deferedMessages map[MessageID]*Message defredPQ PriorityQueue inFlightMessages map[MessageID]*Message inFlightPQ PriorityQueue channel put message 和 topic put message 类似。put defered message 会把 message 放在deferedMessages 中，并加入 deferedPQ 中。如果 defered 时间到了，使用正常流程 put。clients 提供了 Add 和 Remove 接口，但管理职责不是 channel 的。 nsqlookupd nsqlookupd 数据组织方式 { {&quot;client&quot;, &quot;&quot;, &quot;&quot;} =&gt; { &quot;127.0.0.1:9490&quot; =&gt; Producer{&quot;127.0.0.1:8081&quot;}, &quot;127.0.0.1:9491&quot; =&gt; Producer{&quot;127.0.0.1:8081&quot;}, }, {&quot;channel&quot;, &quot;topic_a&quot;, &quot;channel_a&quot;} =&gt; { &quot;ip1&quot; =&gt; Producer{&quot;addr&quot;}, }, {&quot;topic&quot;, &quot;topic_a&quot;, &quot;&quot;} =&gt; { &quot;ip1&quot; =&gt; Producer{&quot;addr_1&quot;}, &quot;ip2&quot; =&gt; Producer{&quot;addr2&quot;}, }, } nsqd &lt;-&gt; nsqlookupd 交互 connect: send “ V1” ping: send “PING “ nsqlookupd update peer info’s lastUpdate response “OK” identify: send “IDENTIFY LEN(data) data” remote addr as id load broadcase address, tcp port, http port, version update peer info’s lastUpdate add producer to db: Registration{“client”} =&gt; PeerInfo{id} response {tcp_port, http_port, version, hostname, broadcast_address} register: send “REGISTER TOPIC [CHANNEL]” read topic and channel name if channel name exists: add producer to db: Registration{“channel”, $TOPIC, $CHANNEL} =&gt; PeerInfo{id} add producer to db: Registration{“topic”, $TOPIC, “”} =&gt; PeerInfo{id} response “OK” unregister: send “UNREGISTER TOPIC [CHANNEL]” read topic and channel name if channel name exists: remove producer from db: Registration{“channel”, $TOPIC, $CHANNEL} remove registration for channel has suffix “#ephemeral” if left producer is zero else: find all registrations of channel of $TOPIC remove all channels of current peer remove producer form db: Registration{“topic”, $TOPIC, “”} response “OK” nsqlookupd support http request GET /lookup?topic=topic_name { &quot;channels&quot;: [&quot;channel1&quot;], &quot;producers&quot;: [{ }], } GET /topics GET /channels?topic=topic_name GET /nodes POST /topic/create?topic= POST /topic/delete?topic= POST /channel/create?topic=topic&amp;channel=channel POST /channel/delete?topic=&amp;channel= POST /topic/tombstone?topic=topic_name&amp;node=node_id","headline":"nsq read notes","mainEntityOfPage":{"@type":"WebPage","@id":"/%E6%B6%88%E6%81%AF%E4%B8%AD%E9%97%B4%E4%BB%B6/2019/01/03/nsq-read-notes.html"},"url":"/%E6%B6%88%E6%81%AF%E4%B8%AD%E9%97%B4%E4%BB%B6/2019/01/03/nsq-read-notes.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="/feed.xml" title="W41ter's Bistro" /><!-- for mathjax support -->
+  
+    <script type="text/x-mathjax-config">
+      MathJax.Hub.Config({
+          extensions: [
+          "tex2jax.js",
+          "MathMenu.js",
+          "MathZoom.js",
+          "AssistiveMML.js",
+          "a11y/accessibility-menu.js"
+        ],
+        tex2jax: {      // AND HERE
+          inlineMath: [['$', '$']],
+          displayMath: [['$$', '$$']]
+        },
+        jax: ["input/TeX", "output/CommonHTML"],
+        TeX: {
+          extensions: [
+            "AMSmath.js",
+            "AMSsymbols.js",
+            "noErrors.js",
+            "noUndefined.js",
+          ],
+          equationNumbers: { autoNumber: "AMS" }
+        }
+      });
+    </script>
+    <script type="text/javascript" async src="http://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+  
+</head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">W41ter&#39;s Bistro</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">nsq read notes</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2019-01-03T08:00:00+08:00" itemprop="datePublished">Jan 3, 2019
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <h1 id="nsqd">nsqd</h1>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">topicMap</span> <span class="k">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="o">*</span><span class="n">Topic</span>
+<span class="n">clientMap</span> <span class="k">map</span><span class="p">[</span><span class="n">id</span><span class="p">]</span><span class="o">*</span><span class="n">Client</span>
+</code></pre></div></div>
+
+<h2 id="初始化过程">初始化过程</h2>
+
+<ol>
+  <li>new</li>
+  <li>load meta data</li>
+  <li>persist meta data</li>
+  <li>main
+    <ol>
+      <li>listen tcp &amp; http port, start server</li>
+      <li>start queueScanLoop, lookupLoop, statsLoop</li>
+    </ol>
+  </li>
+</ol>
+
+<p>有新连接到达时，会生成 connection 的 client，保存到 nsqd 的 clientMap 中，同时启动 goroutine 负责 client 的 messagePump。conn 所在的 goroutine 之后会负责读客户端的命令，并执行以及返回结果。可执行命令如下：</p>
+
+<ol>
+  <li>IDENTIFY: 表名身份</li>
+  <li>FIN: 在 client 绑定的 channel 上，完成一条消息（调用 channel.FinishMessage），同时会更新当前 client 的 metrics 信息，以及状态</li>
+  <li>RDY: 更新 client ready count</li>
+  <li>REQ: 在 client 绑定的 channel 上，把一条消息重新送入队列（调用 channel.RequeueMessage），同时更新 metrics 和状态。这条消息会被放入 defered 队列，延后执行</li>
+  <li>PUB: 往某个 client 有权限的 topic 发送一条消息（调用 topic.PutMessage），更新 metrics 状态</li>
+  <li>MPUB: 和 PUB 一样，不过接收多条消息</li>
+  <li>DPUB: 和 PUB 一样，不过会被放入 defered 队列</li>
+  <li>NOP: 最简单，啥也不干</li>
+  <li>TOUCH: 在 client 绑定的 channel 上，重置一条消息的过期时间（调用 channel.TouchMessage)</li>
+  <li>SUB: 将 client 绑定到 channel 上，如果 topic 和 channel 任一个属于 “”, 且 topic 或 channel 正在关闭， client 会不断重试绑定操作。</li>
+  <li>CLS: 关闭连接</li>
+  <li>AUTH: 授权</li>
+</ol>
+
+<p>client 有多种状态：init, disconnect, connect, subscribe, closing ，状态迁移由一系列命令执行顺序决定。除此外还有 ready 状态，client 通过 RDY 更新了自己的 ready count，表示 client 最多同时处理多少条消息，如果 inflight count &gt;= ready count，则未 ready，需要等待。</p>
+
+<p>client 使用 SUB 进入 subscribe 模式，该模式只能进入一次，进入后 messagePumb 会接收到 subEvent，然后从对应 channel 中读取 message 发送到 client 里。</p>
+
+<h2 id="topic">topic</h2>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">messageChan</span> <span class="k">chan</span> <span class="o">*</span><span class="n">Message</span>
+<span class="n">backendChan</span> <span class="n">BackendChan</span>
+<span class="n">channelsMap</span> <span class="k">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="n">Channels</span>
+</code></pre></div></div>
+
+<h3 id="topic-创建流程">topic 创建流程</h3>
+
+<ol>
+  <li>new topic, save to topicMap</li>
+  <li>lookup each lookupd, get all channels in topic $TOPIC</li>
+  <li>skip “#ephemeral” and create channels</li>
+  <li>start topic messagePump</li>
+</ol>
+
+<h3 id="delete-channel">delete channel</h3>
+
+<ol>
+  <li>remove from topic channelsMap</li>
+  <li>mark channel deleted</li>
+  <li>if left channels is zero, and topic is ephemeral, delete topic self</li>
+</ol>
+
+<h3 id="put-messages">put messages</h3>
+
+<ol>
+  <li>try put message into memory message channel</li>
+  <li>fallthrough into backend queue, most case into disk, but ephemeral just ignore</li>
+  <li>update message count</li>
+</ol>
+
+<h3 id="message-pump">message pump</h3>
+
+<ol>
+  <li>read message from memory message channel</li>
+  <li>else read from backend message</li>
+  <li>else update channel status</li>
+  <li>copy memory into each channels in current topic
+    <ol>
+      <li>if message is defered, put into channels defered</li>
+      <li>else put into normal channels</li>
+    </ol>
+  </li>
+</ol>
+
+<h2 id="channel">channel</h2>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">clients</span> <span class="k">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="n">Consumer</span>
+<span class="n">backend</span> <span class="n">BackendQueue</span>
+<span class="n">memoryChan</span> <span class="k">chan</span> <span class="o">*</span><span class="n">Message</span>
+<span class="n">deferedMessages</span> <span class="k">map</span><span class="p">[</span><span class="n">MessageID</span><span class="p">]</span><span class="o">*</span><span class="n">Message</span>
+<span class="n">defredPQ</span> <span class="n">PriorityQueue</span>
+<span class="n">inFlightMessages</span> <span class="k">map</span><span class="p">[</span><span class="n">MessageID</span><span class="p">]</span><span class="o">*</span><span class="n">Message</span>
+<span class="n">inFlightPQ</span> <span class="n">PriorityQueue</span>
+</code></pre></div></div>
+
+<p>channel put message 和 topic put message 类似。put defered message 会把 message 放在deferedMessages 中，并加入 deferedPQ 中。如果 defered 时间到了，使用正常流程 put。clients 提供了 Add 和 Remove 接口，但管理职责不是 channel 的。</p>
+
+<h1 id="nsqlookupd">nsqlookupd</h1>
+
+<h2 id="nsqlookupd-数据组织方式">nsqlookupd 数据组织方式</h2>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="p">{</span>
+	<span class="p">{</span><span class="s">"client"</span><span class="p">,</span> <span class="s">""</span><span class="p">,</span> <span class="s">""</span><span class="p">}</span> <span class="o">=&gt;</span> <span class="p">{</span>
+		<span class="s">"127.0.0.1:9490"</span> <span class="o">=&gt;</span> <span class="n">Producer</span><span class="p">{</span><span class="s">"127.0.0.1:8081"</span><span class="p">},</span>
+		<span class="s">"127.0.0.1:9491"</span> <span class="o">=&gt;</span> <span class="n">Producer</span><span class="p">{</span><span class="s">"127.0.0.1:8081"</span><span class="p">},</span>
+	<span class="p">},</span>
+
+	<span class="p">{</span><span class="s">"channel"</span><span class="p">,</span> <span class="s">"topic_a"</span><span class="p">,</span> <span class="s">"channel_a"</span><span class="p">}</span> <span class="o">=&gt;</span> <span class="p">{</span>
+		<span class="s">"ip1"</span> <span class="o">=&gt;</span> <span class="n">Producer</span><span class="p">{</span><span class="s">"addr"</span><span class="p">},</span>
+	<span class="p">},</span>
+	<span class="p">{</span><span class="s">"topic"</span><span class="p">,</span> <span class="s">"topic_a"</span><span class="p">,</span> <span class="s">""</span><span class="p">}</span> <span class="o">=&gt;</span> <span class="p">{</span>
+		<span class="s">"ip1"</span> <span class="o">=&gt;</span> <span class="n">Producer</span><span class="p">{</span><span class="s">"addr_1"</span><span class="p">},</span>
+		<span class="s">"ip2"</span> <span class="o">=&gt;</span> <span class="n">Producer</span><span class="p">{</span><span class="s">"addr2"</span><span class="p">},</span>
+	<span class="p">},</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<h2 id="nsqd---nsqlookupd-交互">nsqd &lt;-&gt; nsqlookupd 交互</h2>
+
+<ol>
+  <li>connect: send “  V1”</li>
+  <li>ping: send “PING “
+    <ol>
+      <li>nsqlookupd update peer info’s lastUpdate</li>
+      <li>response “OK”</li>
+    </ol>
+  </li>
+  <li>identify: send “IDENTIFY LEN(data) data”
+    <ol>
+      <li>remote addr as id</li>
+      <li>load broadcase address, tcp port, http port, version</li>
+      <li>update peer info’s lastUpdate</li>
+      <li>add producer to db: Registration{“client”} =&gt; PeerInfo{id}</li>
+      <li>response {tcp_port, http_port, version, hostname, broadcast_address}</li>
+    </ol>
+  </li>
+  <li>register: send “REGISTER TOPIC [CHANNEL]”
+    <ol>
+      <li>read topic and channel name</li>
+      <li>if channel name exists:
+        <ol>
+          <li>add producer to db: Registration{“channel”, $TOPIC, $CHANNEL} =&gt; PeerInfo{id}</li>
+        </ol>
+      </li>
+      <li>add producer to db: Registration{“topic”, $TOPIC, “”} =&gt; PeerInfo{id}</li>
+      <li>response “OK”</li>
+    </ol>
+  </li>
+  <li>unregister: send “UNREGISTER TOPIC [CHANNEL]”
+    <ol>
+      <li>read topic and channel name</li>
+      <li>if channel name exists:
+        <ol>
+          <li>remove producer from db: Registration{“channel”, $TOPIC, $CHANNEL}</li>
+          <li>remove registration for channel has suffix “#ephemeral” if left producer is zero</li>
+        </ol>
+      </li>
+      <li>else:
+        <ol>
+          <li>find all registrations of channel of $TOPIC</li>
+          <li>remove all channels of current peer</li>
+          <li>remove producer form db: Registration{“topic”, $TOPIC, “”}</li>
+        </ol>
+      </li>
+      <li>response “OK”</li>
+    </ol>
+  </li>
+</ol>
+
+<h2 id="nsqlookupd-support-http-request">nsqlookupd support http request</h2>
+
+<ol>
+  <li>GET /lookup?topic=topic_name
+    <div class="language-json highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="p">{</span><span class="w">
+ </span><span class="nl">"channels"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"channel1"</span><span class="p">],</span><span class="w">
+ </span><span class="nl">"producers"</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="w">
+
+ </span><span class="p">}],</span><span class="w">
+</span><span class="p">}</span><span class="w">
+</span></code></pre></div>    </div>
+  </li>
+  <li>GET /topics</li>
+  <li>GET /channels?topic=topic_name</li>
+  <li>GET /nodes</li>
+  <li>POST /topic/create?topic=</li>
+  <li>POST /topic/delete?topic=</li>
+  <li>POST /channel/create?topic=topic&amp;channel=channel</li>
+  <li>POST /channel/delete?topic=&amp;channel=</li>
+  <li>POST /topic/tombstone?topic=topic_name&amp;node=node_id</li>
+</ol>
+
+  </div><a class="u-url" href="/%E6%B6%88%E6%81%AF%E4%B8%AD%E9%97%B4%E4%BB%B6/2019/01/03/nsq-read-notes.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">W41ter&#39;s Bistro</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">W41ter&#39;s Bistro</li><li><a class="u-email" href="mailto:w41ter.l@gmail.com">w41ter.l@gmail.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/w41ter"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">w41ter</span></a></li><li><a href="https://www.twitter.com/WalterM56697798"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">WalterM56697798</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Focus on distributed storage system, compiler.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>

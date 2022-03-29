@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>四、语法制导翻译 | W41ter’s Bistro</title>
+<meta name="generator" content="Jekyll v4.2.2" />
+<meta property="og:title" content="四、语法制导翻译" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="语法制导翻译 分析树 在语法知道翻译之前，先来了解程序代码在内存中的表示方法。大部分程序员对于树形结构肯定是并不陌生，而树形结构也正好适合程序结构的表达。" />
+<meta property="og:description" content="语法制导翻译 分析树 在语法知道翻译之前，先来了解程序代码在内存中的表示方法。大部分程序员对于树形结构肯定是并不陌生，而树形结构也正好适合程序结构的表达。" />
+<link rel="canonical" href="/%E7%BC%96%E8%AF%91%E5%99%A8%E5%AE%9E%E7%8E%B0/2015/12/08/%E5%9B%9B-%E8%AF%AD%E6%B3%95%E5%88%B6%E5%AF%BC%E7%BF%BB%E8%AF%91.html" />
+<meta property="og:url" content="/%E7%BC%96%E8%AF%91%E5%99%A8%E5%AE%9E%E7%8E%B0/2015/12/08/%E5%9B%9B-%E8%AF%AD%E6%B3%95%E5%88%B6%E5%AF%BC%E7%BF%BB%E8%AF%91.html" />
+<meta property="og:site_name" content="W41ter’s Bistro" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2015-12-08T07:12:09+08:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="四、语法制导翻译" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2015-12-08T07:12:09+08:00","datePublished":"2015-12-08T07:12:09+08:00","description":"语法制导翻译 分析树 在语法知道翻译之前，先来了解程序代码在内存中的表示方法。大部分程序员对于树形结构肯定是并不陌生，而树形结构也正好适合程序结构的表达。","headline":"四、语法制导翻译","mainEntityOfPage":{"@type":"WebPage","@id":"/%E7%BC%96%E8%AF%91%E5%99%A8%E5%AE%9E%E7%8E%B0/2015/12/08/%E5%9B%9B-%E8%AF%AD%E6%B3%95%E5%88%B6%E5%AF%BC%E7%BF%BB%E8%AF%91.html"},"url":"/%E7%BC%96%E8%AF%91%E5%99%A8%E5%AE%9E%E7%8E%B0/2015/12/08/%E5%9B%9B-%E8%AF%AD%E6%B3%95%E5%88%B6%E5%AF%BC%E7%BF%BB%E8%AF%91.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="/feed.xml" title="W41ter's Bistro" /><!-- for mathjax support -->
+  
+</head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">W41ter&#39;s Bistro</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">四、语法制导翻译</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2015-12-08T07:12:09+08:00" itemprop="datePublished">Dec 8, 2015
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <h2 id="语法制导翻译">语法制导翻译</h2>
+
+<h3 id="分析树">分析树</h3>
+
+<p>在语法知道翻译之前，先来了解程序代码在内存中的表示方法。大部分程序员对于树形结构肯定是并不陌生，而树形结构也正好适合程序结构的表达。</p>
+
+<!-- more -->
+
+<p>比如<code class="language-plaintext highlighter-rouge">if</code>语句的树形表示如下：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>root 
++
+---- condtion
+---- if_statement
+---- else_statement
+</code></pre></div></div>
+
+<p>分析树表示方法有多种，而这里选择使用异形树来表示，因为它更加直观。下面就是异形树表示<code class="language-plaintext highlighter-rouge">if</code>的例子：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>public static class IfStatement extends T {
+	public Exp.T condition;
+	public Stm.T ifStatements;
+	public boolean hasElse;
+	public Stm.T elseStatements;
+
+	public IfStatement(Exp.T condition, Stm.T ifStatement, Stm.T elseStatement) {
+		this.condition = condition;
+		this.ifStatements = ifStatement;
+		this.hasElse = elseStatement != null;
+		this.elseStatements = elseStatement;
+	}
+
+	public IfStatement(Exp.T condition, Stm.T ifStatement) {
+		this(condition, ifStatement, null);
+	}
+	
+	@Override
+	public void accept(Visitor v) {
+		v.visit(this);
+	}
+}
+</code></pre></div></div>
+
+<p>其中的<code class="language-plaintext highlighter-rouge">T</code>是所有<code class="language-plaintext highlighter-rouge">Statement</code>的基类。异形树的代码非常直观，能够一眼就明白具体是做什么！然而，异形树充斥着大量冗余操作。你必须为每一个产生式都写出相应的生成代码以及访问代码。</p>
+
+<p>其中的<code class="language-plaintext highlighter-rouge">accept(Visitor v)</code>方法属于 Visitor 模式的应用，Visitor 属于 interface ，这样不仅解决了向下转型的问题，还使得对于多种生成树遍历方法，不需要修改原有的代码。如果使用解释器模式，就无法实现解耦。</p>
+
+<h3 id="制导动作">制导动作</h3>
+
+<p>在语法分析的部分，关于<code class="language-plaintext highlighter-rouge">if</code>分析部分的代码如下：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>// "if" "(" assign_exp ")" statement ["else" statement]
+//
+case KEYWORD_IF: {
+	advance();
+	eatToken(Kind.TOKEN_LPAREN);
+	parseAssignExp();
+	eatToken(Kind.TOKEN_RPAREN);
+	parseStatement();
+	if (current.kind == Kind.TOKEN_KEYWORD &amp;&amp;
+		current.keyword == Keyword.KEYWORD_ELSE) {
+		advance();
+		parseStatement();
+	}
+	return;
+}
+</code></pre></div></div>
+
+<p>可以看到的是，在分析语法时，直接抛弃了源代码中的信息而不是储存下来。那么只需要在该部分添加相应的语法分析动作，来生成分析树即可。修改后代码如下：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>case KEYWORD_IF: {
+	advance();
+	eatToken(Kind.TOKEN_LPAREN);
+	Exp.T exp = parseAssignExp();
+	eatToken(Kind.TOKEN_RPAREN);
+	Stm.T if_ = parseStatement();
+	Stm.T else_ = null;
+	if (current.kind == Kind.TOKEN_KEYWORD &amp;&amp; current.keyword == Keyword.KEYWORD_ELSE) {
+		advance();
+		else_ = parseStatement();
+	}
+	return new Stm.IfStatement(exp, if_, else_);
+}
+</code></pre></div></div>
+
+<p>也就是我们在分析阶段，将所有的非终结符信息记录下来，并填入相应的生成树节点中。</p>
+
+<h3 id="抽象语法树">抽象语法树</h3>
+
+<p>生成树极大的保留了程序源代码的结构，使得我们可以轻松的恢复其原先的代码。不过，多数时候，我们所做的工作并不关心其中的大部分数据，这就造成了大量冗余代码的产生。</p>
+
+<p>举个例子，假设有调用函数：<code class="language-plaintext highlighter-rouge">id(exp);</code>语句，其产生分析树应该如下：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>exp +
+	and or exp +
+		condition exp +
+			add sub exp +
+				mul div exp +
+					...
+</code></pre></div></div>
+
+<p>其中有很大一部分属于冗余信息，即我们并不关心这部分数据。下面是我们希望见到的语法树：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>call +
+---- id
+---- exp
+</code></pre></div></div>
+
+<p>这就是抽象语法树。相比语法树，抽象语法树在时间和空间方面都有极大的优化。关于抽象语法树的建立，只需要在 parse 部分稍稍修改，就能极大地化简分析树：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>private Exp.T parseConditionExp() {
+	Exp.T exp = parseAddSubExp();
+	while (current.kind == Kind.TOKEN_ADD || current.kind == Kind.TOKEN_SUB) {
+		Kind kind = current.kind;
+		advance();
+		exp = new Exp.AddSubExp(kind == Kind.TOKEN_ADD, exp, parseAddSubExp());
+	}
+	return exp;
+}
+</code></pre></div></div>
+
+<p>这段代码用于分析 + - 法。可以看到如果当前节点并不关加减法什么卵事，就会跳过<code class="language-plaintext highlighter-rouge">AddSubExp</code>的构造。按照这个步骤，最终程序返回的就是一棵非常精简的树。</p>
+
+  </div><a class="u-url" href="/%E7%BC%96%E8%AF%91%E5%99%A8%E5%AE%9E%E7%8E%B0/2015/12/08/%E5%9B%9B-%E8%AF%AD%E6%B3%95%E5%88%B6%E5%AF%BC%E7%BF%BB%E8%AF%91.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">W41ter&#39;s Bistro</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">W41ter&#39;s Bistro</li><li><a class="u-email" href="mailto:w41ter.l@gmail.com">w41ter.l@gmail.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/w41ter"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">w41ter</span></a></li><li><a href="https://www.twitter.com/WalterM56697798"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">WalterM56697798</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Focus on distributed storage system, compiler.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>

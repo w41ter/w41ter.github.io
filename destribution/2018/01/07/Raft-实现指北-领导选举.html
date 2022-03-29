@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Raft-实现指北-领导选举 | W41ter’s Bistro</title>
+<meta name="generator" content="Jekyll v4.2.2" />
+<meta property="og:title" content="Raft-实现指北-领导选举" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="和其他一致性算法相比，Raft 使用一种更强的领导能力形式。比如，日志条目只从领导者发送给其他的服务器。在选举上，Raft 算法使用一个随机计时器来选举领导者，这种方式只是在任何一致性算法都必须实现的心跳机制上增加了一点机制。[1] Raft 把时间分割任意长度的任期（term），并使用连续整数标记，每个任期都从一次选举开始。每次选举有一个或多个候选人参选，如果一个候选人赢得选举，其就会在该任期充当领导人的职责。某些情况下会出现选票瓜分的现象，那么该任期无法选出领导人，所以进入下一期选举，其中 Raft 通过随机计时来保证选举成功。[1] 设计 实现领导人选举之前，先看到上一节提到的纯函数式的状态机，将 Raft 实现成为一个无副作用的纯函数状态机。Raft 算法可以看作一个角色状态机，通过其他节点传递的消息、计时器、客户端的提交请求和快照等输入消息，从一个状态转移到另一个状态、或修改部分内部状态并返回一个发送给外部的信息。 (state, message) -&gt; state machine -&gt; message state machine 是一个纯函数式的状态机，负责处理消息，并将改动写入到 state 里，然后返回给外部的消息。 根据 Raft 论文，一个 state 几部分组成： 状态 所有服务器上持久存在的 currentTerm 服务器最后一次知道的任期号（初始化为 0，持续递增） votedFor 在当前获得选票的候选人的 Id log[] 日志条目集；每一个条目包含一个用户状态机执行的指令，和收到时的任期号 状态 所有服务器上经常变的 commitIndex 已知的最大的已经被提交的日志条目的索引值 lastApplied 最后被应用到状态机的日志条目索引值（初始化为 0，持续递增） 状态 在领导人里经常改变的 （选举后重新初始化） nextIndex[] 对于每一个服务器，需要发送给他的下一个日志条目的索引值（初始化为领导人最后索引值加一） matchIndex[] 对于每一个服务器，已经复制给他的日志的最高索引值 实现大体是类似的，不过以后需要加入流量控制、成员加入退出等，所以将 state 中保存的其他服务器的信息抽象一下： type node struct { id uint64 nextIdx uint64 matched uint64 } id 表示其他服务器在 Raft 中的唯一 ID，nextIdx 与 matched 分别是 nextIndex 数组和 matchIndex 数据中第 id 个元素。 Raft 通过超时来驱动心跳和选举，一共由两种超时：1、心跳超时，领导人定期给跟随者发送心跳信息宣布自己的领导权；2、选举超时，超时时间是随机选择的。 整个 state 如下： type core struct { id uint64 leaderId uint64 state StateRole term uint64 vote uint64 log *LogHolder nodes []node timeElapsed int randomizedElectionTimtout int electionTimeout int heartbeatTimeout int } id 是 Raft weiyiqueding d term 和 vote 分别是 currentTerm 和 voteFor 的实现，而日志由应用负责持久化。lastApplied 和 commitIndex 由 log 负责管理。nodes 表示该 Raft 集群的其他服务器的状态。timeElapsed 表示从时间累积，randomizedElectionTimeout 表示随机生成的选举超时阈值，每次转为跟随者、候选人状态时都会改变。heartbeatTimeout 表示领导人两次心跳的间隔。electionTimeout 用来表示领导人选举超时基准，其用于计算randomizedElectionTimeout，使用公式：$electionTimeout + rand() \% electionTimeout$ 计算得到。另外还有 leaderId 和 state 状态，leaderId 表示当前领导人的 ID，state 则是 Raft 目前所处的角色。 此外，还需要设计消息结构作为外部应用、服务器和 Raft 状态机进行数据交换。 type Message struct { From uint64 To uint64 MsgType MessageType Term uint64 Index uint64 LogIndex uint64 LogTerm uint64 Reject uint64 } 该结构不仅仅用于发起请求，也用于状态机返回数据，所以需要 Reject 字段表示拒绝请求，比如拒绝给某个候选人投票。 最后，状态机需要返回消息给消息发送者，由于希望将 Raft 设计为一个纯函数式状态机，消息的接受发送交给了应用处理，所以还得提供一个 Application 接口，供 Raft 和应用交互。 type Application interface { send(msg *raftpd.Message) } 当应用接收到消息后，将其输入到 Raft 状态机，处理完后，调用 send 发送回复消息，并保存信息到机中。整个状态机由消息驱动，所以 Raft 接口如下： type Raft interface { Step(msg *raftpd.Message) Periodic(millsSinceLastPeriod int) } 当应用接受到外部传递的消息后，调用 Step 驱动状态机改变状态。Raft 中通过超时进行心跳或选举，外部应用需要通过某个固定的定时源隔一段时间调用 Periodic 驱动状态机进行心跳、选举等。 选举过程 系统进行初始化时，每个节点都处于跟随者状态，由于没有领导人定期广播心跳，所以一段时间后部分跟随者成为候选人并进行下一届选举。 当某个候选人获得了超过半数的投票后，成为领导人，并向所有节点广播自己成功的信息。当候选人接收到其他候选人成为领导人的信息后，一届只能选出一个领导人（选举安全特性），该候选人退回到跟随者的状态，并投票给该领导人。 如果到了下一个选举超时，仍然没有候选人成为领导人，就会跳过这一届，开始下一届的领导人选举。 PreVote 由于选举安全特性的限制，成员会忽略已经过期的信息时，并返回自己所在的任期，用于发送者更新自己。由于这一特性的存在，在一个存在网络延迟的网络中，某个节点由于延迟进入了选举，而实际上大多数节点都能接收到领导人的心跳，也会进入选举。Raft 原论文 9.6 节中提出了 Prevote 算法：在选举前可以选询问其他节点是否愿意参与选举，如果节点能够感知到领导人的心跳，那么它就不会参与选举，否则参与选举。只有过半的节点参与选举，才能开始下一届领导人选举。 领导人选举实现 加入了 PreVote 算法后，Raft 的状态变为 4 个：领导人、跟随者，候选人，预候选人。此时的外部事件为：选举、心跳超时；以及： MsgPreVoteRequest MsgPreVoteResponse MsgVoteRequest MsgVoteResponse MsgAppendRequest MsgAppendRequest 这种消息类型发生在某个节点成竞选成功后向其他节点宣示领导权，在选举过程中也由该种类型在节点间传递。比如 PreVote 阶段正常的跟随者能够接收到领导人的心跳；又或者新晋领导人首次对外宣誓领导权。 func (c *core) Periodic(millsSinceLastPeriod int) { c.timeElapsed += millsSinceLastPeriod log.Debugf(&quot;%d periodic %d, time elapsed %d&quot;, c.id, millsSinceLastPeriod, c.timeElapsed) if c.state.IsLeader() { if c.heartbeatTick &lt;= c.timeElapsed { c.broadcastAppend() c.timeElapsed = 0 } } else if c.randomizedElectionTick &lt;= c.timeElapsed { if len(c.nodes) &gt; 1 { c.campaign(campaignPreCandidate) } } } 每次应用程序调用 Periodic 时，Raft 判断是否为 leader，是判断 timeElapsed 是否超过 heartbeatTick，然后向其他节点发送追加日志（心跳）信息，并清空 timElapsed；如果不是领导人，且已经超过随机生成的选举超时，那么状态转移到预候选人同时开始 PreVote 阶段。 除此之外，PreVote 算法还需要记录其他节点对某次预选举请求的响应状态，所以在 node 结构中添加字段标记： type voteState int const ( voteNone voteState = iota voteReject voteGranted ) type node struct { ... vote voteState } 状态间转换 继续之前需要看看 Raft 状态机的状态转换是如何实现的： func (c *core) resetRandomizedElectionTimeout() { c.randomizedElectionTick = c.electionTick + rand.Intn(c.electionTick) } func (c *core) reset(term uint64) { if c.term != term { c.term = term c.vote = InvalidId } c.leaderId = InvalidId c.timeElapsed = 0 c.resetRandomizedElectionTimeout() } func (c *core) becomeFollower(term, leaderId uint64) { c.reset(term) c.leaderId = leaderId c.state = FOLLOWER c.vote = leaderId log.Infof(&quot;%v become follower at %d&quot;, c.id, c.term) } func (c *core) becomeLeader() { utils.Assert(c.state == CANDIDATE, &quot;invalid translation [%v =&gt; Leader]&quot;, c.state) c.reset(c.term) c.leaderId = c.id c.state = LEADER c.vote = c.id log.Infof(&quot;%v become leader at %d&quot;, c.id, c.term) } func (c *core) becomeCandidate() { utils.Assert(c.state != LEADER, &quot;invalid translation [Leader =&gt; Candidate]&quot;) c.reset(c.term + 1) c.vote = c.id c.state = CANDIDATE for i := 0; i &lt; len(c.nodes); i++ { node := &amp;c.nodes[i] node.resetVoteState() } log.Infof(&quot;%v become candidate at %d&quot;, c.id, c.term) } func (c *core) becomePreCandidate() { c.reset(c.term) c.state = PRE_CANDIDATE for i := 0; i &lt; len(c.nodes); i++ { node := &amp;c.nodes[i] node.resetVoteState() } // Becoming a pre-candidate changes our state, // but doesn&#39;t change anything else. In particular it does not increase // currentTerm or change votedFor. log.Infof(&quot;%x became pre-candidate at term %d&quot;, c.id, c.term) } 首先看到 reset，它是负责在 Raft 状态转换过程中重置部分状态。reset 中第一步是根据任期是否改变决定重置 vote 和 term 信息；除此之外还重置了 leaderId 以及超时相关的两个属性: timeElapsed 和 randomizedElectionTimeout。 进入预选举的节点在被大多数节点拒绝后会回退到跟随者的状态，因此在 becomePreCandidate 中除了重置基础状态外，仅仅修改了 state 属性和重置其他节点的投票情况。特别需要注意的是不能修改 currentTerm 和 votedFor。 如果预选举的节点获得了半数的节点参选支持，就会进入候选人状态，因此任期加一，同时给自己投票。 此外，当领导者和跟随者在发送心跳或接收到领导人的通知后，都需要重置 timeElappsed，因此将 becomeLeader 和 becomeFollower 设计为重入只会影响到 timeElapsed 和 randomizedElectinTimeout 属性。 PreCampaign 竞选时首先调用 campaign 给其他节点发送 MsgPreVoteRequest 请求。 func (c *core) campaign(ct campaignState) { utils.Assert(c.state != LEADER, &quot;invalid translation [Leader =&gt; PreCandidate/Candidate]&quot;) msg := raftpd.Message{} msg.LogIndex = c.log.lastIndex() msg.LogTerm = c.log.lastTerm() if ct == campaignPreCandidate { msg.Term = c.term + 1 msg.MsgType = raftpd.MsgPreVoteRequest c.becomePreCandidate() } else { msg.Term = c.term msg.MsgType = raftpd.MsgVoteRequest c.becomeCandidate() } for i := 0; i &lt; len(c.nodes); i++ { node := &amp;c.nodes[i] msg.To = node.id log.Infof(&quot;%x [term: %d, index: %d] send %v request to %x at term %d&quot;, c.id, c.log.lastTerm(), c.log.lastIndex(), msg.MsgType, msg.To, c.term) c.send(&amp;msg) } } PreVote 要求某个节点只有在长时间未和领导人交换心跳时才参与选举。同时参与选举要求候选人的日志必须是最新的（领导人完全特性）。所以在接收到其他节点发送的 MsgPreVoteRequest 时，1、如果在一个选举超时内（注意：electionTimeout）有和领导交换过一次心跳；2、或者候选人的任期号小于自身的任期号；3、或者候选人的日志不是最新的都拒绝参加选举。否则回复参加选举。 func (c *core) handlePreVote(msg *raftpd.Message) { reply := raftpd.Message{} reply.To = msg.From reply.MsgType = raftpd.MsgPreVoteResponse // Reply false if last AppendEntries call was received less than election timeout ago. // Reply false if term &lt; currentTerm. // Reply false if candidate&#39;s log isn&#39;t at least as up­to­date as receiver&#39;s log. if (c.leaderId != InvalidId &amp;&amp; c.timeElapsed &lt; c.electionTick) || (msg.Term &lt; c.term) || !c.log.IsUpToDate(msg.LogIndex, msg.LogTerm) { reply.Reject = false } else { reply.Reject = true } c.send(&amp;reply) } 注意：实际上在处理远程信息时，如果接收到了过期信息，会直接丢弃（后面有讲），不会进入 handlePreVote 函数，所以上面第二点实际上永远为假。 预候选人接收到其他节点回复的信息时: func (c *core) handleVoteResponse(msg *raftpd.Message) { if msg.Reject { log.Infof(&quot;%x received %v rejection from %x at term %d&quot;, c.id, msg.MsgType, msg.From, c.term) } else { log.Infof(&quot;%x received %v from %x at term %s&quot;, c.id, msg.MsgType, msg.From, msg.Term) } node := c.getNodeById(msg.From) node.updateVoteState(msg.Reject) count := c.voteStateCount(voteGranted) if count &gt;= c.quorum() { if msg.MsgType == raftpd.MsgVoteResponse { c.becomeLeader() c.broadcastVictory() } else { c.campaign(campaignCandidate) } return } // return to follower state if it receives vote denial from a majority count = c.voteStateCount(voteReject) if count &gt;= c.quorum() { c.becomeFollower(msg.Term, InvalidId) } } 更新某个 node 对此次请求的投票情况，并判断支持者和反对者人数，如果支持者人数过半，那么调用 campaign(campaignCandidate) 进入候选人状态。如果反对者人数过半，那么节点会回退到跟随者的状态。 Campaign 在候选人一方，选举过程使用了相同的函数，不同的是跟随者对候选人的处理。只有当候选人未投票或者上一次投给了该候选人，候选人才能获得跟随者的选票。 func (c *core) handleVote(msg *raftpd.Message) { reply := raftpd.Message{} reply.To = msg.From reply.MsgType = raftpd.MsgVoteResponse // no vote or vote for candidate, and log is at least as up-to-date as receiver&#39;s. if c.vote == InvalidId || c.vote == msg.From || c.log.IsUpToDate(msg.LogIndex, msg.LogTerm) { reply.Reject = false } else { reply.Reject = true } c.send(&amp;reply) } 处理过时消息 根据 Raft 论文中将 term 用作逻辑时间，判断过期的消息。在论文图 2 中提到如果接收到来自高任期的消息，应该回退到跟随者状态；接收到过时消息，直接忽略。所以代码可以写为： if msg.Term &lt; c.term { c.reject(msg) } if msg.Term &gt; c.term { c.becomeFollower() } 实际上可能某个节点成为候选人后，又重新连接到网络中。此时发起投票会导致其他节点增大任期，因此对投票相关的消息做特殊处理。 func (c *core) Step(msg *raftpd.Message) { if msg.Term &lt; c.term { c.reject(msg) } else if msg.Term &gt; c.term { if msg.MsgType == raftpd.MsgPreVoteRequest { } else if msg.MsgType == raftpd.MsgPreVoteResponse &amp;&amp; msg.Reject { } else { c.becomeFollower(msg.Term, leaderId) } } switch msg.MsgType { case raftpd.MsgPreVoteRequest: c.handlePreVote(msg) case raftpd.MsgVoteRequest: c.handleVote(msg) default: c.dispatch(msg) } } Raft 算法虽然更易于理解，但是实现并不简单。就以上述代码为例，Raft 如果没有 PreVote 机制，那么重新上线的候选人会通过 c.reject(msg) 强制让候选人参与选举。加入 PreVote 机制也不能完全避免这种情况。如果一个节点成为了候选人，此时领导人重新上线，那么候选人仍然会强制发起一次选举[3]。 References 寻找一种易于理解的一致性算法（扩展版） Etcd-raft-core 阅读 Morning Paper, MongoDB 对 Raft 算法的 4 个改动" />
+<meta property="og:description" content="和其他一致性算法相比，Raft 使用一种更强的领导能力形式。比如，日志条目只从领导者发送给其他的服务器。在选举上，Raft 算法使用一个随机计时器来选举领导者，这种方式只是在任何一致性算法都必须实现的心跳机制上增加了一点机制。[1] Raft 把时间分割任意长度的任期（term），并使用连续整数标记，每个任期都从一次选举开始。每次选举有一个或多个候选人参选，如果一个候选人赢得选举，其就会在该任期充当领导人的职责。某些情况下会出现选票瓜分的现象，那么该任期无法选出领导人，所以进入下一期选举，其中 Raft 通过随机计时来保证选举成功。[1] 设计 实现领导人选举之前，先看到上一节提到的纯函数式的状态机，将 Raft 实现成为一个无副作用的纯函数状态机。Raft 算法可以看作一个角色状态机，通过其他节点传递的消息、计时器、客户端的提交请求和快照等输入消息，从一个状态转移到另一个状态、或修改部分内部状态并返回一个发送给外部的信息。 (state, message) -&gt; state machine -&gt; message state machine 是一个纯函数式的状态机，负责处理消息，并将改动写入到 state 里，然后返回给外部的消息。 根据 Raft 论文，一个 state 几部分组成： 状态 所有服务器上持久存在的 currentTerm 服务器最后一次知道的任期号（初始化为 0，持续递增） votedFor 在当前获得选票的候选人的 Id log[] 日志条目集；每一个条目包含一个用户状态机执行的指令，和收到时的任期号 状态 所有服务器上经常变的 commitIndex 已知的最大的已经被提交的日志条目的索引值 lastApplied 最后被应用到状态机的日志条目索引值（初始化为 0，持续递增） 状态 在领导人里经常改变的 （选举后重新初始化） nextIndex[] 对于每一个服务器，需要发送给他的下一个日志条目的索引值（初始化为领导人最后索引值加一） matchIndex[] 对于每一个服务器，已经复制给他的日志的最高索引值 实现大体是类似的，不过以后需要加入流量控制、成员加入退出等，所以将 state 中保存的其他服务器的信息抽象一下： type node struct { id uint64 nextIdx uint64 matched uint64 } id 表示其他服务器在 Raft 中的唯一 ID，nextIdx 与 matched 分别是 nextIndex 数组和 matchIndex 数据中第 id 个元素。 Raft 通过超时来驱动心跳和选举，一共由两种超时：1、心跳超时，领导人定期给跟随者发送心跳信息宣布自己的领导权；2、选举超时，超时时间是随机选择的。 整个 state 如下： type core struct { id uint64 leaderId uint64 state StateRole term uint64 vote uint64 log *LogHolder nodes []node timeElapsed int randomizedElectionTimtout int electionTimeout int heartbeatTimeout int } id 是 Raft weiyiqueding d term 和 vote 分别是 currentTerm 和 voteFor 的实现，而日志由应用负责持久化。lastApplied 和 commitIndex 由 log 负责管理。nodes 表示该 Raft 集群的其他服务器的状态。timeElapsed 表示从时间累积，randomizedElectionTimeout 表示随机生成的选举超时阈值，每次转为跟随者、候选人状态时都会改变。heartbeatTimeout 表示领导人两次心跳的间隔。electionTimeout 用来表示领导人选举超时基准，其用于计算randomizedElectionTimeout，使用公式：$electionTimeout + rand() \% electionTimeout$ 计算得到。另外还有 leaderId 和 state 状态，leaderId 表示当前领导人的 ID，state 则是 Raft 目前所处的角色。 此外，还需要设计消息结构作为外部应用、服务器和 Raft 状态机进行数据交换。 type Message struct { From uint64 To uint64 MsgType MessageType Term uint64 Index uint64 LogIndex uint64 LogTerm uint64 Reject uint64 } 该结构不仅仅用于发起请求，也用于状态机返回数据，所以需要 Reject 字段表示拒绝请求，比如拒绝给某个候选人投票。 最后，状态机需要返回消息给消息发送者，由于希望将 Raft 设计为一个纯函数式状态机，消息的接受发送交给了应用处理，所以还得提供一个 Application 接口，供 Raft 和应用交互。 type Application interface { send(msg *raftpd.Message) } 当应用接收到消息后，将其输入到 Raft 状态机，处理完后，调用 send 发送回复消息，并保存信息到机中。整个状态机由消息驱动，所以 Raft 接口如下： type Raft interface { Step(msg *raftpd.Message) Periodic(millsSinceLastPeriod int) } 当应用接受到外部传递的消息后，调用 Step 驱动状态机改变状态。Raft 中通过超时进行心跳或选举，外部应用需要通过某个固定的定时源隔一段时间调用 Periodic 驱动状态机进行心跳、选举等。 选举过程 系统进行初始化时，每个节点都处于跟随者状态，由于没有领导人定期广播心跳，所以一段时间后部分跟随者成为候选人并进行下一届选举。 当某个候选人获得了超过半数的投票后，成为领导人，并向所有节点广播自己成功的信息。当候选人接收到其他候选人成为领导人的信息后，一届只能选出一个领导人（选举安全特性），该候选人退回到跟随者的状态，并投票给该领导人。 如果到了下一个选举超时，仍然没有候选人成为领导人，就会跳过这一届，开始下一届的领导人选举。 PreVote 由于选举安全特性的限制，成员会忽略已经过期的信息时，并返回自己所在的任期，用于发送者更新自己。由于这一特性的存在，在一个存在网络延迟的网络中，某个节点由于延迟进入了选举，而实际上大多数节点都能接收到领导人的心跳，也会进入选举。Raft 原论文 9.6 节中提出了 Prevote 算法：在选举前可以选询问其他节点是否愿意参与选举，如果节点能够感知到领导人的心跳，那么它就不会参与选举，否则参与选举。只有过半的节点参与选举，才能开始下一届领导人选举。 领导人选举实现 加入了 PreVote 算法后，Raft 的状态变为 4 个：领导人、跟随者，候选人，预候选人。此时的外部事件为：选举、心跳超时；以及： MsgPreVoteRequest MsgPreVoteResponse MsgVoteRequest MsgVoteResponse MsgAppendRequest MsgAppendRequest 这种消息类型发生在某个节点成竞选成功后向其他节点宣示领导权，在选举过程中也由该种类型在节点间传递。比如 PreVote 阶段正常的跟随者能够接收到领导人的心跳；又或者新晋领导人首次对外宣誓领导权。 func (c *core) Periodic(millsSinceLastPeriod int) { c.timeElapsed += millsSinceLastPeriod log.Debugf(&quot;%d periodic %d, time elapsed %d&quot;, c.id, millsSinceLastPeriod, c.timeElapsed) if c.state.IsLeader() { if c.heartbeatTick &lt;= c.timeElapsed { c.broadcastAppend() c.timeElapsed = 0 } } else if c.randomizedElectionTick &lt;= c.timeElapsed { if len(c.nodes) &gt; 1 { c.campaign(campaignPreCandidate) } } } 每次应用程序调用 Periodic 时，Raft 判断是否为 leader，是判断 timeElapsed 是否超过 heartbeatTick，然后向其他节点发送追加日志（心跳）信息，并清空 timElapsed；如果不是领导人，且已经超过随机生成的选举超时，那么状态转移到预候选人同时开始 PreVote 阶段。 除此之外，PreVote 算法还需要记录其他节点对某次预选举请求的响应状态，所以在 node 结构中添加字段标记： type voteState int const ( voteNone voteState = iota voteReject voteGranted ) type node struct { ... vote voteState } 状态间转换 继续之前需要看看 Raft 状态机的状态转换是如何实现的： func (c *core) resetRandomizedElectionTimeout() { c.randomizedElectionTick = c.electionTick + rand.Intn(c.electionTick) } func (c *core) reset(term uint64) { if c.term != term { c.term = term c.vote = InvalidId } c.leaderId = InvalidId c.timeElapsed = 0 c.resetRandomizedElectionTimeout() } func (c *core) becomeFollower(term, leaderId uint64) { c.reset(term) c.leaderId = leaderId c.state = FOLLOWER c.vote = leaderId log.Infof(&quot;%v become follower at %d&quot;, c.id, c.term) } func (c *core) becomeLeader() { utils.Assert(c.state == CANDIDATE, &quot;invalid translation [%v =&gt; Leader]&quot;, c.state) c.reset(c.term) c.leaderId = c.id c.state = LEADER c.vote = c.id log.Infof(&quot;%v become leader at %d&quot;, c.id, c.term) } func (c *core) becomeCandidate() { utils.Assert(c.state != LEADER, &quot;invalid translation [Leader =&gt; Candidate]&quot;) c.reset(c.term + 1) c.vote = c.id c.state = CANDIDATE for i := 0; i &lt; len(c.nodes); i++ { node := &amp;c.nodes[i] node.resetVoteState() } log.Infof(&quot;%v become candidate at %d&quot;, c.id, c.term) } func (c *core) becomePreCandidate() { c.reset(c.term) c.state = PRE_CANDIDATE for i := 0; i &lt; len(c.nodes); i++ { node := &amp;c.nodes[i] node.resetVoteState() } // Becoming a pre-candidate changes our state, // but doesn&#39;t change anything else. In particular it does not increase // currentTerm or change votedFor. log.Infof(&quot;%x became pre-candidate at term %d&quot;, c.id, c.term) } 首先看到 reset，它是负责在 Raft 状态转换过程中重置部分状态。reset 中第一步是根据任期是否改变决定重置 vote 和 term 信息；除此之外还重置了 leaderId 以及超时相关的两个属性: timeElapsed 和 randomizedElectionTimeout。 进入预选举的节点在被大多数节点拒绝后会回退到跟随者的状态，因此在 becomePreCandidate 中除了重置基础状态外，仅仅修改了 state 属性和重置其他节点的投票情况。特别需要注意的是不能修改 currentTerm 和 votedFor。 如果预选举的节点获得了半数的节点参选支持，就会进入候选人状态，因此任期加一，同时给自己投票。 此外，当领导者和跟随者在发送心跳或接收到领导人的通知后，都需要重置 timeElappsed，因此将 becomeLeader 和 becomeFollower 设计为重入只会影响到 timeElapsed 和 randomizedElectinTimeout 属性。 PreCampaign 竞选时首先调用 campaign 给其他节点发送 MsgPreVoteRequest 请求。 func (c *core) campaign(ct campaignState) { utils.Assert(c.state != LEADER, &quot;invalid translation [Leader =&gt; PreCandidate/Candidate]&quot;) msg := raftpd.Message{} msg.LogIndex = c.log.lastIndex() msg.LogTerm = c.log.lastTerm() if ct == campaignPreCandidate { msg.Term = c.term + 1 msg.MsgType = raftpd.MsgPreVoteRequest c.becomePreCandidate() } else { msg.Term = c.term msg.MsgType = raftpd.MsgVoteRequest c.becomeCandidate() } for i := 0; i &lt; len(c.nodes); i++ { node := &amp;c.nodes[i] msg.To = node.id log.Infof(&quot;%x [term: %d, index: %d] send %v request to %x at term %d&quot;, c.id, c.log.lastTerm(), c.log.lastIndex(), msg.MsgType, msg.To, c.term) c.send(&amp;msg) } } PreVote 要求某个节点只有在长时间未和领导人交换心跳时才参与选举。同时参与选举要求候选人的日志必须是最新的（领导人完全特性）。所以在接收到其他节点发送的 MsgPreVoteRequest 时，1、如果在一个选举超时内（注意：electionTimeout）有和领导交换过一次心跳；2、或者候选人的任期号小于自身的任期号；3、或者候选人的日志不是最新的都拒绝参加选举。否则回复参加选举。 func (c *core) handlePreVote(msg *raftpd.Message) { reply := raftpd.Message{} reply.To = msg.From reply.MsgType = raftpd.MsgPreVoteResponse // Reply false if last AppendEntries call was received less than election timeout ago. // Reply false if term &lt; currentTerm. // Reply false if candidate&#39;s log isn&#39;t at least as up­to­date as receiver&#39;s log. if (c.leaderId != InvalidId &amp;&amp; c.timeElapsed &lt; c.electionTick) || (msg.Term &lt; c.term) || !c.log.IsUpToDate(msg.LogIndex, msg.LogTerm) { reply.Reject = false } else { reply.Reject = true } c.send(&amp;reply) } 注意：实际上在处理远程信息时，如果接收到了过期信息，会直接丢弃（后面有讲），不会进入 handlePreVote 函数，所以上面第二点实际上永远为假。 预候选人接收到其他节点回复的信息时: func (c *core) handleVoteResponse(msg *raftpd.Message) { if msg.Reject { log.Infof(&quot;%x received %v rejection from %x at term %d&quot;, c.id, msg.MsgType, msg.From, c.term) } else { log.Infof(&quot;%x received %v from %x at term %s&quot;, c.id, msg.MsgType, msg.From, msg.Term) } node := c.getNodeById(msg.From) node.updateVoteState(msg.Reject) count := c.voteStateCount(voteGranted) if count &gt;= c.quorum() { if msg.MsgType == raftpd.MsgVoteResponse { c.becomeLeader() c.broadcastVictory() } else { c.campaign(campaignCandidate) } return } // return to follower state if it receives vote denial from a majority count = c.voteStateCount(voteReject) if count &gt;= c.quorum() { c.becomeFollower(msg.Term, InvalidId) } } 更新某个 node 对此次请求的投票情况，并判断支持者和反对者人数，如果支持者人数过半，那么调用 campaign(campaignCandidate) 进入候选人状态。如果反对者人数过半，那么节点会回退到跟随者的状态。 Campaign 在候选人一方，选举过程使用了相同的函数，不同的是跟随者对候选人的处理。只有当候选人未投票或者上一次投给了该候选人，候选人才能获得跟随者的选票。 func (c *core) handleVote(msg *raftpd.Message) { reply := raftpd.Message{} reply.To = msg.From reply.MsgType = raftpd.MsgVoteResponse // no vote or vote for candidate, and log is at least as up-to-date as receiver&#39;s. if c.vote == InvalidId || c.vote == msg.From || c.log.IsUpToDate(msg.LogIndex, msg.LogTerm) { reply.Reject = false } else { reply.Reject = true } c.send(&amp;reply) } 处理过时消息 根据 Raft 论文中将 term 用作逻辑时间，判断过期的消息。在论文图 2 中提到如果接收到来自高任期的消息，应该回退到跟随者状态；接收到过时消息，直接忽略。所以代码可以写为： if msg.Term &lt; c.term { c.reject(msg) } if msg.Term &gt; c.term { c.becomeFollower() } 实际上可能某个节点成为候选人后，又重新连接到网络中。此时发起投票会导致其他节点增大任期，因此对投票相关的消息做特殊处理。 func (c *core) Step(msg *raftpd.Message) { if msg.Term &lt; c.term { c.reject(msg) } else if msg.Term &gt; c.term { if msg.MsgType == raftpd.MsgPreVoteRequest { } else if msg.MsgType == raftpd.MsgPreVoteResponse &amp;&amp; msg.Reject { } else { c.becomeFollower(msg.Term, leaderId) } } switch msg.MsgType { case raftpd.MsgPreVoteRequest: c.handlePreVote(msg) case raftpd.MsgVoteRequest: c.handleVote(msg) default: c.dispatch(msg) } } Raft 算法虽然更易于理解，但是实现并不简单。就以上述代码为例，Raft 如果没有 PreVote 机制，那么重新上线的候选人会通过 c.reject(msg) 强制让候选人参与选举。加入 PreVote 机制也不能完全避免这种情况。如果一个节点成为了候选人，此时领导人重新上线，那么候选人仍然会强制发起一次选举[3]。 References 寻找一种易于理解的一致性算法（扩展版） Etcd-raft-core 阅读 Morning Paper, MongoDB 对 Raft 算法的 4 个改动" />
+<link rel="canonical" href="/destribution/2018/01/07/Raft-%E5%AE%9E%E7%8E%B0%E6%8C%87%E5%8C%97-%E9%A2%86%E5%AF%BC%E9%80%89%E4%B8%BE.html" />
+<meta property="og:url" content="/destribution/2018/01/07/Raft-%E5%AE%9E%E7%8E%B0%E6%8C%87%E5%8C%97-%E9%A2%86%E5%AF%BC%E9%80%89%E4%B8%BE.html" />
+<meta property="og:site_name" content="W41ter’s Bistro" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2018-01-07T21:31:18+08:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Raft-实现指北-领导选举" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2018-01-07T21:31:18+08:00","datePublished":"2018-01-07T21:31:18+08:00","description":"和其他一致性算法相比，Raft 使用一种更强的领导能力形式。比如，日志条目只从领导者发送给其他的服务器。在选举上，Raft 算法使用一个随机计时器来选举领导者，这种方式只是在任何一致性算法都必须实现的心跳机制上增加了一点机制。[1] Raft 把时间分割任意长度的任期（term），并使用连续整数标记，每个任期都从一次选举开始。每次选举有一个或多个候选人参选，如果一个候选人赢得选举，其就会在该任期充当领导人的职责。某些情况下会出现选票瓜分的现象，那么该任期无法选出领导人，所以进入下一期选举，其中 Raft 通过随机计时来保证选举成功。[1] 设计 实现领导人选举之前，先看到上一节提到的纯函数式的状态机，将 Raft 实现成为一个无副作用的纯函数状态机。Raft 算法可以看作一个角色状态机，通过其他节点传递的消息、计时器、客户端的提交请求和快照等输入消息，从一个状态转移到另一个状态、或修改部分内部状态并返回一个发送给外部的信息。 (state, message) -&gt; state machine -&gt; message state machine 是一个纯函数式的状态机，负责处理消息，并将改动写入到 state 里，然后返回给外部的消息。 根据 Raft 论文，一个 state 几部分组成： 状态 所有服务器上持久存在的 currentTerm 服务器最后一次知道的任期号（初始化为 0，持续递增） votedFor 在当前获得选票的候选人的 Id log[] 日志条目集；每一个条目包含一个用户状态机执行的指令，和收到时的任期号 状态 所有服务器上经常变的 commitIndex 已知的最大的已经被提交的日志条目的索引值 lastApplied 最后被应用到状态机的日志条目索引值（初始化为 0，持续递增） 状态 在领导人里经常改变的 （选举后重新初始化） nextIndex[] 对于每一个服务器，需要发送给他的下一个日志条目的索引值（初始化为领导人最后索引值加一） matchIndex[] 对于每一个服务器，已经复制给他的日志的最高索引值 实现大体是类似的，不过以后需要加入流量控制、成员加入退出等，所以将 state 中保存的其他服务器的信息抽象一下： type node struct { id uint64 nextIdx uint64 matched uint64 } id 表示其他服务器在 Raft 中的唯一 ID，nextIdx 与 matched 分别是 nextIndex 数组和 matchIndex 数据中第 id 个元素。 Raft 通过超时来驱动心跳和选举，一共由两种超时：1、心跳超时，领导人定期给跟随者发送心跳信息宣布自己的领导权；2、选举超时，超时时间是随机选择的。 整个 state 如下： type core struct { id uint64 leaderId uint64 state StateRole term uint64 vote uint64 log *LogHolder nodes []node timeElapsed int randomizedElectionTimtout int electionTimeout int heartbeatTimeout int } id 是 Raft weiyiqueding d term 和 vote 分别是 currentTerm 和 voteFor 的实现，而日志由应用负责持久化。lastApplied 和 commitIndex 由 log 负责管理。nodes 表示该 Raft 集群的其他服务器的状态。timeElapsed 表示从时间累积，randomizedElectionTimeout 表示随机生成的选举超时阈值，每次转为跟随者、候选人状态时都会改变。heartbeatTimeout 表示领导人两次心跳的间隔。electionTimeout 用来表示领导人选举超时基准，其用于计算randomizedElectionTimeout，使用公式：$electionTimeout + rand() \\% electionTimeout$ 计算得到。另外还有 leaderId 和 state 状态，leaderId 表示当前领导人的 ID，state 则是 Raft 目前所处的角色。 此外，还需要设计消息结构作为外部应用、服务器和 Raft 状态机进行数据交换。 type Message struct { From uint64 To uint64 MsgType MessageType Term uint64 Index uint64 LogIndex uint64 LogTerm uint64 Reject uint64 } 该结构不仅仅用于发起请求，也用于状态机返回数据，所以需要 Reject 字段表示拒绝请求，比如拒绝给某个候选人投票。 最后，状态机需要返回消息给消息发送者，由于希望将 Raft 设计为一个纯函数式状态机，消息的接受发送交给了应用处理，所以还得提供一个 Application 接口，供 Raft 和应用交互。 type Application interface { send(msg *raftpd.Message) } 当应用接收到消息后，将其输入到 Raft 状态机，处理完后，调用 send 发送回复消息，并保存信息到机中。整个状态机由消息驱动，所以 Raft 接口如下： type Raft interface { Step(msg *raftpd.Message) Periodic(millsSinceLastPeriod int) } 当应用接受到外部传递的消息后，调用 Step 驱动状态机改变状态。Raft 中通过超时进行心跳或选举，外部应用需要通过某个固定的定时源隔一段时间调用 Periodic 驱动状态机进行心跳、选举等。 选举过程 系统进行初始化时，每个节点都处于跟随者状态，由于没有领导人定期广播心跳，所以一段时间后部分跟随者成为候选人并进行下一届选举。 当某个候选人获得了超过半数的投票后，成为领导人，并向所有节点广播自己成功的信息。当候选人接收到其他候选人成为领导人的信息后，一届只能选出一个领导人（选举安全特性），该候选人退回到跟随者的状态，并投票给该领导人。 如果到了下一个选举超时，仍然没有候选人成为领导人，就会跳过这一届，开始下一届的领导人选举。 PreVote 由于选举安全特性的限制，成员会忽略已经过期的信息时，并返回自己所在的任期，用于发送者更新自己。由于这一特性的存在，在一个存在网络延迟的网络中，某个节点由于延迟进入了选举，而实际上大多数节点都能接收到领导人的心跳，也会进入选举。Raft 原论文 9.6 节中提出了 Prevote 算法：在选举前可以选询问其他节点是否愿意参与选举，如果节点能够感知到领导人的心跳，那么它就不会参与选举，否则参与选举。只有过半的节点参与选举，才能开始下一届领导人选举。 领导人选举实现 加入了 PreVote 算法后，Raft 的状态变为 4 个：领导人、跟随者，候选人，预候选人。此时的外部事件为：选举、心跳超时；以及： MsgPreVoteRequest MsgPreVoteResponse MsgVoteRequest MsgVoteResponse MsgAppendRequest MsgAppendRequest 这种消息类型发生在某个节点成竞选成功后向其他节点宣示领导权，在选举过程中也由该种类型在节点间传递。比如 PreVote 阶段正常的跟随者能够接收到领导人的心跳；又或者新晋领导人首次对外宣誓领导权。 func (c *core) Periodic(millsSinceLastPeriod int) { c.timeElapsed += millsSinceLastPeriod log.Debugf(&quot;%d periodic %d, time elapsed %d&quot;, c.id, millsSinceLastPeriod, c.timeElapsed) if c.state.IsLeader() { if c.heartbeatTick &lt;= c.timeElapsed { c.broadcastAppend() c.timeElapsed = 0 } } else if c.randomizedElectionTick &lt;= c.timeElapsed { if len(c.nodes) &gt; 1 { c.campaign(campaignPreCandidate) } } } 每次应用程序调用 Periodic 时，Raft 判断是否为 leader，是判断 timeElapsed 是否超过 heartbeatTick，然后向其他节点发送追加日志（心跳）信息，并清空 timElapsed；如果不是领导人，且已经超过随机生成的选举超时，那么状态转移到预候选人同时开始 PreVote 阶段。 除此之外，PreVote 算法还需要记录其他节点对某次预选举请求的响应状态，所以在 node 结构中添加字段标记： type voteState int const ( voteNone voteState = iota voteReject voteGranted ) type node struct { ... vote voteState } 状态间转换 继续之前需要看看 Raft 状态机的状态转换是如何实现的： func (c *core) resetRandomizedElectionTimeout() { c.randomizedElectionTick = c.electionTick + rand.Intn(c.electionTick) } func (c *core) reset(term uint64) { if c.term != term { c.term = term c.vote = InvalidId } c.leaderId = InvalidId c.timeElapsed = 0 c.resetRandomizedElectionTimeout() } func (c *core) becomeFollower(term, leaderId uint64) { c.reset(term) c.leaderId = leaderId c.state = FOLLOWER c.vote = leaderId log.Infof(&quot;%v become follower at %d&quot;, c.id, c.term) } func (c *core) becomeLeader() { utils.Assert(c.state == CANDIDATE, &quot;invalid translation [%v =&gt; Leader]&quot;, c.state) c.reset(c.term) c.leaderId = c.id c.state = LEADER c.vote = c.id log.Infof(&quot;%v become leader at %d&quot;, c.id, c.term) } func (c *core) becomeCandidate() { utils.Assert(c.state != LEADER, &quot;invalid translation [Leader =&gt; Candidate]&quot;) c.reset(c.term + 1) c.vote = c.id c.state = CANDIDATE for i := 0; i &lt; len(c.nodes); i++ { node := &amp;c.nodes[i] node.resetVoteState() } log.Infof(&quot;%v become candidate at %d&quot;, c.id, c.term) } func (c *core) becomePreCandidate() { c.reset(c.term) c.state = PRE_CANDIDATE for i := 0; i &lt; len(c.nodes); i++ { node := &amp;c.nodes[i] node.resetVoteState() } // Becoming a pre-candidate changes our state, // but doesn&#39;t change anything else. In particular it does not increase // currentTerm or change votedFor. log.Infof(&quot;%x became pre-candidate at term %d&quot;, c.id, c.term) } 首先看到 reset，它是负责在 Raft 状态转换过程中重置部分状态。reset 中第一步是根据任期是否改变决定重置 vote 和 term 信息；除此之外还重置了 leaderId 以及超时相关的两个属性: timeElapsed 和 randomizedElectionTimeout。 进入预选举的节点在被大多数节点拒绝后会回退到跟随者的状态，因此在 becomePreCandidate 中除了重置基础状态外，仅仅修改了 state 属性和重置其他节点的投票情况。特别需要注意的是不能修改 currentTerm 和 votedFor。 如果预选举的节点获得了半数的节点参选支持，就会进入候选人状态，因此任期加一，同时给自己投票。 此外，当领导者和跟随者在发送心跳或接收到领导人的通知后，都需要重置 timeElappsed，因此将 becomeLeader 和 becomeFollower 设计为重入只会影响到 timeElapsed 和 randomizedElectinTimeout 属性。 PreCampaign 竞选时首先调用 campaign 给其他节点发送 MsgPreVoteRequest 请求。 func (c *core) campaign(ct campaignState) { utils.Assert(c.state != LEADER, &quot;invalid translation [Leader =&gt; PreCandidate/Candidate]&quot;) msg := raftpd.Message{} msg.LogIndex = c.log.lastIndex() msg.LogTerm = c.log.lastTerm() if ct == campaignPreCandidate { msg.Term = c.term + 1 msg.MsgType = raftpd.MsgPreVoteRequest c.becomePreCandidate() } else { msg.Term = c.term msg.MsgType = raftpd.MsgVoteRequest c.becomeCandidate() } for i := 0; i &lt; len(c.nodes); i++ { node := &amp;c.nodes[i] msg.To = node.id log.Infof(&quot;%x [term: %d, index: %d] send %v request to %x at term %d&quot;, c.id, c.log.lastTerm(), c.log.lastIndex(), msg.MsgType, msg.To, c.term) c.send(&amp;msg) } } PreVote 要求某个节点只有在长时间未和领导人交换心跳时才参与选举。同时参与选举要求候选人的日志必须是最新的（领导人完全特性）。所以在接收到其他节点发送的 MsgPreVoteRequest 时，1、如果在一个选举超时内（注意：electionTimeout）有和领导交换过一次心跳；2、或者候选人的任期号小于自身的任期号；3、或者候选人的日志不是最新的都拒绝参加选举。否则回复参加选举。 func (c *core) handlePreVote(msg *raftpd.Message) { reply := raftpd.Message{} reply.To = msg.From reply.MsgType = raftpd.MsgPreVoteResponse // Reply false if last AppendEntries call was received less than election timeout ago. // Reply false if term &lt; currentTerm. // Reply false if candidate&#39;s log isn&#39;t at least as up­to­date as receiver&#39;s log. if (c.leaderId != InvalidId &amp;&amp; c.timeElapsed &lt; c.electionTick) || (msg.Term &lt; c.term) || !c.log.IsUpToDate(msg.LogIndex, msg.LogTerm) { reply.Reject = false } else { reply.Reject = true } c.send(&amp;reply) } 注意：实际上在处理远程信息时，如果接收到了过期信息，会直接丢弃（后面有讲），不会进入 handlePreVote 函数，所以上面第二点实际上永远为假。 预候选人接收到其他节点回复的信息时: func (c *core) handleVoteResponse(msg *raftpd.Message) { if msg.Reject { log.Infof(&quot;%x received %v rejection from %x at term %d&quot;, c.id, msg.MsgType, msg.From, c.term) } else { log.Infof(&quot;%x received %v from %x at term %s&quot;, c.id, msg.MsgType, msg.From, msg.Term) } node := c.getNodeById(msg.From) node.updateVoteState(msg.Reject) count := c.voteStateCount(voteGranted) if count &gt;= c.quorum() { if msg.MsgType == raftpd.MsgVoteResponse { c.becomeLeader() c.broadcastVictory() } else { c.campaign(campaignCandidate) } return } // return to follower state if it receives vote denial from a majority count = c.voteStateCount(voteReject) if count &gt;= c.quorum() { c.becomeFollower(msg.Term, InvalidId) } } 更新某个 node 对此次请求的投票情况，并判断支持者和反对者人数，如果支持者人数过半，那么调用 campaign(campaignCandidate) 进入候选人状态。如果反对者人数过半，那么节点会回退到跟随者的状态。 Campaign 在候选人一方，选举过程使用了相同的函数，不同的是跟随者对候选人的处理。只有当候选人未投票或者上一次投给了该候选人，候选人才能获得跟随者的选票。 func (c *core) handleVote(msg *raftpd.Message) { reply := raftpd.Message{} reply.To = msg.From reply.MsgType = raftpd.MsgVoteResponse // no vote or vote for candidate, and log is at least as up-to-date as receiver&#39;s. if c.vote == InvalidId || c.vote == msg.From || c.log.IsUpToDate(msg.LogIndex, msg.LogTerm) { reply.Reject = false } else { reply.Reject = true } c.send(&amp;reply) } 处理过时消息 根据 Raft 论文中将 term 用作逻辑时间，判断过期的消息。在论文图 2 中提到如果接收到来自高任期的消息，应该回退到跟随者状态；接收到过时消息，直接忽略。所以代码可以写为： if msg.Term &lt; c.term { c.reject(msg) } if msg.Term &gt; c.term { c.becomeFollower() } 实际上可能某个节点成为候选人后，又重新连接到网络中。此时发起投票会导致其他节点增大任期，因此对投票相关的消息做特殊处理。 func (c *core) Step(msg *raftpd.Message) { if msg.Term &lt; c.term { c.reject(msg) } else if msg.Term &gt; c.term { if msg.MsgType == raftpd.MsgPreVoteRequest { } else if msg.MsgType == raftpd.MsgPreVoteResponse &amp;&amp; msg.Reject { } else { c.becomeFollower(msg.Term, leaderId) } } switch msg.MsgType { case raftpd.MsgPreVoteRequest: c.handlePreVote(msg) case raftpd.MsgVoteRequest: c.handleVote(msg) default: c.dispatch(msg) } } Raft 算法虽然更易于理解，但是实现并不简单。就以上述代码为例，Raft 如果没有 PreVote 机制，那么重新上线的候选人会通过 c.reject(msg) 强制让候选人参与选举。加入 PreVote 机制也不能完全避免这种情况。如果一个节点成为了候选人，此时领导人重新上线，那么候选人仍然会强制发起一次选举[3]。 References 寻找一种易于理解的一致性算法（扩展版） Etcd-raft-core 阅读 Morning Paper, MongoDB 对 Raft 算法的 4 个改动","headline":"Raft-实现指北-领导选举","mainEntityOfPage":{"@type":"WebPage","@id":"/destribution/2018/01/07/Raft-%E5%AE%9E%E7%8E%B0%E6%8C%87%E5%8C%97-%E9%A2%86%E5%AF%BC%E9%80%89%E4%B8%BE.html"},"url":"/destribution/2018/01/07/Raft-%E5%AE%9E%E7%8E%B0%E6%8C%87%E5%8C%97-%E9%A2%86%E5%AF%BC%E9%80%89%E4%B8%BE.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="/feed.xml" title="W41ter's Bistro" /><!-- for mathjax support -->
+  
+    <script type="text/x-mathjax-config">
+      MathJax.Hub.Config({
+          extensions: [
+          "tex2jax.js",
+          "MathMenu.js",
+          "MathZoom.js",
+          "AssistiveMML.js",
+          "a11y/accessibility-menu.js"
+        ],
+        tex2jax: {      // AND HERE
+          inlineMath: [['$', '$']],
+          displayMath: [['$$', '$$']]
+        },
+        jax: ["input/TeX", "output/CommonHTML"],
+        TeX: {
+          extensions: [
+            "AMSmath.js",
+            "AMSsymbols.js",
+            "noErrors.js",
+            "noUndefined.js",
+          ],
+          equationNumbers: { autoNumber: "AMS" }
+        }
+      });
+    </script>
+    <script type="text/javascript" async src="http://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+  
+</head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">W41ter&#39;s Bistro</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">Raft-实现指北-领导选举</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2018-01-07T21:31:18+08:00" itemprop="datePublished">Jan 7, 2018
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p>和其他一致性算法相比，Raft 使用一种更强的领导能力形式。比如，日志条目只从领导者发送给其他的服务器。在选举上，Raft 算法使用一个随机计时器来选举领导者，这种方式只是在任何一致性算法都必须实现的心跳机制上增加了一点机制。[1]</p>
+
+<p><img src="https://camo.githubusercontent.com/f9b80d45d67996bb9ce63ba6e5d37b6a03150097/68747470733a2f2f646e2d307830312d696f2e71626f782e6d652f726166742d254535253942254245352e706e67" alt="时间被划分成一个个的任期，每个任期开始都是一次选举" /></p>
+
+<p>Raft 把时间分割任意长度的任期（term），并使用连续整数标记，每个任期都从一次选举开始。每次选举有一个或多个候选人参选，如果一个候选人赢得选举，其就会在该任期充当领导人的职责。某些情况下会出现选票瓜分的现象，那么该任期无法选出领导人，所以进入下一期选举，其中 Raft 通过随机计时来保证选举成功。[1]</p>
+
+<h1 id="设计">设计</h1>
+
+<p>实现领导人选举之前，先看到上一节提到的纯函数式的状态机，将 Raft 实现成为一个无副作用的纯函数状态机。Raft 算法可以看作一个角色状态机，通过其他节点传递的消息、计时器、客户端的提交请求和快照等输入消息，从一个状态转移到另一个状态、或修改部分内部状态并返回一个发送给外部的信息。</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>(state, message) -&gt; state machine -&gt; message
+</code></pre></div></div>
+
+<p>state machine 是一个纯函数式的状态机，负责处理消息，并将改动写入到 state 里，然后返回给外部的消息。</p>
+
+<p>根据 Raft 论文，一个 state 几部分组成：</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>状态</th>
+      <th>所有服务器上持久存在的</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>currentTerm</td>
+      <td>服务器最后一次知道的任期号（初始化为 0，持续递增）</td>
+    </tr>
+    <tr>
+      <td>votedFor</td>
+      <td>在当前获得选票的候选人的 Id</td>
+    </tr>
+    <tr>
+      <td>log[]</td>
+      <td>日志条目集；每一个条目包含一个用户状态机执行的指令，和收到时的任期号</td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr>
+      <th>状态</th>
+      <th>所有服务器上经常变的</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>commitIndex</td>
+      <td>已知的最大的已经被提交的日志条目的索引值</td>
+    </tr>
+    <tr>
+      <td>lastApplied</td>
+      <td>最后被应用到状态机的日志条目索引值（初始化为 0，持续递增）</td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr>
+      <th>状态</th>
+      <th>在领导人里经常改变的 （选举后重新初始化）</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>nextIndex[]</td>
+      <td>对于每一个服务器，需要发送给他的下一个日志条目的索引值（初始化为领导人最后索引值加一）</td>
+    </tr>
+    <tr>
+      <td>matchIndex[]</td>
+      <td>对于每一个服务器，已经复制给他的日志的最高索引值</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>实现大体是类似的，不过以后需要加入流量控制、成员加入退出等，所以将 state 中保存的其他服务器的信息抽象一下：</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">type</span> <span class="n">node</span> <span class="k">struct</span> <span class="p">{</span>
+    <span class="n">id</span> <span class="kt">uint64</span> 
+    <span class="n">nextIdx</span> <span class="kt">uint64</span> 
+    <span class="n">matched</span> <span class="kt">uint64</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p><code class="language-plaintext highlighter-rouge">id</code> 表示其他服务器在 Raft 中的唯一 ID，<code class="language-plaintext highlighter-rouge">nextIdx</code> 与 <code class="language-plaintext highlighter-rouge">matched</code> 分别是 <code class="language-plaintext highlighter-rouge">nextIndex</code> 数组和 <code class="language-plaintext highlighter-rouge">matchIndex</code> 数据中第 <code class="language-plaintext highlighter-rouge">id</code> 个元素。</p>
+
+<p>Raft 通过超时来驱动心跳和选举，一共由两种超时：1、心跳超时，领导人定期给跟随者发送心跳信息宣布自己的领导权；2、选举超时，超时时间是随机选择的。</p>
+
+<p>整个 state 如下：</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">type</span> <span class="n">core</span> <span class="k">struct</span> <span class="p">{</span>
+    <span class="n">id</span> <span class="kt">uint64</span> 
+    <span class="n">leaderId</span> <span class="kt">uint64</span>
+    <span class="n">state</span> <span class="n">StateRole</span>
+
+    <span class="n">term</span> <span class="kt">uint64</span> 
+    <span class="n">vote</span> <span class="kt">uint64</span> 
+    <span class="n">log</span> <span class="o">*</span><span class="n">LogHolder</span> 
+
+    <span class="n">nodes</span> <span class="p">[]</span><span class="n">node</span> 
+
+    <span class="n">timeElapsed</span> <span class="kt">int</span> 
+    <span class="n">randomizedElectionTimtout</span> <span class="kt">int</span> 
+    <span class="n">electionTimeout</span> <span class="kt">int</span> 
+    <span class="n">heartbeatTimeout</span> <span class="kt">int</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p><code class="language-plaintext highlighter-rouge">id</code> 是 Raft weiyiqueding d  <code class="language-plaintext highlighter-rouge">term</code> 和 <code class="language-plaintext highlighter-rouge">vote</code> 分别是 <code class="language-plaintext highlighter-rouge">currentTerm</code> 和 <code class="language-plaintext highlighter-rouge">voteFor</code> 的实现，而日志由应用负责持久化。<code class="language-plaintext highlighter-rouge">lastApplied</code> 和 <code class="language-plaintext highlighter-rouge">commitIndex</code> 由 <code class="language-plaintext highlighter-rouge">log</code> 负责管理。<code class="language-plaintext highlighter-rouge">nodes</code> 表示该 Raft 集群的其他服务器的状态。<code class="language-plaintext highlighter-rouge">timeElapsed</code> 表示从时间累积，<code class="language-plaintext highlighter-rouge">randomizedElectionTimeout</code> 表示随机生成的选举超时阈值，每次转为跟随者、候选人状态时都会改变。<code class="language-plaintext highlighter-rouge">heartbeatTimeout</code> 表示领导人两次心跳的间隔。<code class="language-plaintext highlighter-rouge">electionTimeout</code> 用来表示领导人选举超时基准，其用于计算<code class="language-plaintext highlighter-rouge">randomizedElectionTimeout</code>，使用公式：$electionTimeout + rand() \% electionTimeout$ 计算得到。另外还有 <code class="language-plaintext highlighter-rouge">leaderId</code> 和 <code class="language-plaintext highlighter-rouge">state</code> 状态，<code class="language-plaintext highlighter-rouge">leaderId</code> 表示当前领导人的 ID，<code class="language-plaintext highlighter-rouge">state</code> 则是 Raft 目前所处的角色。</p>
+
+<p>此外，还需要设计消息结构作为外部应用、服务器和 Raft 状态机进行数据交换。</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">type</span> <span class="n">Message</span> <span class="k">struct</span> <span class="p">{</span>
+    <span class="n">From</span> <span class="kt">uint64</span> 
+    <span class="n">To</span> <span class="kt">uint64</span> 
+    <span class="n">MsgType</span> <span class="n">MessageType</span>
+    <span class="n">Term</span> <span class="kt">uint64</span> 
+    <span class="n">Index</span> <span class="kt">uint64</span>
+    <span class="n">LogIndex</span> <span class="kt">uint64</span> 
+    <span class="n">LogTerm</span> <span class="kt">uint64</span> 
+    <span class="n">Reject</span> <span class="kt">uint64</span> 
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>该结构不仅仅用于发起请求，也用于状态机返回数据，所以需要 <code class="language-plaintext highlighter-rouge">Reject</code> 字段表示拒绝请求，比如拒绝给某个候选人投票。</p>
+
+<p>最后，状态机需要返回消息给消息发送者，由于希望将 Raft 设计为一个纯函数式状态机，消息的接受发送交给了应用处理，所以还得提供一个 <code class="language-plaintext highlighter-rouge">Application</code> 接口，供 Raft 和应用交互。</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">type</span> <span class="n">Application</span> <span class="k">interface</span> <span class="p">{</span>
+    <span class="n">send</span><span class="p">(</span><span class="n">msg</span> <span class="o">*</span><span class="n">raftpd</span><span class="o">.</span><span class="n">Message</span><span class="p">)</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>当应用接收到消息后，将其输入到 Raft 状态机，处理完后，调用 <code class="language-plaintext highlighter-rouge">send</code> 发送回复消息，并保存信息到机中。整个状态机由消息驱动，所以 Raft 接口如下：</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">type</span> <span class="n">Raft</span> <span class="k">interface</span> <span class="p">{</span>
+    <span class="n">Step</span><span class="p">(</span><span class="n">msg</span> <span class="o">*</span><span class="n">raftpd</span><span class="o">.</span><span class="n">Message</span><span class="p">)</span>
+    <span class="n">Periodic</span><span class="p">(</span><span class="n">millsSinceLastPeriod</span> <span class="kt">int</span><span class="p">)</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>当应用接受到外部传递的消息后，调用 <code class="language-plaintext highlighter-rouge">Step</code> 驱动状态机改变状态。Raft 中通过超时进行心跳或选举，外部应用需要通过某个固定的定时源隔一段时间调用 <code class="language-plaintext highlighter-rouge">Periodic</code> 驱动状态机进行心跳、选举等。</p>
+
+<h1 id="选举过程">选举过程</h1>
+
+<p><img src="https://camo.githubusercontent.com/6396d99ee401327500ef9eafe92617d7812ecd4d/68747470733a2f2f646e2d307830312d696f2e71626f782e6d652f726166742d254535253942254245342d30312e706e67" alt="服务器状态变化图" /></p>
+
+<p>系统进行初始化时，每个节点都处于跟随者状态，由于没有领导人定期广播心跳，所以一段时间后部分跟随者成为候选人并进行下一届选举。</p>
+
+<p>当某个候选人获得了超过半数的投票后，成为领导人，并向所有节点广播自己成功的信息。当候选人接收到其他候选人成为领导人的信息后，一届只能选出一个领导人（<strong>选举安全特性</strong>），该候选人退回到跟随者的状态，并投票给该领导人。</p>
+
+<p>如果到了下一个选举超时，仍然没有候选人成为领导人，就会跳过这一届，开始下一届的领导人选举。</p>
+
+<h1 id="prevote">PreVote</h1>
+
+<p>由于<strong>选举安全特性</strong>的限制，成员会忽略已经过期的信息时，并返回自己所在的任期，用于发送者更新自己。由于这一特性的存在，在一个存在网络延迟的网络中，某个节点由于延迟进入了选举，而实际上大多数节点都能接收到领导人的心跳，也会进入选举。Raft 原论文 9.6 节中提出了 Prevote 算法：在选举前可以选询问其他节点是否愿意参与选举，如果节点能够感知到领导人的心跳，那么它就不会参与选举，否则参与选举。只有过半的节点参与选举，才能开始下一届领导人选举。</p>
+
+<h1 id="领导人选举实现">领导人选举实现</h1>
+
+<p>加入了 PreVote 算法后，Raft 的状态变为 4 个：领导人、跟随者，候选人，预候选人。此时的外部事件为：选举、心跳超时；以及：</p>
+
+<ul>
+  <li>MsgPreVoteRequest</li>
+  <li>MsgPreVoteResponse</li>
+  <li>MsgVoteRequest</li>
+  <li>MsgVoteResponse</li>
+  <li>MsgAppendRequest</li>
+</ul>
+
+<p><code class="language-plaintext highlighter-rouge">MsgAppendRequest</code> 这种消息类型发生在某个节点成竞选成功后向其他节点宣示领导权，在选举过程中也由该种类型在节点间传递。比如 PreVote 阶段正常的跟随者能够接收到领导人的心跳；又或者新晋领导人首次对外宣誓领导权。</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">func</span> <span class="p">(</span><span class="n">c</span> <span class="o">*</span><span class="n">core</span><span class="p">)</span> <span class="n">Periodic</span><span class="p">(</span><span class="n">millsSinceLastPeriod</span> <span class="kt">int</span><span class="p">)</span> <span class="p">{</span>
+    <span class="n">c</span><span class="o">.</span><span class="n">timeElapsed</span> <span class="o">+=</span> <span class="n">millsSinceLastPeriod</span>
+    <span class="n">log</span><span class="o">.</span><span class="n">Debugf</span><span class="p">(</span><span class="s">"%d periodic %d, time elapsed %d"</span><span class="p">,</span> <span class="n">c</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">millsSinceLastPeriod</span><span class="p">,</span> <span class="n">c</span><span class="o">.</span><span class="n">timeElapsed</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">c</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">IsLeader</span><span class="p">()</span> <span class="p">{</span>
+        <span class="k">if</span> <span class="n">c</span><span class="o">.</span><span class="n">heartbeatTick</span> <span class="o">&lt;=</span> <span class="n">c</span><span class="o">.</span><span class="n">timeElapsed</span> <span class="p">{</span>
+            <span class="n">c</span><span class="o">.</span><span class="n">broadcastAppend</span><span class="p">()</span>
+            <span class="n">c</span><span class="o">.</span><span class="n">timeElapsed</span> <span class="o">=</span> <span class="m">0</span>
+        <span class="p">}</span>
+    <span class="p">}</span> <span class="k">else</span> <span class="k">if</span> <span class="n">c</span><span class="o">.</span><span class="n">randomizedElectionTick</span> <span class="o">&lt;=</span> <span class="n">c</span><span class="o">.</span><span class="n">timeElapsed</span> <span class="p">{</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">c</span><span class="o">.</span><span class="n">nodes</span><span class="p">)</span> <span class="o">&gt;</span> <span class="m">1</span> <span class="p">{</span>
+            <span class="n">c</span><span class="o">.</span><span class="n">campaign</span><span class="p">(</span><span class="n">campaignPreCandidate</span><span class="p">)</span>
+        <span class="p">}</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>每次应用程序调用 <code class="language-plaintext highlighter-rouge">Periodic</code> 时，Raft 判断是否为 leader，是判断 <code class="language-plaintext highlighter-rouge">timeElapsed</code> 是否超过 <code class="language-plaintext highlighter-rouge">heartbeatTick</code>，然后向其他节点发送追加日志（心跳）信息，并清空 <code class="language-plaintext highlighter-rouge">timElapsed</code>；如果不是领导人，且已经超过随机生成的选举超时，那么状态转移到预候选人同时开始 PreVote 阶段。</p>
+
+<p>除此之外，PreVote 算法还需要记录其他节点对某次预选举请求的响应状态，所以在 node 结构中添加字段标记：</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">type</span> <span class="n">voteState</span> <span class="kt">int</span>
+
+<span class="k">const</span> <span class="p">(</span>
+    <span class="n">voteNone</span>    <span class="n">voteState</span> <span class="o">=</span> <span class="no">iota</span>
+    <span class="n">voteReject</span>
+    <span class="n">voteGranted</span>
+<span class="p">)</span>
+
+<span class="k">type</span> <span class="n">node</span> <span class="k">struct</span> <span class="p">{</span>
+    <span class="o">...</span>
+    <span class="n">vote</span>    <span class="n">voteState</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<h2 id="状态间转换">状态间转换</h2>
+
+<p>继续之前需要看看 Raft 状态机的状态转换是如何实现的：</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">func</span> <span class="p">(</span><span class="n">c</span> <span class="o">*</span><span class="n">core</span><span class="p">)</span> <span class="n">resetRandomizedElectionTimeout</span><span class="p">()</span> <span class="p">{</span>
+    <span class="n">c</span><span class="o">.</span><span class="n">randomizedElectionTick</span> <span class="o">=</span>
+        <span class="n">c</span><span class="o">.</span><span class="n">electionTick</span> <span class="o">+</span> <span class="n">rand</span><span class="o">.</span><span class="n">Intn</span><span class="p">(</span><span class="n">c</span><span class="o">.</span><span class="n">electionTick</span><span class="p">)</span>
+<span class="p">}</span>
+
+<span class="k">func</span> <span class="p">(</span><span class="n">c</span> <span class="o">*</span><span class="n">core</span><span class="p">)</span> <span class="n">reset</span><span class="p">(</span><span class="n">term</span> <span class="kt">uint64</span><span class="p">)</span> <span class="p">{</span>
+    <span class="k">if</span> <span class="n">c</span><span class="o">.</span><span class="n">term</span> <span class="o">!=</span> <span class="n">term</span> <span class="p">{</span>
+        <span class="n">c</span><span class="o">.</span><span class="n">term</span> <span class="o">=</span> <span class="n">term</span>
+        <span class="n">c</span><span class="o">.</span><span class="n">vote</span> <span class="o">=</span> <span class="n">InvalidId</span>
+    <span class="p">}</span>
+    <span class="n">c</span><span class="o">.</span><span class="n">leaderId</span> <span class="o">=</span> <span class="n">InvalidId</span>
+    <span class="n">c</span><span class="o">.</span><span class="n">timeElapsed</span> <span class="o">=</span> <span class="m">0</span>
+    <span class="n">c</span><span class="o">.</span><span class="n">resetRandomizedElectionTimeout</span><span class="p">()</span>
+<span class="p">}</span>
+
+<span class="k">func</span> <span class="p">(</span><span class="n">c</span> <span class="o">*</span><span class="n">core</span><span class="p">)</span> <span class="n">becomeFollower</span><span class="p">(</span><span class="n">term</span><span class="p">,</span> <span class="n">leaderId</span> <span class="kt">uint64</span><span class="p">)</span> <span class="p">{</span>
+    <span class="n">c</span><span class="o">.</span><span class="n">reset</span><span class="p">(</span><span class="n">term</span><span class="p">)</span>
+    <span class="n">c</span><span class="o">.</span><span class="n">leaderId</span> <span class="o">=</span> <span class="n">leaderId</span>
+    <span class="n">c</span><span class="o">.</span><span class="n">state</span> <span class="o">=</span> <span class="n">FOLLOWER</span>
+    <span class="n">c</span><span class="o">.</span><span class="n">vote</span> <span class="o">=</span> <span class="n">leaderId</span>
+
+    <span class="n">log</span><span class="o">.</span><span class="n">Infof</span><span class="p">(</span><span class="s">"%v become follower at %d"</span><span class="p">,</span> <span class="n">c</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">c</span><span class="o">.</span><span class="n">term</span><span class="p">)</span>
+<span class="p">}</span>
+
+<span class="k">func</span> <span class="p">(</span><span class="n">c</span> <span class="o">*</span><span class="n">core</span><span class="p">)</span> <span class="n">becomeLeader</span><span class="p">()</span> <span class="p">{</span>
+    <span class="n">utils</span><span class="o">.</span><span class="n">Assert</span><span class="p">(</span><span class="n">c</span><span class="o">.</span><span class="n">state</span> <span class="o">==</span> <span class="n">CANDIDATE</span><span class="p">,</span> <span class="s">"invalid translation [%v =&gt; Leader]"</span><span class="p">,</span> <span class="n">c</span><span class="o">.</span><span class="n">state</span><span class="p">)</span>
+
+    <span class="n">c</span><span class="o">.</span><span class="n">reset</span><span class="p">(</span><span class="n">c</span><span class="o">.</span><span class="n">term</span><span class="p">)</span>
+    <span class="n">c</span><span class="o">.</span><span class="n">leaderId</span> <span class="o">=</span> <span class="n">c</span><span class="o">.</span><span class="n">id</span>
+    <span class="n">c</span><span class="o">.</span><span class="n">state</span> <span class="o">=</span> <span class="n">LEADER</span>
+    <span class="n">c</span><span class="o">.</span><span class="n">vote</span> <span class="o">=</span> <span class="n">c</span><span class="o">.</span><span class="n">id</span>
+
+    <span class="n">log</span><span class="o">.</span><span class="n">Infof</span><span class="p">(</span><span class="s">"%v become leader at %d"</span><span class="p">,</span> <span class="n">c</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">c</span><span class="o">.</span><span class="n">term</span><span class="p">)</span>
+<span class="p">}</span>
+
+<span class="k">func</span> <span class="p">(</span><span class="n">c</span> <span class="o">*</span><span class="n">core</span><span class="p">)</span> <span class="n">becomeCandidate</span><span class="p">()</span> <span class="p">{</span>
+    <span class="n">utils</span><span class="o">.</span><span class="n">Assert</span><span class="p">(</span><span class="n">c</span><span class="o">.</span><span class="n">state</span> <span class="o">!=</span> <span class="n">LEADER</span><span class="p">,</span> <span class="s">"invalid translation [Leader =&gt; Candidate]"</span><span class="p">)</span>
+
+    <span class="n">c</span><span class="o">.</span><span class="n">reset</span><span class="p">(</span><span class="n">c</span><span class="o">.</span><span class="n">term</span> <span class="o">+</span> <span class="m">1</span><span class="p">)</span>
+    <span class="n">c</span><span class="o">.</span><span class="n">vote</span> <span class="o">=</span> <span class="n">c</span><span class="o">.</span><span class="n">id</span>
+    <span class="n">c</span><span class="o">.</span><span class="n">state</span> <span class="o">=</span> <span class="n">CANDIDATE</span>
+
+    <span class="k">for</span> <span class="n">i</span> <span class="o">:=</span> <span class="m">0</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="n">c</span><span class="o">.</span><span class="n">nodes</span><span class="p">);</span> <span class="n">i</span><span class="o">++</span> <span class="p">{</span>
+        <span class="n">node</span> <span class="o">:=</span> <span class="o">&amp;</span><span class="n">c</span><span class="o">.</span><span class="n">nodes</span><span class="p">[</span><span class="n">i</span><span class="p">]</span>
+        <span class="n">node</span><span class="o">.</span><span class="n">resetVoteState</span><span class="p">()</span>
+    <span class="p">}</span>
+    
+    <span class="n">log</span><span class="o">.</span><span class="n">Infof</span><span class="p">(</span><span class="s">"%v become candidate at %d"</span><span class="p">,</span> <span class="n">c</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">c</span><span class="o">.</span><span class="n">term</span><span class="p">)</span>
+<span class="p">}</span>
+
+<span class="k">func</span> <span class="p">(</span><span class="n">c</span> <span class="o">*</span><span class="n">core</span><span class="p">)</span> <span class="n">becomePreCandidate</span><span class="p">()</span> <span class="p">{</span>
+    <span class="n">c</span><span class="o">.</span><span class="n">reset</span><span class="p">(</span><span class="n">c</span><span class="o">.</span><span class="n">term</span><span class="p">)</span>
+    <span class="n">c</span><span class="o">.</span><span class="n">state</span> <span class="o">=</span> <span class="n">PRE_CANDIDATE</span>
+
+    <span class="k">for</span> <span class="n">i</span> <span class="o">:=</span> <span class="m">0</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="n">c</span><span class="o">.</span><span class="n">nodes</span><span class="p">);</span> <span class="n">i</span><span class="o">++</span> <span class="p">{</span>
+        <span class="n">node</span> <span class="o">:=</span> <span class="o">&amp;</span><span class="n">c</span><span class="o">.</span><span class="n">nodes</span><span class="p">[</span><span class="n">i</span><span class="p">]</span>
+        <span class="n">node</span><span class="o">.</span><span class="n">resetVoteState</span><span class="p">()</span>
+    <span class="p">}</span>
+    <span class="c">// Becoming a pre-candidate changes our state,</span>
+    <span class="c">// but doesn't change anything else. In particular it does not increase</span>
+    <span class="c">// currentTerm or change votedFor.</span>
+    <span class="n">log</span><span class="o">.</span><span class="n">Infof</span><span class="p">(</span><span class="s">"%x became pre-candidate at term %d"</span><span class="p">,</span> <span class="n">c</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">c</span><span class="o">.</span><span class="n">term</span><span class="p">)</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>首先看到 <code class="language-plaintext highlighter-rouge">reset</code>，它是负责在 Raft 状态转换过程中重置部分状态。<code class="language-plaintext highlighter-rouge">reset</code> 中第一步是根据任期是否改变决定重置 <code class="language-plaintext highlighter-rouge">vote</code> 和 <code class="language-plaintext highlighter-rouge">term</code> 信息；除此之外还重置了 <code class="language-plaintext highlighter-rouge">leaderId</code> 以及超时相关的两个属性: <code class="language-plaintext highlighter-rouge">timeElapsed</code> 和 <code class="language-plaintext highlighter-rouge">randomizedElectionTimeout</code>。</p>
+
+<p>进入预选举的节点在被大多数节点拒绝后会回退到跟随者的状态，因此在 <code class="language-plaintext highlighter-rouge">becomePreCandidate</code> 中除了重置基础状态外，仅仅修改了 <code class="language-plaintext highlighter-rouge">state</code> 属性和重置其他节点的投票情况。<strong>特别需要注意的是不能修改 <code class="language-plaintext highlighter-rouge">currentTerm</code> 和 <code class="language-plaintext highlighter-rouge">votedFor</code></strong>。</p>
+
+<p>如果预选举的节点获得了半数的节点参选支持，就会进入候选人状态，因此任期加一，同时给自己投票。</p>
+
+<p>此外，当领导者和跟随者在发送心跳或接收到领导人的通知后，都需要重置 <code class="language-plaintext highlighter-rouge">timeElappsed</code>，因此将 <code class="language-plaintext highlighter-rouge">becomeLeader</code> 和 <code class="language-plaintext highlighter-rouge">becomeFollower</code> 设计为重入只会影响到 <code class="language-plaintext highlighter-rouge">timeElapsed</code> 和 <code class="language-plaintext highlighter-rouge">randomizedElectinTimeout</code> 属性。</p>
+
+<h2 id="precampaign">PreCampaign</h2>
+
+<p>竞选时首先调用 <code class="language-plaintext highlighter-rouge">campaign</code> 给其他节点发送 <code class="language-plaintext highlighter-rouge">MsgPreVoteRequest</code> 请求。</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">func</span> <span class="p">(</span><span class="n">c</span> <span class="o">*</span><span class="n">core</span><span class="p">)</span> <span class="n">campaign</span><span class="p">(</span><span class="n">ct</span> <span class="n">campaignState</span><span class="p">)</span> <span class="p">{</span>
+    <span class="n">utils</span><span class="o">.</span><span class="n">Assert</span><span class="p">(</span><span class="n">c</span><span class="o">.</span><span class="n">state</span> <span class="o">!=</span> <span class="n">LEADER</span><span class="p">,</span>
+        <span class="s">"invalid translation [Leader =&gt; PreCandidate/Candidate]"</span><span class="p">)</span>
+
+    <span class="n">msg</span> <span class="o">:=</span> <span class="n">raftpd</span><span class="o">.</span><span class="n">Message</span><span class="p">{}</span>
+    <span class="n">msg</span><span class="o">.</span><span class="n">LogIndex</span> <span class="o">=</span> <span class="n">c</span><span class="o">.</span><span class="n">log</span><span class="o">.</span><span class="n">lastIndex</span><span class="p">()</span>
+    <span class="n">msg</span><span class="o">.</span><span class="n">LogTerm</span> <span class="o">=</span> <span class="n">c</span><span class="o">.</span><span class="n">log</span><span class="o">.</span><span class="n">lastTerm</span><span class="p">()</span>
+    <span class="k">if</span> <span class="n">ct</span> <span class="o">==</span> <span class="n">campaignPreCandidate</span> <span class="p">{</span>
+        <span class="n">msg</span><span class="o">.</span><span class="n">Term</span> <span class="o">=</span> <span class="n">c</span><span class="o">.</span><span class="n">term</span> <span class="o">+</span> <span class="m">1</span>
+        <span class="n">msg</span><span class="o">.</span><span class="n">MsgType</span> <span class="o">=</span> <span class="n">raftpd</span><span class="o">.</span><span class="n">MsgPreVoteRequest</span>
+        <span class="n">c</span><span class="o">.</span><span class="n">becomePreCandidate</span><span class="p">()</span>
+    <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+        <span class="n">msg</span><span class="o">.</span><span class="n">Term</span> <span class="o">=</span> <span class="n">c</span><span class="o">.</span><span class="n">term</span>
+        <span class="n">msg</span><span class="o">.</span><span class="n">MsgType</span> <span class="o">=</span> <span class="n">raftpd</span><span class="o">.</span><span class="n">MsgVoteRequest</span>
+        <span class="n">c</span><span class="o">.</span><span class="n">becomeCandidate</span><span class="p">()</span>
+    <span class="p">}</span>
+
+    <span class="k">for</span> <span class="n">i</span> <span class="o">:=</span> <span class="m">0</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="n">c</span><span class="o">.</span><span class="n">nodes</span><span class="p">);</span> <span class="n">i</span><span class="o">++</span> <span class="p">{</span>
+        <span class="n">node</span> <span class="o">:=</span> <span class="o">&amp;</span><span class="n">c</span><span class="o">.</span><span class="n">nodes</span><span class="p">[</span><span class="n">i</span><span class="p">]</span>
+        <span class="n">msg</span><span class="o">.</span><span class="n">To</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">id</span>
+
+        <span class="n">log</span><span class="o">.</span><span class="n">Infof</span><span class="p">(</span><span class="s">"%x [term: %d, index: %d] send %v request to %x at term %d"</span><span class="p">,</span>
+            <span class="n">c</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">c</span><span class="o">.</span><span class="n">log</span><span class="o">.</span><span class="n">lastTerm</span><span class="p">(),</span> <span class="n">c</span><span class="o">.</span><span class="n">log</span><span class="o">.</span><span class="n">lastIndex</span><span class="p">(),</span> <span class="n">msg</span><span class="o">.</span><span class="n">MsgType</span><span class="p">,</span> <span class="n">msg</span><span class="o">.</span><span class="n">To</span><span class="p">,</span> <span class="n">c</span><span class="o">.</span><span class="n">term</span><span class="p">)</span>
+        <span class="n">c</span><span class="o">.</span><span class="n">send</span><span class="p">(</span><span class="o">&amp;</span><span class="n">msg</span><span class="p">)</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>PreVote 要求某个节点只有在长时间未和领导人交换心跳时才参与选举。同时参与选举要求候选人的日志必须是最新的（<strong>领导人完全特性</strong>）。所以在接收到其他节点发送的 <code class="language-plaintext highlighter-rouge">MsgPreVoteRequest</code> 时，1、如果在一个选举超时内（注意：<code class="language-plaintext highlighter-rouge">electionTimeout</code>）有和领导交换过一次心跳；2、或者候选人的任期号小于自身的任期号；3、或者候选人的日志不是最新的都拒绝参加选举。否则回复参加选举。</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">func</span> <span class="p">(</span><span class="n">c</span> <span class="o">*</span><span class="n">core</span><span class="p">)</span> <span class="n">handlePreVote</span><span class="p">(</span><span class="n">msg</span> <span class="o">*</span><span class="n">raftpd</span><span class="o">.</span><span class="n">Message</span><span class="p">)</span> <span class="p">{</span>
+    <span class="n">reply</span> <span class="o">:=</span> <span class="n">raftpd</span><span class="o">.</span><span class="n">Message</span><span class="p">{}</span>
+    <span class="n">reply</span><span class="o">.</span><span class="n">To</span> <span class="o">=</span> <span class="n">msg</span><span class="o">.</span><span class="n">From</span>
+    <span class="n">reply</span><span class="o">.</span><span class="n">MsgType</span> <span class="o">=</span> <span class="n">raftpd</span><span class="o">.</span><span class="n">MsgPreVoteResponse</span>
+
+    <span class="c">// Reply false if last AppendEntries call was received less than election timeout ago.</span>
+    <span class="c">// Reply false if term &lt; currentTerm.</span>
+    <span class="c">// Reply false if candidate's log isn't at least as up­to­date as receiver's log.</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">c</span><span class="o">.</span><span class="n">leaderId</span> <span class="o">!=</span> <span class="n">InvalidId</span> <span class="o">&amp;&amp;</span> <span class="n">c</span><span class="o">.</span><span class="n">timeElapsed</span> <span class="o">&lt;</span> <span class="n">c</span><span class="o">.</span><span class="n">electionTick</span><span class="p">)</span> <span class="o">||</span>
+        <span class="p">(</span><span class="n">msg</span><span class="o">.</span><span class="n">Term</span> <span class="o">&lt;</span> <span class="n">c</span><span class="o">.</span><span class="n">term</span><span class="p">)</span> <span class="o">||</span>
+        <span class="o">!</span><span class="n">c</span><span class="o">.</span><span class="n">log</span><span class="o">.</span><span class="n">IsUpToDate</span><span class="p">(</span><span class="n">msg</span><span class="o">.</span><span class="n">LogIndex</span><span class="p">,</span> <span class="n">msg</span><span class="o">.</span><span class="n">LogTerm</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">reply</span><span class="o">.</span><span class="n">Reject</span> <span class="o">=</span> <span class="no">false</span>
+    <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+        <span class="n">reply</span><span class="o">.</span><span class="n">Reject</span> <span class="o">=</span> <span class="no">true</span>
+    <span class="p">}</span>
+
+    <span class="n">c</span><span class="o">.</span><span class="n">send</span><span class="p">(</span><span class="o">&amp;</span><span class="n">reply</span><span class="p">)</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>注意：实际上在处理远程信息时，如果接收到了过期信息，会直接丢弃（后面有讲），不会进入 <code class="language-plaintext highlighter-rouge">handlePreVote</code> 函数，所以上面第二点实际上永远为假。</p>
+
+<p>预候选人接收到其他节点回复的信息时:</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">func</span> <span class="p">(</span><span class="n">c</span> <span class="o">*</span><span class="n">core</span><span class="p">)</span> <span class="n">handleVoteResponse</span><span class="p">(</span><span class="n">msg</span> <span class="o">*</span><span class="n">raftpd</span><span class="o">.</span><span class="n">Message</span><span class="p">)</span> <span class="p">{</span>
+    <span class="k">if</span> <span class="n">msg</span><span class="o">.</span><span class="n">Reject</span> <span class="p">{</span>
+        <span class="n">log</span><span class="o">.</span><span class="n">Infof</span><span class="p">(</span><span class="s">"%x received %v rejection from %x at term %d"</span><span class="p">,</span>
+            <span class="n">c</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">msg</span><span class="o">.</span><span class="n">MsgType</span><span class="p">,</span> <span class="n">msg</span><span class="o">.</span><span class="n">From</span><span class="p">,</span> <span class="n">c</span><span class="o">.</span><span class="n">term</span><span class="p">)</span>
+    <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+        <span class="n">log</span><span class="o">.</span><span class="n">Infof</span><span class="p">(</span><span class="s">"%x received %v from %x at term %s"</span><span class="p">,</span>
+            <span class="n">c</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">msg</span><span class="o">.</span><span class="n">MsgType</span><span class="p">,</span> <span class="n">msg</span><span class="o">.</span><span class="n">From</span><span class="p">,</span> <span class="n">msg</span><span class="o">.</span><span class="n">Term</span><span class="p">)</span>
+    <span class="p">}</span>
+
+    <span class="n">node</span> <span class="o">:=</span> <span class="n">c</span><span class="o">.</span><span class="n">getNodeById</span><span class="p">(</span><span class="n">msg</span><span class="o">.</span><span class="n">From</span><span class="p">)</span>
+    <span class="n">node</span><span class="o">.</span><span class="n">updateVoteState</span><span class="p">(</span><span class="n">msg</span><span class="o">.</span><span class="n">Reject</span><span class="p">)</span>
+
+    <span class="n">count</span> <span class="o">:=</span> <span class="n">c</span><span class="o">.</span><span class="n">voteStateCount</span><span class="p">(</span><span class="n">voteGranted</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">count</span> <span class="o">&gt;=</span> <span class="n">c</span><span class="o">.</span><span class="n">quorum</span><span class="p">()</span> <span class="p">{</span>
+        <span class="k">if</span> <span class="n">msg</span><span class="o">.</span><span class="n">MsgType</span> <span class="o">==</span> <span class="n">raftpd</span><span class="o">.</span><span class="n">MsgVoteResponse</span> <span class="p">{</span>
+            <span class="n">c</span><span class="o">.</span><span class="n">becomeLeader</span><span class="p">()</span>
+            <span class="n">c</span><span class="o">.</span><span class="n">broadcastVictory</span><span class="p">()</span>
+        <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+            <span class="n">c</span><span class="o">.</span><span class="n">campaign</span><span class="p">(</span><span class="n">campaignCandidate</span><span class="p">)</span>
+        <span class="p">}</span>
+        <span class="k">return</span>
+    <span class="p">}</span>
+
+    <span class="c">// return to follower state if it receives vote denial from a majority</span>
+    <span class="n">count</span> <span class="o">=</span> <span class="n">c</span><span class="o">.</span><span class="n">voteStateCount</span><span class="p">(</span><span class="n">voteReject</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">count</span> <span class="o">&gt;=</span> <span class="n">c</span><span class="o">.</span><span class="n">quorum</span><span class="p">()</span> <span class="p">{</span>
+        <span class="n">c</span><span class="o">.</span><span class="n">becomeFollower</span><span class="p">(</span><span class="n">msg</span><span class="o">.</span><span class="n">Term</span><span class="p">,</span> <span class="n">InvalidId</span><span class="p">)</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>更新某个 node 对此次请求的投票情况，并判断支持者和反对者人数，如果支持者人数过半，那么调用 <code class="language-plaintext highlighter-rouge">campaign(campaignCandidate)</code> 进入候选人状态。如果反对者人数过半，那么节点会回退到跟随者的状态。</p>
+
+<h2 id="campaign">Campaign</h2>
+
+<p>在候选人一方，选举过程使用了相同的函数，不同的是跟随者对候选人的处理。只有当候选人未投票或者上一次投给了该候选人，候选人才能获得跟随者的选票。</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">func</span> <span class="p">(</span><span class="n">c</span> <span class="o">*</span><span class="n">core</span><span class="p">)</span> <span class="n">handleVote</span><span class="p">(</span><span class="n">msg</span> <span class="o">*</span><span class="n">raftpd</span><span class="o">.</span><span class="n">Message</span><span class="p">)</span> <span class="p">{</span>
+    <span class="n">reply</span> <span class="o">:=</span> <span class="n">raftpd</span><span class="o">.</span><span class="n">Message</span><span class="p">{}</span>
+    <span class="n">reply</span><span class="o">.</span><span class="n">To</span> <span class="o">=</span> <span class="n">msg</span><span class="o">.</span><span class="n">From</span>
+    <span class="n">reply</span><span class="o">.</span><span class="n">MsgType</span> <span class="o">=</span> <span class="n">raftpd</span><span class="o">.</span><span class="n">MsgVoteResponse</span>
+
+    <span class="c">// no vote or vote for candidate, and log is at least as up-to-date as receiver's.</span>
+    <span class="k">if</span> <span class="n">c</span><span class="o">.</span><span class="n">vote</span> <span class="o">==</span> <span class="n">InvalidId</span> <span class="o">||</span> <span class="n">c</span><span class="o">.</span><span class="n">vote</span> <span class="o">==</span> <span class="n">msg</span><span class="o">.</span><span class="n">From</span> <span class="o">||</span>
+        <span class="n">c</span><span class="o">.</span><span class="n">log</span><span class="o">.</span><span class="n">IsUpToDate</span><span class="p">(</span><span class="n">msg</span><span class="o">.</span><span class="n">LogIndex</span><span class="p">,</span> <span class="n">msg</span><span class="o">.</span><span class="n">LogTerm</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">reply</span><span class="o">.</span><span class="n">Reject</span> <span class="o">=</span> <span class="no">false</span>
+    <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+        <span class="n">reply</span><span class="o">.</span><span class="n">Reject</span> <span class="o">=</span> <span class="no">true</span>
+    <span class="p">}</span>
+
+    <span class="n">c</span><span class="o">.</span><span class="n">send</span><span class="p">(</span><span class="o">&amp;</span><span class="n">reply</span><span class="p">)</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<h2 id="处理过时消息">处理过时消息</h2>
+
+<p>根据 Raft 论文中将 term 用作逻辑时间，判断过期的消息。在论文图 2 中提到如果接收到来自高任期的消息，应该回退到跟随者状态；接收到过时消息，直接忽略。所以代码可以写为：</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">if</span> <span class="n">msg</span><span class="o">.</span><span class="n">Term</span> <span class="o">&lt;</span> <span class="n">c</span><span class="o">.</span><span class="n">term</span> <span class="p">{</span>
+    <span class="n">c</span><span class="o">.</span><span class="n">reject</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+<span class="p">}</span> <span class="k">if</span> <span class="n">msg</span><span class="o">.</span><span class="n">Term</span> <span class="o">&gt;</span> <span class="n">c</span><span class="o">.</span><span class="n">term</span> <span class="p">{</span>
+    <span class="n">c</span><span class="o">.</span><span class="n">becomeFollower</span><span class="p">()</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>实际上可能某个节点成为候选人后，又重新连接到网络中。此时发起投票会导致其他节点增大任期，因此对投票相关的消息做特殊处理。</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">func</span> <span class="p">(</span><span class="n">c</span> <span class="o">*</span><span class="n">core</span><span class="p">)</span> <span class="n">Step</span><span class="p">(</span><span class="n">msg</span> <span class="o">*</span><span class="n">raftpd</span><span class="o">.</span><span class="n">Message</span><span class="p">)</span> <span class="p">{</span>
+    <span class="k">if</span> <span class="n">msg</span><span class="o">.</span><span class="n">Term</span> <span class="o">&lt;</span> <span class="n">c</span><span class="o">.</span><span class="n">term</span> <span class="p">{</span>
+        <span class="n">c</span><span class="o">.</span><span class="n">reject</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+    <span class="p">}</span> <span class="k">else</span> <span class="k">if</span> <span class="n">msg</span><span class="o">.</span><span class="n">Term</span> <span class="o">&gt;</span> <span class="n">c</span><span class="o">.</span><span class="n">term</span> <span class="p">{</span>
+        <span class="k">if</span> <span class="n">msg</span><span class="o">.</span><span class="n">MsgType</span> <span class="o">==</span> <span class="n">raftpd</span><span class="o">.</span><span class="n">MsgPreVoteRequest</span> <span class="p">{</span>
+        <span class="p">}</span> <span class="k">else</span> <span class="k">if</span> <span class="n">msg</span><span class="o">.</span><span class="n">MsgType</span> <span class="o">==</span> <span class="n">raftpd</span><span class="o">.</span><span class="n">MsgPreVoteResponse</span> <span class="o">&amp;&amp;</span> <span class="n">msg</span><span class="o">.</span><span class="n">Reject</span> <span class="p">{</span>
+        <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+            <span class="n">c</span><span class="o">.</span><span class="n">becomeFollower</span><span class="p">(</span><span class="n">msg</span><span class="o">.</span><span class="n">Term</span><span class="p">,</span> <span class="n">leaderId</span><span class="p">)</span>
+        <span class="p">}</span>
+    <span class="p">}</span>
+
+    <span class="k">switch</span> <span class="n">msg</span><span class="o">.</span><span class="n">MsgType</span> <span class="p">{</span>
+    <span class="k">case</span> <span class="n">raftpd</span><span class="o">.</span><span class="n">MsgPreVoteRequest</span><span class="o">:</span>
+        <span class="n">c</span><span class="o">.</span><span class="n">handlePreVote</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+    <span class="k">case</span> <span class="n">raftpd</span><span class="o">.</span><span class="n">MsgVoteRequest</span><span class="o">:</span>
+        <span class="n">c</span><span class="o">.</span><span class="n">handleVote</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+    <span class="k">default</span><span class="o">:</span>
+        <span class="n">c</span><span class="o">.</span><span class="n">dispatch</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>Raft 算法虽然更易于理解，但是实现并不简单。就以上述代码为例，Raft 如果没有 PreVote 机制，那么重新上线的候选人会通过 <code class="language-plaintext highlighter-rouge">c.reject(msg)</code> 强制让候选人参与选举。加入 PreVote 机制也不能完全避免这种情况。如果一个节点成为了候选人，此时领导人重新上线，那么候选人仍然会强制发起一次选举[3]。</p>
+
+<h1 id="references">References</h1>
+
+<ol>
+  <li><a href="https://ramcloud.atlassian.net/wiki/download/attachments/6586375/raft.pdf">寻找一种易于理解的一致性算法（扩展版）</a></li>
+  <li><a href="http://blog.neverchanje.com/2017/01/30/etcd_raft_core/">Etcd-raft-core 阅读</a></li>
+  <li><a href="http://blog.neverchanje.com/2017/01/31/morning_paper_four_modifications_mongo_raft/">Morning Paper, MongoDB 对 Raft 算法的 4 个改动</a></li>
+</ol>
+
+  </div><a class="u-url" href="/destribution/2018/01/07/Raft-%E5%AE%9E%E7%8E%B0%E6%8C%87%E5%8C%97-%E9%A2%86%E5%AF%BC%E9%80%89%E4%B8%BE.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">W41ter&#39;s Bistro</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">W41ter&#39;s Bistro</li><li><a class="u-email" href="mailto:w41ter.l@gmail.com">w41ter.l@gmail.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/w41ter"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">w41ter</span></a></li><li><a href="https://www.twitter.com/WalterM56697798"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">WalterM56697798</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Focus on distributed storage system, compiler.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>

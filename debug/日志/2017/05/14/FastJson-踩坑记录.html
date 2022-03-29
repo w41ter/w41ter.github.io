@@ -1,0 +1,1265 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>FastJson 踩坑记录 | W41ter’s Bistro</title>
+<meta name="generator" content="Jekyll v4.2.2" />
+<meta property="og:title" content="FastJson 踩坑记录" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="关键字: fastjson stackoverflow 本文使用的版本是 1.2.32 fastjson 是阿里开源的Json格式化工具库。在项目中使用了fastjson，然后出现了一个奇怪的bug。程序在序列化的时候递归调用了我调用序列化函数的函数。简单点说就是序列化中递归地调用了自己，最后stackoverflow。 下面是是使用的代码： public class Host { private String name; public Host() {} public String getName() { return name; } public void setName(String name) { this.name = name; } public static Host factory(byte [] bytes) { return JSON.parseObjec(bytes, Host.class); } public byte[] getJson() { return JSON.toJSONBytes(this); } } 然后在程序中某处使用byte []bytes = host.getJson()，出现的错误大概如下： java.lang.StackOverflowError at com.alibaba.fastjson.serializer.JSONSerializer.setContext(JSONSerializer.java:113) at com.alibaba.fastjson.serializer.JSONSerializer.setContext(JSONSerializer.java:109) at com.alibaba.fastjson.serializer.ASMSerializer_1_Host.write(Unknown Source) at com.alibaba.fastjson.serializer.JSONSerializer.write(JSONSerializer.java:275) at com.alibaba.fastjson.JSON.toJSONBytes(JSON.java:679) at com.alibaba.fastjson.JSON.toJSONBytes(JSON.java:605) at com.alibaba.fastjson.JSON.toJSONBytes(JSON.java:598) at xxx.Host.getBytes(Host.java:38) at com.alibaba.fastjson.serializer.ASMSerializer_1_Host.write(Unknown Source) at com.alibaba.fastjson.serializer.JSONSerializer.write(JSONSerializer.java:275) at com.alibaba.fastjson.JSON.toJSONBytes(JSON.java:679) at com.alibaba.fastjson.JSON.toJSONBytes(JSON.java:605) at com.alibaba.fastjson.JSON.toJSONBytes(JSON.java:598) at xxx.Host.getBytes(Host.java:38) 分析调用堆栈发现fastjson在生成的serializer.ASMSerializer\_1\_Host中调用了Host.getJson()导致了递归。排除自己的错误后，就将代码定位到了fastjson中，应该是fastjson中出了问题。然后开始调试代码： public static byte[] toJSONBytes(Object object, SerializeConfig config, int defaultFeatures, SerializerFeature... features) { SerializeWriter out = new SerializeWriter(null, defaultFeatures, features); try { JSONSerializer serializer = new JSONSerializer(out, config); serializer.write(object); return out.toBytes(IOUtils.UTF8); } finally { out.close(); } } 按照栈调用顺序来看，出错点应该在serializer.write(object)内部，继续深入： public final void write(Object object) { if (object == null) { out.writeNull(); return; } Class&lt;?&gt; clazz = object.getClass(); ObjectSerializer writer = getObjectWriter(clazz); try { writer.write(this, object, null, null, 0); } catch (IOException e) { throw new JSONException(e.getMessage(), e); } } 这里发现通过getObjectWriter(clazz)取得了host的writer，想必就是自动生成的ASMSerializer_1_Host实例。本来想进入writer.write中观察，没有源代码只好放弃。然后将目标放到getObjectWriter中，看看在writer实例构造过程中能不能找到点线索。 经过几层跳转，来到了真正的getObjectWriter中： private ObjectSerializer getObjectWriter(Class&lt;?&gt; clazz, boolean create) { ObjectSerializer writer = serializers.get(clazz); if (writer == null) { try { final ClassLoader classLoader = Thread.currentThread().getContextClassLoader(); for (Object o : ServiceLoader.load(AutowiredObjectSerializer.class, classLoader)) { if (!(o instanceof AutowiredObjectSerializer)) { continue; } AutowiredObjectSerializer autowired = (AutowiredObjectSerializer) o; for (Type forType : autowired.getAutowiredFor()) { put(forType, autowired); } } } catch (ClassCastException ex) { // skip } writer = serializers.get(clazz); } if (writer == null) { final ClassLoader classLoader = JSON.class.getClassLoader(); if (classLoader != Thread.currentThread().getContextClassLoader()) { try { for (Object o : ServiceLoader.load(AutowiredObjectSerializer.class, classLoader)) { if (!(o instanceof AutowiredObjectSerializer)) { continue; } AutowiredObjectSerializer autowired = (AutowiredObjectSerializer) o; for (Type forType : autowired.getAutowiredFor()) { put(forType, autowired); } } } catch (ClassCastException ex) { // skip } writer = serializers.get(clazz); } } if (writer == null) { if (Map.class.isAssignableFrom(clazz)) { put(clazz, MapSerializer.instance); } else if (List.class.isAssignableFrom(clazz)) { put(clazz, ListSerializer.instance); } else if (Collection.class.isAssignableFrom(clazz)) { put(clazz, CollectionCodec.instance); } else if (Date.class.isAssignableFrom(clazz)) { put(clazz, DateCodec.instance); } else if (JSONAware.class.isAssignableFrom(clazz)) { put(clazz, JSONAwareSerializer.instance); } else if (JSONSerializable.class.isAssignableFrom(clazz)) { put(clazz, JSONSerializableSerializer.instance); } else if (JSONStreamAware.class.isAssignableFrom(clazz)) { put(clazz, MiscCodec.instance); } else if (clazz.isEnum() || (clazz.getSuperclass() != null &amp;&amp; clazz.getSuperclass().isEnum())) { JSONType jsonType = clazz.getAnnotation(JSONType.class); if (jsonType != null &amp;&amp; jsonType.serializeEnumAsJavaBean()) { put(clazz, createJavaBeanSerializer(clazz)); } else { put(clazz, EnumSerializer.instance); } } else if (clazz.isArray()) { Class&lt;?&gt; componentType = clazz.getComponentType(); ObjectSerializer compObjectSerializer = getObjectWriter(componentType); put(clazz, new ArraySerializer(componentType, compObjectSerializer)); } else if (Throwable.class.isAssignableFrom(clazz)) { SerializeBeanInfo beanInfo = TypeUtils.buildBeanInfo(clazz, null, propertyNamingStrategy); beanInfo.features |= SerializerFeature.WriteClassName.mask; put(clazz, new JavaBeanSerializer(beanInfo)); } else if (TimeZone.class.isAssignableFrom(clazz) || Map.Entry.class.isAssignableFrom(clazz)) { put(clazz, MiscCodec.instance); } else if (Appendable.class.isAssignableFrom(clazz)) { put(clazz, AppendableSerializer.instance); } else if (Charset.class.isAssignableFrom(clazz)) { put(clazz, ToStringSerializer.instance); } else if (Enumeration.class.isAssignableFrom(clazz)) { put(clazz, EnumerationSerializer.instance); } else if (Calendar.class.isAssignableFrom(clazz) // || XMLGregorianCalendar.class.isAssignableFrom(clazz)) { put(clazz, CalendarCodec.instance); } else if (Clob.class.isAssignableFrom(clazz)) { put(clazz, ClobSeriliazer.instance); } else if (TypeUtils.isPath(clazz)) { put(clazz, ToStringSerializer.instance); } else if (Iterator.class.isAssignableFrom(clazz)) { put(clazz, MiscCodec.instance); } else { String className = clazz.getName(); if (className.startsWith(&quot;java.awt.&quot;) // &amp;&amp; AwtCodec.support(clazz) // ) { // awt if (!awtError) { try { put(Class.forName(&quot;java.awt.Color&quot;), AwtCodec.instance); put(Class.forName(&quot;java.awt.Font&quot;), AwtCodec.instance); put(Class.forName(&quot;java.awt.Point&quot;), AwtCodec.instance); put(Class.forName(&quot;java.awt.Rectangle&quot;), AwtCodec.instance); } catch (Throwable e) { awtError = true; // skip } } return AwtCodec.instance; } // jdk8 if ((!jdk8Error) // &amp;&amp; (className.startsWith(&quot;java.time.&quot;) // || className.startsWith(&quot;java.util.Optional&quot;) // || className.equals(&quot;java.util.concurrent.atomic.LongAdder&quot;) || className.equals(&quot;java.util.concurrent.atomic.DoubleAdder&quot;) )) { try { put(Class.forName(&quot;java.time.LocalDateTime&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.LocalDate&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.LocalTime&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.ZonedDateTime&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.OffsetDateTime&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.OffsetTime&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.ZoneOffset&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.ZoneRegion&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.Period&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.Duration&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.Instant&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.util.Optional&quot;), OptionalCodec.instance); put(Class.forName(&quot;java.util.OptionalDouble&quot;), OptionalCodec.instance); put(Class.forName(&quot;java.util.OptionalInt&quot;), OptionalCodec.instance); put(Class.forName(&quot;java.util.OptionalLong&quot;), OptionalCodec.instance); put(Class.forName(&quot;java.util.concurrent.atomic.LongAdder&quot;), AdderSerializer.instance); put(Class.forName(&quot;java.util.concurrent.atomic.DoubleAdder&quot;), AdderSerializer.instance); writer = serializers.get(clazz); if (writer != null) { return writer; } } catch (Throwable e) { // skip jdk8Error = true; } } if ((!oracleJdbcError) // &amp;&amp; className.startsWith(&quot;oracle.sql.&quot;)) { try { put(Class.forName(&quot;oracle.sql.DATE&quot;), DateCodec.instance); put(Class.forName(&quot;oracle.sql.TIMESTAMP&quot;), DateCodec.instance); writer = serializers.get(clazz); if (writer != null) { return writer; } } catch (Throwable e) { // skip oracleJdbcError = true; } } if ((!springfoxError) // &amp;&amp; className.equals(&quot;springfox.documentation.spring.web.json.Json&quot;)) { try { put(Class.forName(&quot;springfox.documentation.spring.web.json.Json&quot;), // SwaggerJsonSerializer.instance); writer = serializers.get(clazz); if (writer != null) { return writer; } } catch (ClassNotFoundException e) { // skip springfoxError = true; } } if ((!guavaError) // &amp;&amp; className.startsWith(&quot;com.google.common.collect.&quot;)) { try { put(Class.forName(&quot;com.google.common.collect.HashMultimap&quot;), // GuavaCodec.instance); put(Class.forName(&quot;com.google.common.collect.LinkedListMultimap&quot;), // GuavaCodec.instance); put(Class.forName(&quot;com.google.common.collect.ArrayListMultimap&quot;), // GuavaCodec.instance); put(Class.forName(&quot;com.google.common.collect.TreeMultimap&quot;), // GuavaCodec.instance); writer = serializers.get(clazz); if (writer != null) { return writer; } } catch (ClassNotFoundException e) { // skip guavaError = true; } } if (className.equals(&quot;net.sf.json.JSONNull&quot;)) { try { put(Class.forName(&quot;net.sf.json.JSONNull&quot;), // MiscCodec.instance); } catch (ClassNotFoundException e) { // skip } writer = serializers.get(clazz); if (writer != null) { return writer; } } if (TypeUtils.isProxy(clazz)) { Class&lt;?&gt; superClazz = clazz.getSuperclass(); ObjectSerializer superWriter = getObjectWriter(superClazz); put(clazz, superWriter); return superWriter; } if (create) { put(clazz, createJavaBeanSerializer(clazz)); } } writer = serializers.get(clazz); } return writer; } 简单扫描代码逻辑，发现writer是通过serializers.get(clazz)获取的。而代码中分别从Thread.currentThread().getContextClassLoader、JSON.class.getClassLoader以及最后对一下常见类分析来填充serializers。最后一种办法的末尾，走到了： put(clazz, createJavaBeanSerializer(clazz)); 可以发现逻辑是实在找不到，使用createJavaBeanSerializer(clazz)来创建clazz对应的writer。看来我们的目标应该是这个createJavaBeanSerializer函数，所以进一步深入： private final ObjectSerializer createJavaBeanSerializer(Class&lt;?&gt; clazz) { SerializeBeanInfo beanInfo = TypeUtils.buildBeanInfo(clazz, null, propertyNamingStrategy, fieldBased); if (beanInfo.fields.length == 0 &amp;&amp; Iterable.class.isAssignableFrom(clazz)) { return MiscCodec.instance; } return createJavaBeanSerializer(beanInfo); } 首先调用TypeUtils.buildBeanInfo来生成SerializerBeanInfo。 public static SerializeBeanInfo buildBeanInfo(Class&lt;?&gt; beanType // , Map&lt;String, String&gt; aliasMap // , PropertyNamingStrategy propertyNamingStrategy // , boolean fieldBased // ) { JSONType jsonType = beanType.getAnnotation(JSONType.class); // fieldName,field ，先生成fieldName的快照，减少之后的findField的轮询 Map&lt;String, Field&gt; fieldCacheMap = new HashMap&lt;String, Field&gt;(); ParserConfig.parserAllFieldToCache(beanType, fieldCacheMap); List&lt;FieldInfo&gt; fieldInfoList = fieldBased ? computeGettersWithFieldBase(beanType, aliasMap, false, propertyNamingStrategy) // : computeGetters(beanType, jsonType, aliasMap, fieldCacheMap, false, propertyNamingStrategy); FieldInfo[] fields = new FieldInfo[fieldInfoList.size()]; fieldInfoList.toArray(fields); String[] orders = null; final int features; String typeName = null; if (jsonType != null) { orders = jsonType.orders(); typeName = jsonType.typeName(); if (typeName.length() == 0) { typeName = null; } features = SerializerFeature.of(jsonType.serialzeFeatures()); } else { features = 0; } FieldInfo[] sortedFields; List&lt;FieldInfo&gt; sortedFieldList; if (orders != null &amp;&amp; orders.length != 0) { sortedFieldList = fieldBased ? computeGettersWithFieldBase(beanType, aliasMap, true, propertyNamingStrategy) // : computeGetters(beanType, jsonType, aliasMap,fieldCacheMap, true, propertyNamingStrategy); } else { sortedFieldList = new ArrayList&lt;FieldInfo&gt;(fieldInfoList); Collections.sort(sortedFieldList); } sortedFields = new FieldInfo[sortedFieldList.size()]; sortedFieldList.toArray(sortedFields); if (Arrays.equals(sortedFields, fields)) { sortedFields = fields; } return new SerializeBeanInfo(beanType, jsonType, typeName, features, fields, sortedFields); } 其中parserAllFieldToCache将字段保存起来，减少访问次数。紧接着设置fieldInfoList的值，此时fieldBase为false，所以进入了computeGetters。 public static List&lt;FieldInfo&gt; computeGetters(Class&lt;?&gt; clazz, // JSONType jsonType, // Map&lt;String, String&gt; aliasMap, // Map&lt;String, Field&gt; fieldCacheMap, // boolean sorted, // PropertyNamingStrategy propertyNamingStrategy // ) { Map&lt;String, FieldInfo&gt; fieldInfoMap = new LinkedHashMap&lt;String, FieldInfo&gt;(); for (Method method : clazz.getMethods()) { String methodName = method.getName(); int ordinal = 0, serialzeFeatures = 0, parserFeatures = 0; String label = null; if (Modifier.isStatic(method.getModifiers())) { continue; } if (method.getReturnType().equals(Void.TYPE)) { continue; } if (method.getParameterTypes().length != 0) { continue; } if (method.getReturnType() == ClassLoader.class) { continue; } if (method.getName().equals(&quot;getMetaClass&quot;) &amp;&amp; method.getReturnType().getName().equals(&quot;groovy.lang.MetaClass&quot;)) { continue; } JSONField annotation = method.getAnnotation(JSONField.class); if (annotation == null) { annotation = getSuperMethodAnnotation(clazz, method); } if (annotation != null) { if (!annotation.serialize()) { continue; } ordinal = annotation.ordinal(); serialzeFeatures = SerializerFeature.of(annotation.serialzeFeatures()); parserFeatures = Feature.of(annotation.parseFeatures()); if (annotation.name().length() != 0) { String propertyName = annotation.name(); if (aliasMap != null) { propertyName = aliasMap.get(propertyName); if (propertyName == null) { continue; } } FieldInfo fieldInfo = new FieldInfo(propertyName, method, null, clazz, null, ordinal, serialzeFeatures, parserFeatures, annotation, null, label); fieldInfoMap.put(propertyName, fieldInfo); continue; } if (annotation.label().length() != 0) { label = annotation.label(); } } if (methodName.startsWith(&quot;get&quot;)) { if (methodName.length() &lt; 4) { continue; } if (methodName.equals(&quot;getClass&quot;)) { continue; } if (methodName.equals(&quot;getDeclaringClass&quot;) &amp;&amp; clazz.isEnum()) { continue; } char c3 = methodName.charAt(3); String propertyName; if (Character.isUpperCase(c3) // || c3 &gt; 512 // for unicode method name ) { if (compatibleWithJavaBean) { propertyName = decapitalize(methodName.substring(3)); } else { propertyName = Character.toLowerCase(methodName.charAt(3)) + methodName.substring(4); } propertyName = getPropertyNameByCompatibleFieldName(fieldCacheMap, methodName, propertyName,3); } else if (c3 == &#39;_&#39;) { propertyName = methodName.substring(4); } else if (c3 == &#39;f&#39;) { propertyName = methodName.substring(3); } else if (methodName.length() &gt;= 5 &amp;&amp; Character.isUpperCase(methodName.charAt(4))) { propertyName = decapitalize(methodName.substring(3)); } else { continue; } boolean ignore = isJSONTypeIgnore(clazz, propertyName); if (ignore) { continue; } //假如bean的field很多的情况一下，轮询时将大大降低效率 Field field = ParserConfig.getFieldFromCache(propertyName, fieldCacheMap); if (field == null &amp;&amp; propertyName.length() &gt; 1) { char ch = propertyName.charAt(1); if (ch &gt;= &#39;A&#39; &amp;&amp; ch &lt;= &#39;Z&#39;) { String javaBeanCompatiblePropertyName = decapitalize(methodName.substring(3)); field = ParserConfig.getFieldFromCache(javaBeanCompatiblePropertyName, fieldCacheMap); } } JSONField fieldAnnotation = null; if (field != null) { fieldAnnotation = field.getAnnotation(JSONField.class); if (fieldAnnotation != null) { if (!fieldAnnotation.serialize()) { continue; } ordinal = fieldAnnotation.ordinal(); serialzeFeatures = SerializerFeature.of(fieldAnnotation.serialzeFeatures()); parserFeatures = Feature.of(fieldAnnotation.parseFeatures()); if (fieldAnnotation.name().length() != 0) { propertyName = fieldAnnotation.name(); if (aliasMap != null) { propertyName = aliasMap.get(propertyName); if (propertyName == null) { continue; } } } if (fieldAnnotation.label().length() != 0) { label = fieldAnnotation.label(); } } } if (aliasMap != null) { propertyName = aliasMap.get(propertyName); if (propertyName == null) { continue; } } if (propertyNamingStrategy != null) { propertyName = propertyNamingStrategy.translate(propertyName); } FieldInfo fieldInfo = new FieldInfo(propertyName, method, field, clazz, null, ordinal, serialzeFeatures, parserFeatures, annotation, fieldAnnotation, label); fieldInfoMap.put(propertyName, fieldInfo); } if (methodName.startsWith(&quot;is&quot;)) { if (methodName.length() &lt; 3) { continue; } if (method.getReturnType() != Boolean.TYPE &amp;&amp; method.getReturnType() != Boolean.class) { continue; } char c2 = methodName.charAt(2); String propertyName; if (Character.isUpperCase(c2)) { if (compatibleWithJavaBean) { propertyName = decapitalize(methodName.substring(2)); } else { propertyName = Character.toLowerCase(methodName.charAt(2)) + methodName.substring(3); } propertyName = getPropertyNameByCompatibleFieldName(fieldCacheMap, methodName, propertyName,2); } else if (c2 == &#39;_&#39;) { propertyName = methodName.substring(3); } else if (c2 == &#39;f&#39;) { propertyName = methodName.substring(2); } else { continue; } boolean ignore = isJSONTypeIgnore(clazz, propertyName); if (ignore) { continue; } Field field = ParserConfig.getFieldFromCache(propertyName,fieldCacheMap); if (field == null) { field = ParserConfig.getFieldFromCache(methodName,fieldCacheMap); } JSONField fieldAnnotation = null; if (field != null) { fieldAnnotation = field.getAnnotation(JSONField.class); if (fieldAnnotation != null) { if (!fieldAnnotation.serialize()) { continue; } ordinal = fieldAnnotation.ordinal(); serialzeFeatures = SerializerFeature.of(fieldAnnotation.serialzeFeatures()); parserFeatures = Feature.of(fieldAnnotation.parseFeatures()); if (fieldAnnotation.name().length() != 0) { propertyName = fieldAnnotation.name(); if (aliasMap != null) { propertyName = aliasMap.get(propertyName); if (propertyName == null) { continue; } } } if (fieldAnnotation.label().length() != 0) { label = fieldAnnotation.label(); } } } if (aliasMap != null) { propertyName = aliasMap.get(propertyName); if (propertyName == null) { continue; } } if (propertyNamingStrategy != null) { propertyName = propertyNamingStrategy.translate(propertyName); } //优先选择get if (fieldInfoMap.containsKey(propertyName)) { continue; } FieldInfo fieldInfo = new FieldInfo(propertyName, method, field, clazz, null, ordinal, serialzeFeatures, parserFeatures, annotation, fieldAnnotation, label); fieldInfoMap.put(propertyName, fieldInfo); } } Field[] fields = clazz.getFields(); computeFields(clazz, aliasMap, propertyNamingStrategy, fieldInfoMap, fields); return getFieldInfos(clazz, sorted, fieldInfoMap); } 这里针对clazz的每一个方法进行了判断，由于只有get和set开头的函数，所以只关心methodName.startsWith(&quot;get&quot;)分支。最后进入了getPropertyNameByCompatibleFieldName所在的分支，并将propertyName设置为对应get的属性名。在getPropertyNameByCompatibleFieldName函数中，而compatibleWithFieldName设置为false所以相当于跳过了。 private static String getPropertyNameByCompatibleFieldName(Map&lt;String, Field&gt; fieldCacheMap, String methodName, String propertyName,int fromIdx) { if (compatibleWithFieldName){ if (!fieldCacheMap.containsKey(propertyName)){ String tempPropertyName=methodName.substring(fromIdx); return fieldCacheMap.containsKey(tempPropertyName)?tempPropertyName:propertyName; } } return propertyName; } 继续分析，程序进入isJSONTypeIgnore根据注解判断是否跳过该字段，我的例子中不关心。紧接着调用了getFieldFromCache： public static Field getFieldFromCache(String fieldName, Map&lt;String, Field&gt; fieldCacheMap) { Field field = fieldCacheMap.get(fieldName); if (field == null) { field = fieldCacheMap.get(&quot;_&quot; + fieldName); } if (field == null) { field = fieldCacheMap.get(&quot;m_&quot; + fieldName); } if (field == null) { char c0 = fieldName.charAt(0); if (c0 &gt;= &#39;a&#39; &amp;&amp; c0 &lt;= &#39;z&#39;) { char[] chars = fieldName.toCharArray(); chars[0] -= 32; // lower String fieldNameX = new String(chars); field = fieldCacheMap.get(fieldNameX); } } return field; } 这里按照刚才取出的方法名来查找字段，如果失败则加上_或者m_之类的方法继续判断。返回继续分析，在做了部分如注解别名之类的处理后，将分析得到的结果生成一个FieldInfo，并保存在fieldInfoMap中。最后调用computeFields进一步处理一些public属性的fields数据。最后经过getFieldInfos处理后，将得到的List&lt;FieldInfo&gt;中，返回上一级。 private static void computeFields( Class&lt;?&gt; clazz, // Map&lt;String, String&gt; aliasMap, // PropertyNamingStrategy propertyNamingStrategy, // Map&lt;String, FieldInfo&gt; fieldInfoMap, // Field[] fields) { for (Field field : fields) { if (Modifier.isStatic(field.getModifiers())) { continue; } JSONField fieldAnnotation = field.getAnnotation(JSONField.class); int ordinal = 0, serialzeFeatures = 0, parserFeatures = 0; String propertyName = field.getName(); String label = null; if (fieldAnnotation != null) { if (!fieldAnnotation.serialize()) { continue; } ordinal = fieldAnnotation.ordinal(); serialzeFeatures = SerializerFeature.of(fieldAnnotation.serialzeFeatures()); parserFeatures = Feature.of(fieldAnnotation.parseFeatures()); if (fieldAnnotation.name().length() != 0) { propertyName = fieldAnnotation.name(); } if (fieldAnnotation.label().length() != 0) { label = fieldAnnotation.label(); } } if (aliasMap != null) { propertyName = aliasMap.get(propertyName); if (propertyName == null) { continue; } } if (propertyNamingStrategy != null) { propertyName = propertyNamingStrategy.translate(propertyName); } if (!fieldInfoMap.containsKey(propertyName)) { FieldInfo fieldInfo = new FieldInfo(propertyName, null, field, clazz, null, ordinal, serialzeFeatures, parserFeatures, null, fieldAnnotation, label); fieldInfoMap.put(propertyName, fieldInfo); } } } 分析到这里，可以发现在fieldInfoList中实际上值：name,json。看到这里相比也能猜出大概了，现在继续跟踪。回到buildBeanInfo中，将刚才得到的fieldInfoList构造为SerializeBeanInfo并返回。 public ObjectSerializer createJavaBeanSerializer(SerializeBeanInfo beanInfo) { JSONType jsonType = beanInfo.jsonType; if (jsonType != null) { Class&lt;?&gt; serializerClass = jsonType.serializer(); if (serializerClass != Void.class) { try { Object seralizer = serializerClass.newInstance(); if (seralizer instanceof ObjectSerializer) { return (ObjectSerializer) seralizer; } } catch (Throwable e) { // skip } } if (jsonType.asm() == false) { asm = false; } for (SerializerFeature feature : jsonType.serialzeFeatures()) { if (SerializerFeature.WriteNonStringValueAsString == feature // || SerializerFeature.WriteEnumUsingToString == feature // || SerializerFeature.NotWriteDefaultValue == feature) { asm = false; break; } } } Class&lt;?&gt; clazz = beanInfo.beanType; if (!Modifier.isPublic(beanInfo.beanType.getModifiers())) { return new JavaBeanSerializer(beanInfo); } boolean asm = this.asm &amp;&amp; !fieldBased; if (asm &amp;&amp; asmFactory.classLoader.isExternalClass(clazz) || clazz == Serializable.class || clazz == Object.class) { asm = false; } if (asm &amp;&amp; !ASMUtils.checkName(clazz.getSimpleName())) { asm = false; } if (asm) { for(FieldInfo fieldInfo : beanInfo.fields){ Field field = fieldInfo.field; if (field != null &amp;&amp; !field.getType().equals(fieldInfo.fieldClass)) { asm = false; break; } Method method = fieldInfo.method; if (method != null &amp;&amp; !method.getReturnType().equals(fieldInfo.fieldClass)) { asm = false; break; } JSONField annotation = fieldInfo.getAnnotation(); if (annotation == null) { continue; } if ((!ASMUtils.checkName(annotation.name())) // || annotation.format().length() != 0 || annotation.jsonDirect() || annotation.serializeUsing() != Void.class || annotation.unwrapped() ) { asm = false; break; } for (SerializerFeature feature : annotation.serialzeFeatures()) { if (SerializerFeature.WriteNonStringValueAsString == feature // || SerializerFeature.WriteEnumUsingToString == feature // || SerializerFeature.NotWriteDefaultValue == feature) { asm = false; break; } } } } if (asm) { try { ObjectSerializer asmSerializer = createASMSerializer(beanInfo); if (asmSerializer != null) { return asmSerializer; } } catch (ClassFormatError e) { // skip } catch (ClassCastException e) { // skip } catch (Throwable e) { throw new JSONException(&quot;create asm serializer error, class &quot; + clazz, e); } } return new JavaBeanSerializer(beanInfo); } 经过处理后进入了createASMSerializer，其中调用createJavaBeanSerializer来创建具体的writer： public JavaBeanSerializer createJavaBeanSerializer(SerializeBeanInfo beanInfo) throws Exception { Class&lt;?&gt; clazz = beanInfo.beanType; if (clazz.isPrimitive()) { throw new JSONException(&quot;unsupportd class &quot; + clazz.getName()); } JSONType jsonType = clazz.getAnnotation(JSONType.class); FieldInfo[] unsortedGetters = beanInfo.fields;; for (FieldInfo fieldInfo : unsortedGetters) { if (fieldInfo.field == null // &amp;&amp; fieldInfo.method != null // &amp;&amp; fieldInfo.method.getDeclaringClass().isInterface()) { return new JavaBeanSerializer(clazz); } } FieldInfo[] getters = beanInfo.sortedFields; boolean nativeSorted = beanInfo.sortedFields == beanInfo.fields; if (getters.length &gt; 256) { return new JavaBeanSerializer(clazz); } for (FieldInfo getter : getters) { if (!ASMUtils.checkName(getter.getMember().getName())) { return new JavaBeanSerializer(clazz); } } String className = &quot;ASMSerializer_&quot; + seed.incrementAndGet() + &quot;_&quot; + clazz.getSimpleName(); String packageName = ASMSerializerFactory.class.getPackage().getName(); String classNameType = packageName.replace(&#39;.&#39;, &#39;/&#39;) + &quot;/&quot; + className; String classNameFull = packageName + &quot;.&quot; + className; ClassWriter cw = new ClassWriter(); cw.visit(V1_5 // , ACC_PUBLIC + ACC_SUPER // , classNameType // , JavaBeanSerializer // , new String[] { ObjectSerializer } // ); for (FieldInfo fieldInfo : getters) { if (fieldInfo.fieldClass.isPrimitive() // //|| fieldInfo.fieldClass.isEnum() // || fieldInfo.fieldClass == String.class) { continue; } new FieldWriter(cw, ACC_PUBLIC, fieldInfo.name + &quot;_asm_fieldType&quot;, &quot;Ljava/lang/reflect/Type;&quot;) // .visitEnd(); if (List.class.isAssignableFrom(fieldInfo.fieldClass)) { new FieldWriter(cw, ACC_PUBLIC, fieldInfo.name + &quot;_asm_list_item_ser_&quot;, ObjectSerializer_desc) // .visitEnd(); } new FieldWriter(cw, ACC_PUBLIC, fieldInfo.name + &quot;_asm_ser_&quot;, ObjectSerializer_desc) // .visitEnd(); } MethodVisitor mw = new MethodWriter(cw, ACC_PUBLIC, &quot;&lt;init&gt;&quot;, &quot;(&quot; + desc(SerializeBeanInfo.class) + &quot;)V&quot;, null, null); mw.visitVarInsn(ALOAD, 0); mw.visitVarInsn(ALOAD, 1); mw.visitMethodInsn(INVOKESPECIAL, JavaBeanSerializer, &quot;&lt;init&gt;&quot;, &quot;(&quot; + desc(SerializeBeanInfo.class) + &quot;)V&quot;); // init _asm_fieldType for (int i = 0; i &lt; getters.length; ++i) { FieldInfo fieldInfo = getters[i]; if (fieldInfo.fieldClass.isPrimitive() // // || fieldInfo.fieldClass.isEnum() // || fieldInfo.fieldClass == String.class) { continue; } mw.visitVarInsn(ALOAD, 0); if (fieldInfo.method != null) { mw.visitLdcInsn(com.alibaba.fastjson.asm.Type.getType(desc(fieldInfo.declaringClass))); mw.visitLdcInsn(fieldInfo.method.getName()); mw.visitMethodInsn(INVOKESTATIC, type(ASMUtils.class), &quot;getMethodType&quot;, &quot;(Ljava/lang/Class;Ljava/lang/String;)Ljava/lang/reflect/Type;&quot;); } else { mw.visitVarInsn(ALOAD, 0); mw.visitLdcInsn(i); mw.visitMethodInsn(INVOKESPECIAL, JavaBeanSerializer, &quot;getFieldType&quot;, &quot;(I)Ljava/lang/reflect/Type;&quot;); } mw.visitFieldInsn(PUTFIELD, classNameType, fieldInfo.name + &quot;_asm_fieldType&quot;, &quot;Ljava/lang/reflect/Type;&quot;); } mw.visitInsn(RETURN); mw.visitMaxs(4, 4); mw.visitEnd(); boolean DisableCircularReferenceDetect = false; if (jsonType != null) { for (SerializerFeature featrues : jsonType.serialzeFeatures()) { if (featrues == SerializerFeature.DisableCircularReferenceDetect) { DisableCircularReferenceDetect = true; break; } } } // 0 write // 1 writeNormal // 2 writeNonContext for (int i = 0; i &lt; 3; ++i) { String methodName; boolean nonContext = DisableCircularReferenceDetect; boolean writeDirect = false; if (i == 0) { methodName = &quot;write&quot;; writeDirect = true; } else if (i == 1) { methodName = &quot;writeNormal&quot;; } else { writeDirect = true; nonContext = true; methodName = &quot;writeDirectNonContext&quot;; } Context context = new Context(getters, beanInfo, classNameType, writeDirect, nonContext); mw = new MethodWriter(cw, // ACC_PUBLIC, // methodName, // &quot;(L&quot; + JSONSerializer + &quot;;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/reflect/Type;I)V&quot;, // null, // new String[] { &quot;java/io/IOException&quot; } // ); { Label endIf_ = new Label(); mw.visitVarInsn(ALOAD, Context.obj); //serializer.writeNull(); mw.visitJumpInsn(IFNONNULL, endIf_); mw.visitVarInsn(ALOAD, Context.serializer); mw.visitMethodInsn(INVOKEVIRTUAL, JSONSerializer, &quot;writeNull&quot;, &quot;()V&quot;); mw.visitInsn(RETURN); mw.visitLabel(endIf_); } mw.visitVarInsn(ALOAD, Context.serializer); mw.visitFieldInsn(GETFIELD, JSONSerializer, &quot;out&quot;, SerializeWriter_desc); mw.visitVarInsn(ASTORE, context.var(&quot;out&quot;)); if ((!nativeSorted) // &amp;&amp; !context.writeDirect) { if (jsonType == null || jsonType.alphabetic()) { Label _else = new Label(); mw.visitVarInsn(ALOAD, context.var(&quot;out&quot;)); mw.visitMethodInsn(INVOKEVIRTUAL, SerializeWriter, &quot;isSortField&quot;, &quot;()Z&quot;); mw.visitJumpInsn(IFNE, _else); mw.visitVarInsn(ALOAD, 0); mw.visitVarInsn(ALOAD, 1); mw.visitVarInsn(ALOAD, 2); mw.visitVarInsn(ALOAD, 3); mw.visitVarInsn(ALOAD, 4); mw.visitVarInsn(ILOAD, 5); mw.visitMethodInsn(INVOKEVIRTUAL, classNameType, &quot;writeUnsorted&quot;, &quot;(L&quot; + JSONSerializer + &quot;;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/reflect/Type;I)V&quot;); mw.visitInsn(RETURN); mw.visitLabel(_else); } } // isWriteDoubleQuoteDirect if (context.writeDirect &amp;&amp; !nonContext) { Label _direct = new Label(); Label _directElse = new Label(); mw.visitVarInsn(ALOAD, 0); mw.visitVarInsn(ALOAD, Context.serializer); mw.visitMethodInsn(INVOKEVIRTUAL, JavaBeanSerializer, &quot;writeDirect&quot;, &quot;(L&quot; + JSONSerializer + &quot;;)Z&quot;); mw.visitJumpInsn(IFNE, _directElse); mw.visitVarInsn(ALOAD, 0); mw.visitVarInsn(ALOAD, 1); mw.visitVarInsn(ALOAD, 2); mw.visitVarInsn(ALOAD, 3); mw.visitVarInsn(ALOAD, 4); mw.visitVarInsn(ILOAD, 5); mw.visitMethodInsn(INVOKEVIRTUAL, classNameType, &quot;writeNormal&quot;, &quot;(L&quot; + JSONSerializer + &quot;;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/reflect/Type;I)V&quot;); mw.visitInsn(RETURN); mw.visitLabel(_directElse); mw.visitVarInsn(ALOAD, context.var(&quot;out&quot;)); mw.visitLdcInsn(SerializerFeature.DisableCircularReferenceDetect.mask); mw.visitMethodInsn(INVOKEVIRTUAL, SerializeWriter, &quot;isEnabled&quot;, &quot;(I)Z&quot;); mw.visitJumpInsn(IFEQ, _direct); mw.visitVarInsn(ALOAD, 0); mw.visitVarInsn(ALOAD, 1); mw.visitVarInsn(ALOAD, 2); mw.visitVarInsn(ALOAD, 3); mw.visitVarInsn(ALOAD, 4); mw.visitVarInsn(ILOAD, 5); mw.visitMethodInsn(INVOKEVIRTUAL, classNameType, &quot;writeDirectNonContext&quot;, &quot;(L&quot; + JSONSerializer + &quot;;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/reflect/Type;I)V&quot;); mw.visitInsn(RETURN); mw.visitLabel(_direct); } mw.visitVarInsn(ALOAD, Context.obj); // obj mw.visitTypeInsn(CHECKCAST, type(clazz)); // serializer mw.visitVarInsn(ASTORE, context.var(&quot;entity&quot;)); // obj generateWriteMethod(clazz, mw, getters, context); mw.visitInsn(RETURN); mw.visitMaxs(7, context.variantIndex + 2); mw.visitEnd(); } if (!nativeSorted) { // sortField support Context context = new Context(getters, beanInfo, classNameType, false, DisableCircularReferenceDetect); mw = new MethodWriter(cw, ACC_PUBLIC, &quot;writeUnsorted&quot;, &quot;(L&quot; + JSONSerializer + &quot;;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/reflect/Type;I)V&quot;, null, new String[] { &quot;java/io/IOException&quot; }); mw.visitVarInsn(ALOAD, Context.serializer); mw.visitFieldInsn(GETFIELD, JSONSerializer, &quot;out&quot;, SerializeWriter_desc); mw.visitVarInsn(ASTORE, context.var(&quot;out&quot;)); mw.visitVarInsn(ALOAD, Context.obj); // obj mw.visitTypeInsn(CHECKCAST, type(clazz)); // serializer mw.visitVarInsn(ASTORE, context.var(&quot;entity&quot;)); // obj generateWriteMethod(clazz, mw, unsortedGetters, context); mw.visitInsn(RETURN); mw.visitMaxs(7, context.variantIndex + 2); mw.visitEnd(); } // 0 writeAsArray // 1 writeAsArrayNormal // 2 writeAsArrayNonContext for (int i = 0; i &lt; 3; ++i) { String methodName; boolean nonContext = DisableCircularReferenceDetect; boolean writeDirect = false; if (i == 0) { methodName = &quot;writeAsArray&quot;; writeDirect = true; } else if (i == 1) { methodName = &quot;writeAsArrayNormal&quot;; } else { writeDirect = true; nonContext = true; methodName = &quot;writeAsArrayNonContext&quot;; } Context context = new Context(getters, beanInfo, classNameType, writeDirect, nonContext); mw = new MethodWriter(cw, ACC_PUBLIC, methodName, &quot;(L&quot; + JSONSerializer + &quot;;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/reflect/Type;I)V&quot;, null, new String[] { &quot;java/io/IOException&quot; }); mw.visitVarInsn(ALOAD, Context.serializer); mw.visitFieldInsn(GETFIELD, JSONSerializer, &quot;out&quot;, SerializeWriter_desc); mw.visitVarInsn(ASTORE, context.var(&quot;out&quot;)); mw.visitVarInsn(ALOAD, Context.obj); // obj mw.visitTypeInsn(CHECKCAST, type(clazz)); // serializer mw.visitVarInsn(ASTORE, context.var(&quot;entity&quot;)); // obj generateWriteAsArray(clazz, mw, getters, context); mw.visitInsn(RETURN); mw.visitMaxs(7, context.variantIndex + 2); mw.visitEnd(); } byte[] code = cw.toByteArray(); Class&lt;?&gt; exampleClass = classLoader.defineClassPublic(classNameFull, code, 0, code.length); Constructor&lt;?&gt; constructor = exampleClass.getConstructor(SerializeBeanInfo.class); Object instance = constructor.newInstance(beanInfo); return (JavaBeanSerializer) instance; } 到这里为止，我们的分析就可以结束了，实际上这里是根据fieldInfo，通过CodeGen技术生成一个writer实例。而getJson被简单当作了json属性的getter，所以在writer.write(object)中调用了getJson从而出现了递归。那么这个问题的简单解决办法就是将getJson换个名字，比如toJson。最后，在github的issue中也翻到了一个对应的问题，作者给出的答案就是换个名字。" />
+<meta property="og:description" content="关键字: fastjson stackoverflow 本文使用的版本是 1.2.32 fastjson 是阿里开源的Json格式化工具库。在项目中使用了fastjson，然后出现了一个奇怪的bug。程序在序列化的时候递归调用了我调用序列化函数的函数。简单点说就是序列化中递归地调用了自己，最后stackoverflow。 下面是是使用的代码： public class Host { private String name; public Host() {} public String getName() { return name; } public void setName(String name) { this.name = name; } public static Host factory(byte [] bytes) { return JSON.parseObjec(bytes, Host.class); } public byte[] getJson() { return JSON.toJSONBytes(this); } } 然后在程序中某处使用byte []bytes = host.getJson()，出现的错误大概如下： java.lang.StackOverflowError at com.alibaba.fastjson.serializer.JSONSerializer.setContext(JSONSerializer.java:113) at com.alibaba.fastjson.serializer.JSONSerializer.setContext(JSONSerializer.java:109) at com.alibaba.fastjson.serializer.ASMSerializer_1_Host.write(Unknown Source) at com.alibaba.fastjson.serializer.JSONSerializer.write(JSONSerializer.java:275) at com.alibaba.fastjson.JSON.toJSONBytes(JSON.java:679) at com.alibaba.fastjson.JSON.toJSONBytes(JSON.java:605) at com.alibaba.fastjson.JSON.toJSONBytes(JSON.java:598) at xxx.Host.getBytes(Host.java:38) at com.alibaba.fastjson.serializer.ASMSerializer_1_Host.write(Unknown Source) at com.alibaba.fastjson.serializer.JSONSerializer.write(JSONSerializer.java:275) at com.alibaba.fastjson.JSON.toJSONBytes(JSON.java:679) at com.alibaba.fastjson.JSON.toJSONBytes(JSON.java:605) at com.alibaba.fastjson.JSON.toJSONBytes(JSON.java:598) at xxx.Host.getBytes(Host.java:38) 分析调用堆栈发现fastjson在生成的serializer.ASMSerializer\_1\_Host中调用了Host.getJson()导致了递归。排除自己的错误后，就将代码定位到了fastjson中，应该是fastjson中出了问题。然后开始调试代码： public static byte[] toJSONBytes(Object object, SerializeConfig config, int defaultFeatures, SerializerFeature... features) { SerializeWriter out = new SerializeWriter(null, defaultFeatures, features); try { JSONSerializer serializer = new JSONSerializer(out, config); serializer.write(object); return out.toBytes(IOUtils.UTF8); } finally { out.close(); } } 按照栈调用顺序来看，出错点应该在serializer.write(object)内部，继续深入： public final void write(Object object) { if (object == null) { out.writeNull(); return; } Class&lt;?&gt; clazz = object.getClass(); ObjectSerializer writer = getObjectWriter(clazz); try { writer.write(this, object, null, null, 0); } catch (IOException e) { throw new JSONException(e.getMessage(), e); } } 这里发现通过getObjectWriter(clazz)取得了host的writer，想必就是自动生成的ASMSerializer_1_Host实例。本来想进入writer.write中观察，没有源代码只好放弃。然后将目标放到getObjectWriter中，看看在writer实例构造过程中能不能找到点线索。 经过几层跳转，来到了真正的getObjectWriter中： private ObjectSerializer getObjectWriter(Class&lt;?&gt; clazz, boolean create) { ObjectSerializer writer = serializers.get(clazz); if (writer == null) { try { final ClassLoader classLoader = Thread.currentThread().getContextClassLoader(); for (Object o : ServiceLoader.load(AutowiredObjectSerializer.class, classLoader)) { if (!(o instanceof AutowiredObjectSerializer)) { continue; } AutowiredObjectSerializer autowired = (AutowiredObjectSerializer) o; for (Type forType : autowired.getAutowiredFor()) { put(forType, autowired); } } } catch (ClassCastException ex) { // skip } writer = serializers.get(clazz); } if (writer == null) { final ClassLoader classLoader = JSON.class.getClassLoader(); if (classLoader != Thread.currentThread().getContextClassLoader()) { try { for (Object o : ServiceLoader.load(AutowiredObjectSerializer.class, classLoader)) { if (!(o instanceof AutowiredObjectSerializer)) { continue; } AutowiredObjectSerializer autowired = (AutowiredObjectSerializer) o; for (Type forType : autowired.getAutowiredFor()) { put(forType, autowired); } } } catch (ClassCastException ex) { // skip } writer = serializers.get(clazz); } } if (writer == null) { if (Map.class.isAssignableFrom(clazz)) { put(clazz, MapSerializer.instance); } else if (List.class.isAssignableFrom(clazz)) { put(clazz, ListSerializer.instance); } else if (Collection.class.isAssignableFrom(clazz)) { put(clazz, CollectionCodec.instance); } else if (Date.class.isAssignableFrom(clazz)) { put(clazz, DateCodec.instance); } else if (JSONAware.class.isAssignableFrom(clazz)) { put(clazz, JSONAwareSerializer.instance); } else if (JSONSerializable.class.isAssignableFrom(clazz)) { put(clazz, JSONSerializableSerializer.instance); } else if (JSONStreamAware.class.isAssignableFrom(clazz)) { put(clazz, MiscCodec.instance); } else if (clazz.isEnum() || (clazz.getSuperclass() != null &amp;&amp; clazz.getSuperclass().isEnum())) { JSONType jsonType = clazz.getAnnotation(JSONType.class); if (jsonType != null &amp;&amp; jsonType.serializeEnumAsJavaBean()) { put(clazz, createJavaBeanSerializer(clazz)); } else { put(clazz, EnumSerializer.instance); } } else if (clazz.isArray()) { Class&lt;?&gt; componentType = clazz.getComponentType(); ObjectSerializer compObjectSerializer = getObjectWriter(componentType); put(clazz, new ArraySerializer(componentType, compObjectSerializer)); } else if (Throwable.class.isAssignableFrom(clazz)) { SerializeBeanInfo beanInfo = TypeUtils.buildBeanInfo(clazz, null, propertyNamingStrategy); beanInfo.features |= SerializerFeature.WriteClassName.mask; put(clazz, new JavaBeanSerializer(beanInfo)); } else if (TimeZone.class.isAssignableFrom(clazz) || Map.Entry.class.isAssignableFrom(clazz)) { put(clazz, MiscCodec.instance); } else if (Appendable.class.isAssignableFrom(clazz)) { put(clazz, AppendableSerializer.instance); } else if (Charset.class.isAssignableFrom(clazz)) { put(clazz, ToStringSerializer.instance); } else if (Enumeration.class.isAssignableFrom(clazz)) { put(clazz, EnumerationSerializer.instance); } else if (Calendar.class.isAssignableFrom(clazz) // || XMLGregorianCalendar.class.isAssignableFrom(clazz)) { put(clazz, CalendarCodec.instance); } else if (Clob.class.isAssignableFrom(clazz)) { put(clazz, ClobSeriliazer.instance); } else if (TypeUtils.isPath(clazz)) { put(clazz, ToStringSerializer.instance); } else if (Iterator.class.isAssignableFrom(clazz)) { put(clazz, MiscCodec.instance); } else { String className = clazz.getName(); if (className.startsWith(&quot;java.awt.&quot;) // &amp;&amp; AwtCodec.support(clazz) // ) { // awt if (!awtError) { try { put(Class.forName(&quot;java.awt.Color&quot;), AwtCodec.instance); put(Class.forName(&quot;java.awt.Font&quot;), AwtCodec.instance); put(Class.forName(&quot;java.awt.Point&quot;), AwtCodec.instance); put(Class.forName(&quot;java.awt.Rectangle&quot;), AwtCodec.instance); } catch (Throwable e) { awtError = true; // skip } } return AwtCodec.instance; } // jdk8 if ((!jdk8Error) // &amp;&amp; (className.startsWith(&quot;java.time.&quot;) // || className.startsWith(&quot;java.util.Optional&quot;) // || className.equals(&quot;java.util.concurrent.atomic.LongAdder&quot;) || className.equals(&quot;java.util.concurrent.atomic.DoubleAdder&quot;) )) { try { put(Class.forName(&quot;java.time.LocalDateTime&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.LocalDate&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.LocalTime&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.ZonedDateTime&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.OffsetDateTime&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.OffsetTime&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.ZoneOffset&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.ZoneRegion&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.Period&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.Duration&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.Instant&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.util.Optional&quot;), OptionalCodec.instance); put(Class.forName(&quot;java.util.OptionalDouble&quot;), OptionalCodec.instance); put(Class.forName(&quot;java.util.OptionalInt&quot;), OptionalCodec.instance); put(Class.forName(&quot;java.util.OptionalLong&quot;), OptionalCodec.instance); put(Class.forName(&quot;java.util.concurrent.atomic.LongAdder&quot;), AdderSerializer.instance); put(Class.forName(&quot;java.util.concurrent.atomic.DoubleAdder&quot;), AdderSerializer.instance); writer = serializers.get(clazz); if (writer != null) { return writer; } } catch (Throwable e) { // skip jdk8Error = true; } } if ((!oracleJdbcError) // &amp;&amp; className.startsWith(&quot;oracle.sql.&quot;)) { try { put(Class.forName(&quot;oracle.sql.DATE&quot;), DateCodec.instance); put(Class.forName(&quot;oracle.sql.TIMESTAMP&quot;), DateCodec.instance); writer = serializers.get(clazz); if (writer != null) { return writer; } } catch (Throwable e) { // skip oracleJdbcError = true; } } if ((!springfoxError) // &amp;&amp; className.equals(&quot;springfox.documentation.spring.web.json.Json&quot;)) { try { put(Class.forName(&quot;springfox.documentation.spring.web.json.Json&quot;), // SwaggerJsonSerializer.instance); writer = serializers.get(clazz); if (writer != null) { return writer; } } catch (ClassNotFoundException e) { // skip springfoxError = true; } } if ((!guavaError) // &amp;&amp; className.startsWith(&quot;com.google.common.collect.&quot;)) { try { put(Class.forName(&quot;com.google.common.collect.HashMultimap&quot;), // GuavaCodec.instance); put(Class.forName(&quot;com.google.common.collect.LinkedListMultimap&quot;), // GuavaCodec.instance); put(Class.forName(&quot;com.google.common.collect.ArrayListMultimap&quot;), // GuavaCodec.instance); put(Class.forName(&quot;com.google.common.collect.TreeMultimap&quot;), // GuavaCodec.instance); writer = serializers.get(clazz); if (writer != null) { return writer; } } catch (ClassNotFoundException e) { // skip guavaError = true; } } if (className.equals(&quot;net.sf.json.JSONNull&quot;)) { try { put(Class.forName(&quot;net.sf.json.JSONNull&quot;), // MiscCodec.instance); } catch (ClassNotFoundException e) { // skip } writer = serializers.get(clazz); if (writer != null) { return writer; } } if (TypeUtils.isProxy(clazz)) { Class&lt;?&gt; superClazz = clazz.getSuperclass(); ObjectSerializer superWriter = getObjectWriter(superClazz); put(clazz, superWriter); return superWriter; } if (create) { put(clazz, createJavaBeanSerializer(clazz)); } } writer = serializers.get(clazz); } return writer; } 简单扫描代码逻辑，发现writer是通过serializers.get(clazz)获取的。而代码中分别从Thread.currentThread().getContextClassLoader、JSON.class.getClassLoader以及最后对一下常见类分析来填充serializers。最后一种办法的末尾，走到了： put(clazz, createJavaBeanSerializer(clazz)); 可以发现逻辑是实在找不到，使用createJavaBeanSerializer(clazz)来创建clazz对应的writer。看来我们的目标应该是这个createJavaBeanSerializer函数，所以进一步深入： private final ObjectSerializer createJavaBeanSerializer(Class&lt;?&gt; clazz) { SerializeBeanInfo beanInfo = TypeUtils.buildBeanInfo(clazz, null, propertyNamingStrategy, fieldBased); if (beanInfo.fields.length == 0 &amp;&amp; Iterable.class.isAssignableFrom(clazz)) { return MiscCodec.instance; } return createJavaBeanSerializer(beanInfo); } 首先调用TypeUtils.buildBeanInfo来生成SerializerBeanInfo。 public static SerializeBeanInfo buildBeanInfo(Class&lt;?&gt; beanType // , Map&lt;String, String&gt; aliasMap // , PropertyNamingStrategy propertyNamingStrategy // , boolean fieldBased // ) { JSONType jsonType = beanType.getAnnotation(JSONType.class); // fieldName,field ，先生成fieldName的快照，减少之后的findField的轮询 Map&lt;String, Field&gt; fieldCacheMap = new HashMap&lt;String, Field&gt;(); ParserConfig.parserAllFieldToCache(beanType, fieldCacheMap); List&lt;FieldInfo&gt; fieldInfoList = fieldBased ? computeGettersWithFieldBase(beanType, aliasMap, false, propertyNamingStrategy) // : computeGetters(beanType, jsonType, aliasMap, fieldCacheMap, false, propertyNamingStrategy); FieldInfo[] fields = new FieldInfo[fieldInfoList.size()]; fieldInfoList.toArray(fields); String[] orders = null; final int features; String typeName = null; if (jsonType != null) { orders = jsonType.orders(); typeName = jsonType.typeName(); if (typeName.length() == 0) { typeName = null; } features = SerializerFeature.of(jsonType.serialzeFeatures()); } else { features = 0; } FieldInfo[] sortedFields; List&lt;FieldInfo&gt; sortedFieldList; if (orders != null &amp;&amp; orders.length != 0) { sortedFieldList = fieldBased ? computeGettersWithFieldBase(beanType, aliasMap, true, propertyNamingStrategy) // : computeGetters(beanType, jsonType, aliasMap,fieldCacheMap, true, propertyNamingStrategy); } else { sortedFieldList = new ArrayList&lt;FieldInfo&gt;(fieldInfoList); Collections.sort(sortedFieldList); } sortedFields = new FieldInfo[sortedFieldList.size()]; sortedFieldList.toArray(sortedFields); if (Arrays.equals(sortedFields, fields)) { sortedFields = fields; } return new SerializeBeanInfo(beanType, jsonType, typeName, features, fields, sortedFields); } 其中parserAllFieldToCache将字段保存起来，减少访问次数。紧接着设置fieldInfoList的值，此时fieldBase为false，所以进入了computeGetters。 public static List&lt;FieldInfo&gt; computeGetters(Class&lt;?&gt; clazz, // JSONType jsonType, // Map&lt;String, String&gt; aliasMap, // Map&lt;String, Field&gt; fieldCacheMap, // boolean sorted, // PropertyNamingStrategy propertyNamingStrategy // ) { Map&lt;String, FieldInfo&gt; fieldInfoMap = new LinkedHashMap&lt;String, FieldInfo&gt;(); for (Method method : clazz.getMethods()) { String methodName = method.getName(); int ordinal = 0, serialzeFeatures = 0, parserFeatures = 0; String label = null; if (Modifier.isStatic(method.getModifiers())) { continue; } if (method.getReturnType().equals(Void.TYPE)) { continue; } if (method.getParameterTypes().length != 0) { continue; } if (method.getReturnType() == ClassLoader.class) { continue; } if (method.getName().equals(&quot;getMetaClass&quot;) &amp;&amp; method.getReturnType().getName().equals(&quot;groovy.lang.MetaClass&quot;)) { continue; } JSONField annotation = method.getAnnotation(JSONField.class); if (annotation == null) { annotation = getSuperMethodAnnotation(clazz, method); } if (annotation != null) { if (!annotation.serialize()) { continue; } ordinal = annotation.ordinal(); serialzeFeatures = SerializerFeature.of(annotation.serialzeFeatures()); parserFeatures = Feature.of(annotation.parseFeatures()); if (annotation.name().length() != 0) { String propertyName = annotation.name(); if (aliasMap != null) { propertyName = aliasMap.get(propertyName); if (propertyName == null) { continue; } } FieldInfo fieldInfo = new FieldInfo(propertyName, method, null, clazz, null, ordinal, serialzeFeatures, parserFeatures, annotation, null, label); fieldInfoMap.put(propertyName, fieldInfo); continue; } if (annotation.label().length() != 0) { label = annotation.label(); } } if (methodName.startsWith(&quot;get&quot;)) { if (methodName.length() &lt; 4) { continue; } if (methodName.equals(&quot;getClass&quot;)) { continue; } if (methodName.equals(&quot;getDeclaringClass&quot;) &amp;&amp; clazz.isEnum()) { continue; } char c3 = methodName.charAt(3); String propertyName; if (Character.isUpperCase(c3) // || c3 &gt; 512 // for unicode method name ) { if (compatibleWithJavaBean) { propertyName = decapitalize(methodName.substring(3)); } else { propertyName = Character.toLowerCase(methodName.charAt(3)) + methodName.substring(4); } propertyName = getPropertyNameByCompatibleFieldName(fieldCacheMap, methodName, propertyName,3); } else if (c3 == &#39;_&#39;) { propertyName = methodName.substring(4); } else if (c3 == &#39;f&#39;) { propertyName = methodName.substring(3); } else if (methodName.length() &gt;= 5 &amp;&amp; Character.isUpperCase(methodName.charAt(4))) { propertyName = decapitalize(methodName.substring(3)); } else { continue; } boolean ignore = isJSONTypeIgnore(clazz, propertyName); if (ignore) { continue; } //假如bean的field很多的情况一下，轮询时将大大降低效率 Field field = ParserConfig.getFieldFromCache(propertyName, fieldCacheMap); if (field == null &amp;&amp; propertyName.length() &gt; 1) { char ch = propertyName.charAt(1); if (ch &gt;= &#39;A&#39; &amp;&amp; ch &lt;= &#39;Z&#39;) { String javaBeanCompatiblePropertyName = decapitalize(methodName.substring(3)); field = ParserConfig.getFieldFromCache(javaBeanCompatiblePropertyName, fieldCacheMap); } } JSONField fieldAnnotation = null; if (field != null) { fieldAnnotation = field.getAnnotation(JSONField.class); if (fieldAnnotation != null) { if (!fieldAnnotation.serialize()) { continue; } ordinal = fieldAnnotation.ordinal(); serialzeFeatures = SerializerFeature.of(fieldAnnotation.serialzeFeatures()); parserFeatures = Feature.of(fieldAnnotation.parseFeatures()); if (fieldAnnotation.name().length() != 0) { propertyName = fieldAnnotation.name(); if (aliasMap != null) { propertyName = aliasMap.get(propertyName); if (propertyName == null) { continue; } } } if (fieldAnnotation.label().length() != 0) { label = fieldAnnotation.label(); } } } if (aliasMap != null) { propertyName = aliasMap.get(propertyName); if (propertyName == null) { continue; } } if (propertyNamingStrategy != null) { propertyName = propertyNamingStrategy.translate(propertyName); } FieldInfo fieldInfo = new FieldInfo(propertyName, method, field, clazz, null, ordinal, serialzeFeatures, parserFeatures, annotation, fieldAnnotation, label); fieldInfoMap.put(propertyName, fieldInfo); } if (methodName.startsWith(&quot;is&quot;)) { if (methodName.length() &lt; 3) { continue; } if (method.getReturnType() != Boolean.TYPE &amp;&amp; method.getReturnType() != Boolean.class) { continue; } char c2 = methodName.charAt(2); String propertyName; if (Character.isUpperCase(c2)) { if (compatibleWithJavaBean) { propertyName = decapitalize(methodName.substring(2)); } else { propertyName = Character.toLowerCase(methodName.charAt(2)) + methodName.substring(3); } propertyName = getPropertyNameByCompatibleFieldName(fieldCacheMap, methodName, propertyName,2); } else if (c2 == &#39;_&#39;) { propertyName = methodName.substring(3); } else if (c2 == &#39;f&#39;) { propertyName = methodName.substring(2); } else { continue; } boolean ignore = isJSONTypeIgnore(clazz, propertyName); if (ignore) { continue; } Field field = ParserConfig.getFieldFromCache(propertyName,fieldCacheMap); if (field == null) { field = ParserConfig.getFieldFromCache(methodName,fieldCacheMap); } JSONField fieldAnnotation = null; if (field != null) { fieldAnnotation = field.getAnnotation(JSONField.class); if (fieldAnnotation != null) { if (!fieldAnnotation.serialize()) { continue; } ordinal = fieldAnnotation.ordinal(); serialzeFeatures = SerializerFeature.of(fieldAnnotation.serialzeFeatures()); parserFeatures = Feature.of(fieldAnnotation.parseFeatures()); if (fieldAnnotation.name().length() != 0) { propertyName = fieldAnnotation.name(); if (aliasMap != null) { propertyName = aliasMap.get(propertyName); if (propertyName == null) { continue; } } } if (fieldAnnotation.label().length() != 0) { label = fieldAnnotation.label(); } } } if (aliasMap != null) { propertyName = aliasMap.get(propertyName); if (propertyName == null) { continue; } } if (propertyNamingStrategy != null) { propertyName = propertyNamingStrategy.translate(propertyName); } //优先选择get if (fieldInfoMap.containsKey(propertyName)) { continue; } FieldInfo fieldInfo = new FieldInfo(propertyName, method, field, clazz, null, ordinal, serialzeFeatures, parserFeatures, annotation, fieldAnnotation, label); fieldInfoMap.put(propertyName, fieldInfo); } } Field[] fields = clazz.getFields(); computeFields(clazz, aliasMap, propertyNamingStrategy, fieldInfoMap, fields); return getFieldInfos(clazz, sorted, fieldInfoMap); } 这里针对clazz的每一个方法进行了判断，由于只有get和set开头的函数，所以只关心methodName.startsWith(&quot;get&quot;)分支。最后进入了getPropertyNameByCompatibleFieldName所在的分支，并将propertyName设置为对应get的属性名。在getPropertyNameByCompatibleFieldName函数中，而compatibleWithFieldName设置为false所以相当于跳过了。 private static String getPropertyNameByCompatibleFieldName(Map&lt;String, Field&gt; fieldCacheMap, String methodName, String propertyName,int fromIdx) { if (compatibleWithFieldName){ if (!fieldCacheMap.containsKey(propertyName)){ String tempPropertyName=methodName.substring(fromIdx); return fieldCacheMap.containsKey(tempPropertyName)?tempPropertyName:propertyName; } } return propertyName; } 继续分析，程序进入isJSONTypeIgnore根据注解判断是否跳过该字段，我的例子中不关心。紧接着调用了getFieldFromCache： public static Field getFieldFromCache(String fieldName, Map&lt;String, Field&gt; fieldCacheMap) { Field field = fieldCacheMap.get(fieldName); if (field == null) { field = fieldCacheMap.get(&quot;_&quot; + fieldName); } if (field == null) { field = fieldCacheMap.get(&quot;m_&quot; + fieldName); } if (field == null) { char c0 = fieldName.charAt(0); if (c0 &gt;= &#39;a&#39; &amp;&amp; c0 &lt;= &#39;z&#39;) { char[] chars = fieldName.toCharArray(); chars[0] -= 32; // lower String fieldNameX = new String(chars); field = fieldCacheMap.get(fieldNameX); } } return field; } 这里按照刚才取出的方法名来查找字段，如果失败则加上_或者m_之类的方法继续判断。返回继续分析，在做了部分如注解别名之类的处理后，将分析得到的结果生成一个FieldInfo，并保存在fieldInfoMap中。最后调用computeFields进一步处理一些public属性的fields数据。最后经过getFieldInfos处理后，将得到的List&lt;FieldInfo&gt;中，返回上一级。 private static void computeFields( Class&lt;?&gt; clazz, // Map&lt;String, String&gt; aliasMap, // PropertyNamingStrategy propertyNamingStrategy, // Map&lt;String, FieldInfo&gt; fieldInfoMap, // Field[] fields) { for (Field field : fields) { if (Modifier.isStatic(field.getModifiers())) { continue; } JSONField fieldAnnotation = field.getAnnotation(JSONField.class); int ordinal = 0, serialzeFeatures = 0, parserFeatures = 0; String propertyName = field.getName(); String label = null; if (fieldAnnotation != null) { if (!fieldAnnotation.serialize()) { continue; } ordinal = fieldAnnotation.ordinal(); serialzeFeatures = SerializerFeature.of(fieldAnnotation.serialzeFeatures()); parserFeatures = Feature.of(fieldAnnotation.parseFeatures()); if (fieldAnnotation.name().length() != 0) { propertyName = fieldAnnotation.name(); } if (fieldAnnotation.label().length() != 0) { label = fieldAnnotation.label(); } } if (aliasMap != null) { propertyName = aliasMap.get(propertyName); if (propertyName == null) { continue; } } if (propertyNamingStrategy != null) { propertyName = propertyNamingStrategy.translate(propertyName); } if (!fieldInfoMap.containsKey(propertyName)) { FieldInfo fieldInfo = new FieldInfo(propertyName, null, field, clazz, null, ordinal, serialzeFeatures, parserFeatures, null, fieldAnnotation, label); fieldInfoMap.put(propertyName, fieldInfo); } } } 分析到这里，可以发现在fieldInfoList中实际上值：name,json。看到这里相比也能猜出大概了，现在继续跟踪。回到buildBeanInfo中，将刚才得到的fieldInfoList构造为SerializeBeanInfo并返回。 public ObjectSerializer createJavaBeanSerializer(SerializeBeanInfo beanInfo) { JSONType jsonType = beanInfo.jsonType; if (jsonType != null) { Class&lt;?&gt; serializerClass = jsonType.serializer(); if (serializerClass != Void.class) { try { Object seralizer = serializerClass.newInstance(); if (seralizer instanceof ObjectSerializer) { return (ObjectSerializer) seralizer; } } catch (Throwable e) { // skip } } if (jsonType.asm() == false) { asm = false; } for (SerializerFeature feature : jsonType.serialzeFeatures()) { if (SerializerFeature.WriteNonStringValueAsString == feature // || SerializerFeature.WriteEnumUsingToString == feature // || SerializerFeature.NotWriteDefaultValue == feature) { asm = false; break; } } } Class&lt;?&gt; clazz = beanInfo.beanType; if (!Modifier.isPublic(beanInfo.beanType.getModifiers())) { return new JavaBeanSerializer(beanInfo); } boolean asm = this.asm &amp;&amp; !fieldBased; if (asm &amp;&amp; asmFactory.classLoader.isExternalClass(clazz) || clazz == Serializable.class || clazz == Object.class) { asm = false; } if (asm &amp;&amp; !ASMUtils.checkName(clazz.getSimpleName())) { asm = false; } if (asm) { for(FieldInfo fieldInfo : beanInfo.fields){ Field field = fieldInfo.field; if (field != null &amp;&amp; !field.getType().equals(fieldInfo.fieldClass)) { asm = false; break; } Method method = fieldInfo.method; if (method != null &amp;&amp; !method.getReturnType().equals(fieldInfo.fieldClass)) { asm = false; break; } JSONField annotation = fieldInfo.getAnnotation(); if (annotation == null) { continue; } if ((!ASMUtils.checkName(annotation.name())) // || annotation.format().length() != 0 || annotation.jsonDirect() || annotation.serializeUsing() != Void.class || annotation.unwrapped() ) { asm = false; break; } for (SerializerFeature feature : annotation.serialzeFeatures()) { if (SerializerFeature.WriteNonStringValueAsString == feature // || SerializerFeature.WriteEnumUsingToString == feature // || SerializerFeature.NotWriteDefaultValue == feature) { asm = false; break; } } } } if (asm) { try { ObjectSerializer asmSerializer = createASMSerializer(beanInfo); if (asmSerializer != null) { return asmSerializer; } } catch (ClassFormatError e) { // skip } catch (ClassCastException e) { // skip } catch (Throwable e) { throw new JSONException(&quot;create asm serializer error, class &quot; + clazz, e); } } return new JavaBeanSerializer(beanInfo); } 经过处理后进入了createASMSerializer，其中调用createJavaBeanSerializer来创建具体的writer： public JavaBeanSerializer createJavaBeanSerializer(SerializeBeanInfo beanInfo) throws Exception { Class&lt;?&gt; clazz = beanInfo.beanType; if (clazz.isPrimitive()) { throw new JSONException(&quot;unsupportd class &quot; + clazz.getName()); } JSONType jsonType = clazz.getAnnotation(JSONType.class); FieldInfo[] unsortedGetters = beanInfo.fields;; for (FieldInfo fieldInfo : unsortedGetters) { if (fieldInfo.field == null // &amp;&amp; fieldInfo.method != null // &amp;&amp; fieldInfo.method.getDeclaringClass().isInterface()) { return new JavaBeanSerializer(clazz); } } FieldInfo[] getters = beanInfo.sortedFields; boolean nativeSorted = beanInfo.sortedFields == beanInfo.fields; if (getters.length &gt; 256) { return new JavaBeanSerializer(clazz); } for (FieldInfo getter : getters) { if (!ASMUtils.checkName(getter.getMember().getName())) { return new JavaBeanSerializer(clazz); } } String className = &quot;ASMSerializer_&quot; + seed.incrementAndGet() + &quot;_&quot; + clazz.getSimpleName(); String packageName = ASMSerializerFactory.class.getPackage().getName(); String classNameType = packageName.replace(&#39;.&#39;, &#39;/&#39;) + &quot;/&quot; + className; String classNameFull = packageName + &quot;.&quot; + className; ClassWriter cw = new ClassWriter(); cw.visit(V1_5 // , ACC_PUBLIC + ACC_SUPER // , classNameType // , JavaBeanSerializer // , new String[] { ObjectSerializer } // ); for (FieldInfo fieldInfo : getters) { if (fieldInfo.fieldClass.isPrimitive() // //|| fieldInfo.fieldClass.isEnum() // || fieldInfo.fieldClass == String.class) { continue; } new FieldWriter(cw, ACC_PUBLIC, fieldInfo.name + &quot;_asm_fieldType&quot;, &quot;Ljava/lang/reflect/Type;&quot;) // .visitEnd(); if (List.class.isAssignableFrom(fieldInfo.fieldClass)) { new FieldWriter(cw, ACC_PUBLIC, fieldInfo.name + &quot;_asm_list_item_ser_&quot;, ObjectSerializer_desc) // .visitEnd(); } new FieldWriter(cw, ACC_PUBLIC, fieldInfo.name + &quot;_asm_ser_&quot;, ObjectSerializer_desc) // .visitEnd(); } MethodVisitor mw = new MethodWriter(cw, ACC_PUBLIC, &quot;&lt;init&gt;&quot;, &quot;(&quot; + desc(SerializeBeanInfo.class) + &quot;)V&quot;, null, null); mw.visitVarInsn(ALOAD, 0); mw.visitVarInsn(ALOAD, 1); mw.visitMethodInsn(INVOKESPECIAL, JavaBeanSerializer, &quot;&lt;init&gt;&quot;, &quot;(&quot; + desc(SerializeBeanInfo.class) + &quot;)V&quot;); // init _asm_fieldType for (int i = 0; i &lt; getters.length; ++i) { FieldInfo fieldInfo = getters[i]; if (fieldInfo.fieldClass.isPrimitive() // // || fieldInfo.fieldClass.isEnum() // || fieldInfo.fieldClass == String.class) { continue; } mw.visitVarInsn(ALOAD, 0); if (fieldInfo.method != null) { mw.visitLdcInsn(com.alibaba.fastjson.asm.Type.getType(desc(fieldInfo.declaringClass))); mw.visitLdcInsn(fieldInfo.method.getName()); mw.visitMethodInsn(INVOKESTATIC, type(ASMUtils.class), &quot;getMethodType&quot;, &quot;(Ljava/lang/Class;Ljava/lang/String;)Ljava/lang/reflect/Type;&quot;); } else { mw.visitVarInsn(ALOAD, 0); mw.visitLdcInsn(i); mw.visitMethodInsn(INVOKESPECIAL, JavaBeanSerializer, &quot;getFieldType&quot;, &quot;(I)Ljava/lang/reflect/Type;&quot;); } mw.visitFieldInsn(PUTFIELD, classNameType, fieldInfo.name + &quot;_asm_fieldType&quot;, &quot;Ljava/lang/reflect/Type;&quot;); } mw.visitInsn(RETURN); mw.visitMaxs(4, 4); mw.visitEnd(); boolean DisableCircularReferenceDetect = false; if (jsonType != null) { for (SerializerFeature featrues : jsonType.serialzeFeatures()) { if (featrues == SerializerFeature.DisableCircularReferenceDetect) { DisableCircularReferenceDetect = true; break; } } } // 0 write // 1 writeNormal // 2 writeNonContext for (int i = 0; i &lt; 3; ++i) { String methodName; boolean nonContext = DisableCircularReferenceDetect; boolean writeDirect = false; if (i == 0) { methodName = &quot;write&quot;; writeDirect = true; } else if (i == 1) { methodName = &quot;writeNormal&quot;; } else { writeDirect = true; nonContext = true; methodName = &quot;writeDirectNonContext&quot;; } Context context = new Context(getters, beanInfo, classNameType, writeDirect, nonContext); mw = new MethodWriter(cw, // ACC_PUBLIC, // methodName, // &quot;(L&quot; + JSONSerializer + &quot;;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/reflect/Type;I)V&quot;, // null, // new String[] { &quot;java/io/IOException&quot; } // ); { Label endIf_ = new Label(); mw.visitVarInsn(ALOAD, Context.obj); //serializer.writeNull(); mw.visitJumpInsn(IFNONNULL, endIf_); mw.visitVarInsn(ALOAD, Context.serializer); mw.visitMethodInsn(INVOKEVIRTUAL, JSONSerializer, &quot;writeNull&quot;, &quot;()V&quot;); mw.visitInsn(RETURN); mw.visitLabel(endIf_); } mw.visitVarInsn(ALOAD, Context.serializer); mw.visitFieldInsn(GETFIELD, JSONSerializer, &quot;out&quot;, SerializeWriter_desc); mw.visitVarInsn(ASTORE, context.var(&quot;out&quot;)); if ((!nativeSorted) // &amp;&amp; !context.writeDirect) { if (jsonType == null || jsonType.alphabetic()) { Label _else = new Label(); mw.visitVarInsn(ALOAD, context.var(&quot;out&quot;)); mw.visitMethodInsn(INVOKEVIRTUAL, SerializeWriter, &quot;isSortField&quot;, &quot;()Z&quot;); mw.visitJumpInsn(IFNE, _else); mw.visitVarInsn(ALOAD, 0); mw.visitVarInsn(ALOAD, 1); mw.visitVarInsn(ALOAD, 2); mw.visitVarInsn(ALOAD, 3); mw.visitVarInsn(ALOAD, 4); mw.visitVarInsn(ILOAD, 5); mw.visitMethodInsn(INVOKEVIRTUAL, classNameType, &quot;writeUnsorted&quot;, &quot;(L&quot; + JSONSerializer + &quot;;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/reflect/Type;I)V&quot;); mw.visitInsn(RETURN); mw.visitLabel(_else); } } // isWriteDoubleQuoteDirect if (context.writeDirect &amp;&amp; !nonContext) { Label _direct = new Label(); Label _directElse = new Label(); mw.visitVarInsn(ALOAD, 0); mw.visitVarInsn(ALOAD, Context.serializer); mw.visitMethodInsn(INVOKEVIRTUAL, JavaBeanSerializer, &quot;writeDirect&quot;, &quot;(L&quot; + JSONSerializer + &quot;;)Z&quot;); mw.visitJumpInsn(IFNE, _directElse); mw.visitVarInsn(ALOAD, 0); mw.visitVarInsn(ALOAD, 1); mw.visitVarInsn(ALOAD, 2); mw.visitVarInsn(ALOAD, 3); mw.visitVarInsn(ALOAD, 4); mw.visitVarInsn(ILOAD, 5); mw.visitMethodInsn(INVOKEVIRTUAL, classNameType, &quot;writeNormal&quot;, &quot;(L&quot; + JSONSerializer + &quot;;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/reflect/Type;I)V&quot;); mw.visitInsn(RETURN); mw.visitLabel(_directElse); mw.visitVarInsn(ALOAD, context.var(&quot;out&quot;)); mw.visitLdcInsn(SerializerFeature.DisableCircularReferenceDetect.mask); mw.visitMethodInsn(INVOKEVIRTUAL, SerializeWriter, &quot;isEnabled&quot;, &quot;(I)Z&quot;); mw.visitJumpInsn(IFEQ, _direct); mw.visitVarInsn(ALOAD, 0); mw.visitVarInsn(ALOAD, 1); mw.visitVarInsn(ALOAD, 2); mw.visitVarInsn(ALOAD, 3); mw.visitVarInsn(ALOAD, 4); mw.visitVarInsn(ILOAD, 5); mw.visitMethodInsn(INVOKEVIRTUAL, classNameType, &quot;writeDirectNonContext&quot;, &quot;(L&quot; + JSONSerializer + &quot;;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/reflect/Type;I)V&quot;); mw.visitInsn(RETURN); mw.visitLabel(_direct); } mw.visitVarInsn(ALOAD, Context.obj); // obj mw.visitTypeInsn(CHECKCAST, type(clazz)); // serializer mw.visitVarInsn(ASTORE, context.var(&quot;entity&quot;)); // obj generateWriteMethod(clazz, mw, getters, context); mw.visitInsn(RETURN); mw.visitMaxs(7, context.variantIndex + 2); mw.visitEnd(); } if (!nativeSorted) { // sortField support Context context = new Context(getters, beanInfo, classNameType, false, DisableCircularReferenceDetect); mw = new MethodWriter(cw, ACC_PUBLIC, &quot;writeUnsorted&quot;, &quot;(L&quot; + JSONSerializer + &quot;;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/reflect/Type;I)V&quot;, null, new String[] { &quot;java/io/IOException&quot; }); mw.visitVarInsn(ALOAD, Context.serializer); mw.visitFieldInsn(GETFIELD, JSONSerializer, &quot;out&quot;, SerializeWriter_desc); mw.visitVarInsn(ASTORE, context.var(&quot;out&quot;)); mw.visitVarInsn(ALOAD, Context.obj); // obj mw.visitTypeInsn(CHECKCAST, type(clazz)); // serializer mw.visitVarInsn(ASTORE, context.var(&quot;entity&quot;)); // obj generateWriteMethod(clazz, mw, unsortedGetters, context); mw.visitInsn(RETURN); mw.visitMaxs(7, context.variantIndex + 2); mw.visitEnd(); } // 0 writeAsArray // 1 writeAsArrayNormal // 2 writeAsArrayNonContext for (int i = 0; i &lt; 3; ++i) { String methodName; boolean nonContext = DisableCircularReferenceDetect; boolean writeDirect = false; if (i == 0) { methodName = &quot;writeAsArray&quot;; writeDirect = true; } else if (i == 1) { methodName = &quot;writeAsArrayNormal&quot;; } else { writeDirect = true; nonContext = true; methodName = &quot;writeAsArrayNonContext&quot;; } Context context = new Context(getters, beanInfo, classNameType, writeDirect, nonContext); mw = new MethodWriter(cw, ACC_PUBLIC, methodName, &quot;(L&quot; + JSONSerializer + &quot;;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/reflect/Type;I)V&quot;, null, new String[] { &quot;java/io/IOException&quot; }); mw.visitVarInsn(ALOAD, Context.serializer); mw.visitFieldInsn(GETFIELD, JSONSerializer, &quot;out&quot;, SerializeWriter_desc); mw.visitVarInsn(ASTORE, context.var(&quot;out&quot;)); mw.visitVarInsn(ALOAD, Context.obj); // obj mw.visitTypeInsn(CHECKCAST, type(clazz)); // serializer mw.visitVarInsn(ASTORE, context.var(&quot;entity&quot;)); // obj generateWriteAsArray(clazz, mw, getters, context); mw.visitInsn(RETURN); mw.visitMaxs(7, context.variantIndex + 2); mw.visitEnd(); } byte[] code = cw.toByteArray(); Class&lt;?&gt; exampleClass = classLoader.defineClassPublic(classNameFull, code, 0, code.length); Constructor&lt;?&gt; constructor = exampleClass.getConstructor(SerializeBeanInfo.class); Object instance = constructor.newInstance(beanInfo); return (JavaBeanSerializer) instance; } 到这里为止，我们的分析就可以结束了，实际上这里是根据fieldInfo，通过CodeGen技术生成一个writer实例。而getJson被简单当作了json属性的getter，所以在writer.write(object)中调用了getJson从而出现了递归。那么这个问题的简单解决办法就是将getJson换个名字，比如toJson。最后，在github的issue中也翻到了一个对应的问题，作者给出的答案就是换个名字。" />
+<link rel="canonical" href="/debug/%E6%97%A5%E5%BF%97/2017/05/14/FastJson-%E8%B8%A9%E5%9D%91%E8%AE%B0%E5%BD%95.html" />
+<meta property="og:url" content="/debug/%E6%97%A5%E5%BF%97/2017/05/14/FastJson-%E8%B8%A9%E5%9D%91%E8%AE%B0%E5%BD%95.html" />
+<meta property="og:site_name" content="W41ter’s Bistro" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2017-05-14T04:49:05+08:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="FastJson 踩坑记录" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2017-05-14T04:49:05+08:00","datePublished":"2017-05-14T04:49:05+08:00","description":"关键字: fastjson stackoverflow 本文使用的版本是 1.2.32 fastjson 是阿里开源的Json格式化工具库。在项目中使用了fastjson，然后出现了一个奇怪的bug。程序在序列化的时候递归调用了我调用序列化函数的函数。简单点说就是序列化中递归地调用了自己，最后stackoverflow。 下面是是使用的代码： public class Host { private String name; public Host() {} public String getName() { return name; } public void setName(String name) { this.name = name; } public static Host factory(byte [] bytes) { return JSON.parseObjec(bytes, Host.class); } public byte[] getJson() { return JSON.toJSONBytes(this); } } 然后在程序中某处使用byte []bytes = host.getJson()，出现的错误大概如下： java.lang.StackOverflowError at com.alibaba.fastjson.serializer.JSONSerializer.setContext(JSONSerializer.java:113) at com.alibaba.fastjson.serializer.JSONSerializer.setContext(JSONSerializer.java:109) at com.alibaba.fastjson.serializer.ASMSerializer_1_Host.write(Unknown Source) at com.alibaba.fastjson.serializer.JSONSerializer.write(JSONSerializer.java:275) at com.alibaba.fastjson.JSON.toJSONBytes(JSON.java:679) at com.alibaba.fastjson.JSON.toJSONBytes(JSON.java:605) at com.alibaba.fastjson.JSON.toJSONBytes(JSON.java:598) at xxx.Host.getBytes(Host.java:38) at com.alibaba.fastjson.serializer.ASMSerializer_1_Host.write(Unknown Source) at com.alibaba.fastjson.serializer.JSONSerializer.write(JSONSerializer.java:275) at com.alibaba.fastjson.JSON.toJSONBytes(JSON.java:679) at com.alibaba.fastjson.JSON.toJSONBytes(JSON.java:605) at com.alibaba.fastjson.JSON.toJSONBytes(JSON.java:598) at xxx.Host.getBytes(Host.java:38) 分析调用堆栈发现fastjson在生成的serializer.ASMSerializer\\_1\\_Host中调用了Host.getJson()导致了递归。排除自己的错误后，就将代码定位到了fastjson中，应该是fastjson中出了问题。然后开始调试代码： public static byte[] toJSONBytes(Object object, SerializeConfig config, int defaultFeatures, SerializerFeature... features) { SerializeWriter out = new SerializeWriter(null, defaultFeatures, features); try { JSONSerializer serializer = new JSONSerializer(out, config); serializer.write(object); return out.toBytes(IOUtils.UTF8); } finally { out.close(); } } 按照栈调用顺序来看，出错点应该在serializer.write(object)内部，继续深入： public final void write(Object object) { if (object == null) { out.writeNull(); return; } Class&lt;?&gt; clazz = object.getClass(); ObjectSerializer writer = getObjectWriter(clazz); try { writer.write(this, object, null, null, 0); } catch (IOException e) { throw new JSONException(e.getMessage(), e); } } 这里发现通过getObjectWriter(clazz)取得了host的writer，想必就是自动生成的ASMSerializer_1_Host实例。本来想进入writer.write中观察，没有源代码只好放弃。然后将目标放到getObjectWriter中，看看在writer实例构造过程中能不能找到点线索。 经过几层跳转，来到了真正的getObjectWriter中： private ObjectSerializer getObjectWriter(Class&lt;?&gt; clazz, boolean create) { ObjectSerializer writer = serializers.get(clazz); if (writer == null) { try { final ClassLoader classLoader = Thread.currentThread().getContextClassLoader(); for (Object o : ServiceLoader.load(AutowiredObjectSerializer.class, classLoader)) { if (!(o instanceof AutowiredObjectSerializer)) { continue; } AutowiredObjectSerializer autowired = (AutowiredObjectSerializer) o; for (Type forType : autowired.getAutowiredFor()) { put(forType, autowired); } } } catch (ClassCastException ex) { // skip } writer = serializers.get(clazz); } if (writer == null) { final ClassLoader classLoader = JSON.class.getClassLoader(); if (classLoader != Thread.currentThread().getContextClassLoader()) { try { for (Object o : ServiceLoader.load(AutowiredObjectSerializer.class, classLoader)) { if (!(o instanceof AutowiredObjectSerializer)) { continue; } AutowiredObjectSerializer autowired = (AutowiredObjectSerializer) o; for (Type forType : autowired.getAutowiredFor()) { put(forType, autowired); } } } catch (ClassCastException ex) { // skip } writer = serializers.get(clazz); } } if (writer == null) { if (Map.class.isAssignableFrom(clazz)) { put(clazz, MapSerializer.instance); } else if (List.class.isAssignableFrom(clazz)) { put(clazz, ListSerializer.instance); } else if (Collection.class.isAssignableFrom(clazz)) { put(clazz, CollectionCodec.instance); } else if (Date.class.isAssignableFrom(clazz)) { put(clazz, DateCodec.instance); } else if (JSONAware.class.isAssignableFrom(clazz)) { put(clazz, JSONAwareSerializer.instance); } else if (JSONSerializable.class.isAssignableFrom(clazz)) { put(clazz, JSONSerializableSerializer.instance); } else if (JSONStreamAware.class.isAssignableFrom(clazz)) { put(clazz, MiscCodec.instance); } else if (clazz.isEnum() || (clazz.getSuperclass() != null &amp;&amp; clazz.getSuperclass().isEnum())) { JSONType jsonType = clazz.getAnnotation(JSONType.class); if (jsonType != null &amp;&amp; jsonType.serializeEnumAsJavaBean()) { put(clazz, createJavaBeanSerializer(clazz)); } else { put(clazz, EnumSerializer.instance); } } else if (clazz.isArray()) { Class&lt;?&gt; componentType = clazz.getComponentType(); ObjectSerializer compObjectSerializer = getObjectWriter(componentType); put(clazz, new ArraySerializer(componentType, compObjectSerializer)); } else if (Throwable.class.isAssignableFrom(clazz)) { SerializeBeanInfo beanInfo = TypeUtils.buildBeanInfo(clazz, null, propertyNamingStrategy); beanInfo.features |= SerializerFeature.WriteClassName.mask; put(clazz, new JavaBeanSerializer(beanInfo)); } else if (TimeZone.class.isAssignableFrom(clazz) || Map.Entry.class.isAssignableFrom(clazz)) { put(clazz, MiscCodec.instance); } else if (Appendable.class.isAssignableFrom(clazz)) { put(clazz, AppendableSerializer.instance); } else if (Charset.class.isAssignableFrom(clazz)) { put(clazz, ToStringSerializer.instance); } else if (Enumeration.class.isAssignableFrom(clazz)) { put(clazz, EnumerationSerializer.instance); } else if (Calendar.class.isAssignableFrom(clazz) // || XMLGregorianCalendar.class.isAssignableFrom(clazz)) { put(clazz, CalendarCodec.instance); } else if (Clob.class.isAssignableFrom(clazz)) { put(clazz, ClobSeriliazer.instance); } else if (TypeUtils.isPath(clazz)) { put(clazz, ToStringSerializer.instance); } else if (Iterator.class.isAssignableFrom(clazz)) { put(clazz, MiscCodec.instance); } else { String className = clazz.getName(); if (className.startsWith(&quot;java.awt.&quot;) // &amp;&amp; AwtCodec.support(clazz) // ) { // awt if (!awtError) { try { put(Class.forName(&quot;java.awt.Color&quot;), AwtCodec.instance); put(Class.forName(&quot;java.awt.Font&quot;), AwtCodec.instance); put(Class.forName(&quot;java.awt.Point&quot;), AwtCodec.instance); put(Class.forName(&quot;java.awt.Rectangle&quot;), AwtCodec.instance); } catch (Throwable e) { awtError = true; // skip } } return AwtCodec.instance; } // jdk8 if ((!jdk8Error) // &amp;&amp; (className.startsWith(&quot;java.time.&quot;) // || className.startsWith(&quot;java.util.Optional&quot;) // || className.equals(&quot;java.util.concurrent.atomic.LongAdder&quot;) || className.equals(&quot;java.util.concurrent.atomic.DoubleAdder&quot;) )) { try { put(Class.forName(&quot;java.time.LocalDateTime&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.LocalDate&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.LocalTime&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.ZonedDateTime&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.OffsetDateTime&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.OffsetTime&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.ZoneOffset&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.ZoneRegion&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.Period&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.Duration&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.time.Instant&quot;), Jdk8DateCodec.instance); put(Class.forName(&quot;java.util.Optional&quot;), OptionalCodec.instance); put(Class.forName(&quot;java.util.OptionalDouble&quot;), OptionalCodec.instance); put(Class.forName(&quot;java.util.OptionalInt&quot;), OptionalCodec.instance); put(Class.forName(&quot;java.util.OptionalLong&quot;), OptionalCodec.instance); put(Class.forName(&quot;java.util.concurrent.atomic.LongAdder&quot;), AdderSerializer.instance); put(Class.forName(&quot;java.util.concurrent.atomic.DoubleAdder&quot;), AdderSerializer.instance); writer = serializers.get(clazz); if (writer != null) { return writer; } } catch (Throwable e) { // skip jdk8Error = true; } } if ((!oracleJdbcError) // &amp;&amp; className.startsWith(&quot;oracle.sql.&quot;)) { try { put(Class.forName(&quot;oracle.sql.DATE&quot;), DateCodec.instance); put(Class.forName(&quot;oracle.sql.TIMESTAMP&quot;), DateCodec.instance); writer = serializers.get(clazz); if (writer != null) { return writer; } } catch (Throwable e) { // skip oracleJdbcError = true; } } if ((!springfoxError) // &amp;&amp; className.equals(&quot;springfox.documentation.spring.web.json.Json&quot;)) { try { put(Class.forName(&quot;springfox.documentation.spring.web.json.Json&quot;), // SwaggerJsonSerializer.instance); writer = serializers.get(clazz); if (writer != null) { return writer; } } catch (ClassNotFoundException e) { // skip springfoxError = true; } } if ((!guavaError) // &amp;&amp; className.startsWith(&quot;com.google.common.collect.&quot;)) { try { put(Class.forName(&quot;com.google.common.collect.HashMultimap&quot;), // GuavaCodec.instance); put(Class.forName(&quot;com.google.common.collect.LinkedListMultimap&quot;), // GuavaCodec.instance); put(Class.forName(&quot;com.google.common.collect.ArrayListMultimap&quot;), // GuavaCodec.instance); put(Class.forName(&quot;com.google.common.collect.TreeMultimap&quot;), // GuavaCodec.instance); writer = serializers.get(clazz); if (writer != null) { return writer; } } catch (ClassNotFoundException e) { // skip guavaError = true; } } if (className.equals(&quot;net.sf.json.JSONNull&quot;)) { try { put(Class.forName(&quot;net.sf.json.JSONNull&quot;), // MiscCodec.instance); } catch (ClassNotFoundException e) { // skip } writer = serializers.get(clazz); if (writer != null) { return writer; } } if (TypeUtils.isProxy(clazz)) { Class&lt;?&gt; superClazz = clazz.getSuperclass(); ObjectSerializer superWriter = getObjectWriter(superClazz); put(clazz, superWriter); return superWriter; } if (create) { put(clazz, createJavaBeanSerializer(clazz)); } } writer = serializers.get(clazz); } return writer; } 简单扫描代码逻辑，发现writer是通过serializers.get(clazz)获取的。而代码中分别从Thread.currentThread().getContextClassLoader、JSON.class.getClassLoader以及最后对一下常见类分析来填充serializers。最后一种办法的末尾，走到了： put(clazz, createJavaBeanSerializer(clazz)); 可以发现逻辑是实在找不到，使用createJavaBeanSerializer(clazz)来创建clazz对应的writer。看来我们的目标应该是这个createJavaBeanSerializer函数，所以进一步深入： private final ObjectSerializer createJavaBeanSerializer(Class&lt;?&gt; clazz) { SerializeBeanInfo beanInfo = TypeUtils.buildBeanInfo(clazz, null, propertyNamingStrategy, fieldBased); if (beanInfo.fields.length == 0 &amp;&amp; Iterable.class.isAssignableFrom(clazz)) { return MiscCodec.instance; } return createJavaBeanSerializer(beanInfo); } 首先调用TypeUtils.buildBeanInfo来生成SerializerBeanInfo。 public static SerializeBeanInfo buildBeanInfo(Class&lt;?&gt; beanType // , Map&lt;String, String&gt; aliasMap // , PropertyNamingStrategy propertyNamingStrategy // , boolean fieldBased // ) { JSONType jsonType = beanType.getAnnotation(JSONType.class); // fieldName,field ，先生成fieldName的快照，减少之后的findField的轮询 Map&lt;String, Field&gt; fieldCacheMap = new HashMap&lt;String, Field&gt;(); ParserConfig.parserAllFieldToCache(beanType, fieldCacheMap); List&lt;FieldInfo&gt; fieldInfoList = fieldBased ? computeGettersWithFieldBase(beanType, aliasMap, false, propertyNamingStrategy) // : computeGetters(beanType, jsonType, aliasMap, fieldCacheMap, false, propertyNamingStrategy); FieldInfo[] fields = new FieldInfo[fieldInfoList.size()]; fieldInfoList.toArray(fields); String[] orders = null; final int features; String typeName = null; if (jsonType != null) { orders = jsonType.orders(); typeName = jsonType.typeName(); if (typeName.length() == 0) { typeName = null; } features = SerializerFeature.of(jsonType.serialzeFeatures()); } else { features = 0; } FieldInfo[] sortedFields; List&lt;FieldInfo&gt; sortedFieldList; if (orders != null &amp;&amp; orders.length != 0) { sortedFieldList = fieldBased ? computeGettersWithFieldBase(beanType, aliasMap, true, propertyNamingStrategy) // : computeGetters(beanType, jsonType, aliasMap,fieldCacheMap, true, propertyNamingStrategy); } else { sortedFieldList = new ArrayList&lt;FieldInfo&gt;(fieldInfoList); Collections.sort(sortedFieldList); } sortedFields = new FieldInfo[sortedFieldList.size()]; sortedFieldList.toArray(sortedFields); if (Arrays.equals(sortedFields, fields)) { sortedFields = fields; } return new SerializeBeanInfo(beanType, jsonType, typeName, features, fields, sortedFields); } 其中parserAllFieldToCache将字段保存起来，减少访问次数。紧接着设置fieldInfoList的值，此时fieldBase为false，所以进入了computeGetters。 public static List&lt;FieldInfo&gt; computeGetters(Class&lt;?&gt; clazz, // JSONType jsonType, // Map&lt;String, String&gt; aliasMap, // Map&lt;String, Field&gt; fieldCacheMap, // boolean sorted, // PropertyNamingStrategy propertyNamingStrategy // ) { Map&lt;String, FieldInfo&gt; fieldInfoMap = new LinkedHashMap&lt;String, FieldInfo&gt;(); for (Method method : clazz.getMethods()) { String methodName = method.getName(); int ordinal = 0, serialzeFeatures = 0, parserFeatures = 0; String label = null; if (Modifier.isStatic(method.getModifiers())) { continue; } if (method.getReturnType().equals(Void.TYPE)) { continue; } if (method.getParameterTypes().length != 0) { continue; } if (method.getReturnType() == ClassLoader.class) { continue; } if (method.getName().equals(&quot;getMetaClass&quot;) &amp;&amp; method.getReturnType().getName().equals(&quot;groovy.lang.MetaClass&quot;)) { continue; } JSONField annotation = method.getAnnotation(JSONField.class); if (annotation == null) { annotation = getSuperMethodAnnotation(clazz, method); } if (annotation != null) { if (!annotation.serialize()) { continue; } ordinal = annotation.ordinal(); serialzeFeatures = SerializerFeature.of(annotation.serialzeFeatures()); parserFeatures = Feature.of(annotation.parseFeatures()); if (annotation.name().length() != 0) { String propertyName = annotation.name(); if (aliasMap != null) { propertyName = aliasMap.get(propertyName); if (propertyName == null) { continue; } } FieldInfo fieldInfo = new FieldInfo(propertyName, method, null, clazz, null, ordinal, serialzeFeatures, parserFeatures, annotation, null, label); fieldInfoMap.put(propertyName, fieldInfo); continue; } if (annotation.label().length() != 0) { label = annotation.label(); } } if (methodName.startsWith(&quot;get&quot;)) { if (methodName.length() &lt; 4) { continue; } if (methodName.equals(&quot;getClass&quot;)) { continue; } if (methodName.equals(&quot;getDeclaringClass&quot;) &amp;&amp; clazz.isEnum()) { continue; } char c3 = methodName.charAt(3); String propertyName; if (Character.isUpperCase(c3) // || c3 &gt; 512 // for unicode method name ) { if (compatibleWithJavaBean) { propertyName = decapitalize(methodName.substring(3)); } else { propertyName = Character.toLowerCase(methodName.charAt(3)) + methodName.substring(4); } propertyName = getPropertyNameByCompatibleFieldName(fieldCacheMap, methodName, propertyName,3); } else if (c3 == &#39;_&#39;) { propertyName = methodName.substring(4); } else if (c3 == &#39;f&#39;) { propertyName = methodName.substring(3); } else if (methodName.length() &gt;= 5 &amp;&amp; Character.isUpperCase(methodName.charAt(4))) { propertyName = decapitalize(methodName.substring(3)); } else { continue; } boolean ignore = isJSONTypeIgnore(clazz, propertyName); if (ignore) { continue; } //假如bean的field很多的情况一下，轮询时将大大降低效率 Field field = ParserConfig.getFieldFromCache(propertyName, fieldCacheMap); if (field == null &amp;&amp; propertyName.length() &gt; 1) { char ch = propertyName.charAt(1); if (ch &gt;= &#39;A&#39; &amp;&amp; ch &lt;= &#39;Z&#39;) { String javaBeanCompatiblePropertyName = decapitalize(methodName.substring(3)); field = ParserConfig.getFieldFromCache(javaBeanCompatiblePropertyName, fieldCacheMap); } } JSONField fieldAnnotation = null; if (field != null) { fieldAnnotation = field.getAnnotation(JSONField.class); if (fieldAnnotation != null) { if (!fieldAnnotation.serialize()) { continue; } ordinal = fieldAnnotation.ordinal(); serialzeFeatures = SerializerFeature.of(fieldAnnotation.serialzeFeatures()); parserFeatures = Feature.of(fieldAnnotation.parseFeatures()); if (fieldAnnotation.name().length() != 0) { propertyName = fieldAnnotation.name(); if (aliasMap != null) { propertyName = aliasMap.get(propertyName); if (propertyName == null) { continue; } } } if (fieldAnnotation.label().length() != 0) { label = fieldAnnotation.label(); } } } if (aliasMap != null) { propertyName = aliasMap.get(propertyName); if (propertyName == null) { continue; } } if (propertyNamingStrategy != null) { propertyName = propertyNamingStrategy.translate(propertyName); } FieldInfo fieldInfo = new FieldInfo(propertyName, method, field, clazz, null, ordinal, serialzeFeatures, parserFeatures, annotation, fieldAnnotation, label); fieldInfoMap.put(propertyName, fieldInfo); } if (methodName.startsWith(&quot;is&quot;)) { if (methodName.length() &lt; 3) { continue; } if (method.getReturnType() != Boolean.TYPE &amp;&amp; method.getReturnType() != Boolean.class) { continue; } char c2 = methodName.charAt(2); String propertyName; if (Character.isUpperCase(c2)) { if (compatibleWithJavaBean) { propertyName = decapitalize(methodName.substring(2)); } else { propertyName = Character.toLowerCase(methodName.charAt(2)) + methodName.substring(3); } propertyName = getPropertyNameByCompatibleFieldName(fieldCacheMap, methodName, propertyName,2); } else if (c2 == &#39;_&#39;) { propertyName = methodName.substring(3); } else if (c2 == &#39;f&#39;) { propertyName = methodName.substring(2); } else { continue; } boolean ignore = isJSONTypeIgnore(clazz, propertyName); if (ignore) { continue; } Field field = ParserConfig.getFieldFromCache(propertyName,fieldCacheMap); if (field == null) { field = ParserConfig.getFieldFromCache(methodName,fieldCacheMap); } JSONField fieldAnnotation = null; if (field != null) { fieldAnnotation = field.getAnnotation(JSONField.class); if (fieldAnnotation != null) { if (!fieldAnnotation.serialize()) { continue; } ordinal = fieldAnnotation.ordinal(); serialzeFeatures = SerializerFeature.of(fieldAnnotation.serialzeFeatures()); parserFeatures = Feature.of(fieldAnnotation.parseFeatures()); if (fieldAnnotation.name().length() != 0) { propertyName = fieldAnnotation.name(); if (aliasMap != null) { propertyName = aliasMap.get(propertyName); if (propertyName == null) { continue; } } } if (fieldAnnotation.label().length() != 0) { label = fieldAnnotation.label(); } } } if (aliasMap != null) { propertyName = aliasMap.get(propertyName); if (propertyName == null) { continue; } } if (propertyNamingStrategy != null) { propertyName = propertyNamingStrategy.translate(propertyName); } //优先选择get if (fieldInfoMap.containsKey(propertyName)) { continue; } FieldInfo fieldInfo = new FieldInfo(propertyName, method, field, clazz, null, ordinal, serialzeFeatures, parserFeatures, annotation, fieldAnnotation, label); fieldInfoMap.put(propertyName, fieldInfo); } } Field[] fields = clazz.getFields(); computeFields(clazz, aliasMap, propertyNamingStrategy, fieldInfoMap, fields); return getFieldInfos(clazz, sorted, fieldInfoMap); } 这里针对clazz的每一个方法进行了判断，由于只有get和set开头的函数，所以只关心methodName.startsWith(&quot;get&quot;)分支。最后进入了getPropertyNameByCompatibleFieldName所在的分支，并将propertyName设置为对应get的属性名。在getPropertyNameByCompatibleFieldName函数中，而compatibleWithFieldName设置为false所以相当于跳过了。 private static String getPropertyNameByCompatibleFieldName(Map&lt;String, Field&gt; fieldCacheMap, String methodName, String propertyName,int fromIdx) { if (compatibleWithFieldName){ if (!fieldCacheMap.containsKey(propertyName)){ String tempPropertyName=methodName.substring(fromIdx); return fieldCacheMap.containsKey(tempPropertyName)?tempPropertyName:propertyName; } } return propertyName; } 继续分析，程序进入isJSONTypeIgnore根据注解判断是否跳过该字段，我的例子中不关心。紧接着调用了getFieldFromCache： public static Field getFieldFromCache(String fieldName, Map&lt;String, Field&gt; fieldCacheMap) { Field field = fieldCacheMap.get(fieldName); if (field == null) { field = fieldCacheMap.get(&quot;_&quot; + fieldName); } if (field == null) { field = fieldCacheMap.get(&quot;m_&quot; + fieldName); } if (field == null) { char c0 = fieldName.charAt(0); if (c0 &gt;= &#39;a&#39; &amp;&amp; c0 &lt;= &#39;z&#39;) { char[] chars = fieldName.toCharArray(); chars[0] -= 32; // lower String fieldNameX = new String(chars); field = fieldCacheMap.get(fieldNameX); } } return field; } 这里按照刚才取出的方法名来查找字段，如果失败则加上_或者m_之类的方法继续判断。返回继续分析，在做了部分如注解别名之类的处理后，将分析得到的结果生成一个FieldInfo，并保存在fieldInfoMap中。最后调用computeFields进一步处理一些public属性的fields数据。最后经过getFieldInfos处理后，将得到的List&lt;FieldInfo&gt;中，返回上一级。 private static void computeFields( Class&lt;?&gt; clazz, // Map&lt;String, String&gt; aliasMap, // PropertyNamingStrategy propertyNamingStrategy, // Map&lt;String, FieldInfo&gt; fieldInfoMap, // Field[] fields) { for (Field field : fields) { if (Modifier.isStatic(field.getModifiers())) { continue; } JSONField fieldAnnotation = field.getAnnotation(JSONField.class); int ordinal = 0, serialzeFeatures = 0, parserFeatures = 0; String propertyName = field.getName(); String label = null; if (fieldAnnotation != null) { if (!fieldAnnotation.serialize()) { continue; } ordinal = fieldAnnotation.ordinal(); serialzeFeatures = SerializerFeature.of(fieldAnnotation.serialzeFeatures()); parserFeatures = Feature.of(fieldAnnotation.parseFeatures()); if (fieldAnnotation.name().length() != 0) { propertyName = fieldAnnotation.name(); } if (fieldAnnotation.label().length() != 0) { label = fieldAnnotation.label(); } } if (aliasMap != null) { propertyName = aliasMap.get(propertyName); if (propertyName == null) { continue; } } if (propertyNamingStrategy != null) { propertyName = propertyNamingStrategy.translate(propertyName); } if (!fieldInfoMap.containsKey(propertyName)) { FieldInfo fieldInfo = new FieldInfo(propertyName, null, field, clazz, null, ordinal, serialzeFeatures, parserFeatures, null, fieldAnnotation, label); fieldInfoMap.put(propertyName, fieldInfo); } } } 分析到这里，可以发现在fieldInfoList中实际上值：name,json。看到这里相比也能猜出大概了，现在继续跟踪。回到buildBeanInfo中，将刚才得到的fieldInfoList构造为SerializeBeanInfo并返回。 public ObjectSerializer createJavaBeanSerializer(SerializeBeanInfo beanInfo) { JSONType jsonType = beanInfo.jsonType; if (jsonType != null) { Class&lt;?&gt; serializerClass = jsonType.serializer(); if (serializerClass != Void.class) { try { Object seralizer = serializerClass.newInstance(); if (seralizer instanceof ObjectSerializer) { return (ObjectSerializer) seralizer; } } catch (Throwable e) { // skip } } if (jsonType.asm() == false) { asm = false; } for (SerializerFeature feature : jsonType.serialzeFeatures()) { if (SerializerFeature.WriteNonStringValueAsString == feature // || SerializerFeature.WriteEnumUsingToString == feature // || SerializerFeature.NotWriteDefaultValue == feature) { asm = false; break; } } } Class&lt;?&gt; clazz = beanInfo.beanType; if (!Modifier.isPublic(beanInfo.beanType.getModifiers())) { return new JavaBeanSerializer(beanInfo); } boolean asm = this.asm &amp;&amp; !fieldBased; if (asm &amp;&amp; asmFactory.classLoader.isExternalClass(clazz) || clazz == Serializable.class || clazz == Object.class) { asm = false; } if (asm &amp;&amp; !ASMUtils.checkName(clazz.getSimpleName())) { asm = false; } if (asm) { for(FieldInfo fieldInfo : beanInfo.fields){ Field field = fieldInfo.field; if (field != null &amp;&amp; !field.getType().equals(fieldInfo.fieldClass)) { asm = false; break; } Method method = fieldInfo.method; if (method != null &amp;&amp; !method.getReturnType().equals(fieldInfo.fieldClass)) { asm = false; break; } JSONField annotation = fieldInfo.getAnnotation(); if (annotation == null) { continue; } if ((!ASMUtils.checkName(annotation.name())) // || annotation.format().length() != 0 || annotation.jsonDirect() || annotation.serializeUsing() != Void.class || annotation.unwrapped() ) { asm = false; break; } for (SerializerFeature feature : annotation.serialzeFeatures()) { if (SerializerFeature.WriteNonStringValueAsString == feature // || SerializerFeature.WriteEnumUsingToString == feature // || SerializerFeature.NotWriteDefaultValue == feature) { asm = false; break; } } } } if (asm) { try { ObjectSerializer asmSerializer = createASMSerializer(beanInfo); if (asmSerializer != null) { return asmSerializer; } } catch (ClassFormatError e) { // skip } catch (ClassCastException e) { // skip } catch (Throwable e) { throw new JSONException(&quot;create asm serializer error, class &quot; + clazz, e); } } return new JavaBeanSerializer(beanInfo); } 经过处理后进入了createASMSerializer，其中调用createJavaBeanSerializer来创建具体的writer： public JavaBeanSerializer createJavaBeanSerializer(SerializeBeanInfo beanInfo) throws Exception { Class&lt;?&gt; clazz = beanInfo.beanType; if (clazz.isPrimitive()) { throw new JSONException(&quot;unsupportd class &quot; + clazz.getName()); } JSONType jsonType = clazz.getAnnotation(JSONType.class); FieldInfo[] unsortedGetters = beanInfo.fields;; for (FieldInfo fieldInfo : unsortedGetters) { if (fieldInfo.field == null // &amp;&amp; fieldInfo.method != null // &amp;&amp; fieldInfo.method.getDeclaringClass().isInterface()) { return new JavaBeanSerializer(clazz); } } FieldInfo[] getters = beanInfo.sortedFields; boolean nativeSorted = beanInfo.sortedFields == beanInfo.fields; if (getters.length &gt; 256) { return new JavaBeanSerializer(clazz); } for (FieldInfo getter : getters) { if (!ASMUtils.checkName(getter.getMember().getName())) { return new JavaBeanSerializer(clazz); } } String className = &quot;ASMSerializer_&quot; + seed.incrementAndGet() + &quot;_&quot; + clazz.getSimpleName(); String packageName = ASMSerializerFactory.class.getPackage().getName(); String classNameType = packageName.replace(&#39;.&#39;, &#39;/&#39;) + &quot;/&quot; + className; String classNameFull = packageName + &quot;.&quot; + className; ClassWriter cw = new ClassWriter(); cw.visit(V1_5 // , ACC_PUBLIC + ACC_SUPER // , classNameType // , JavaBeanSerializer // , new String[] { ObjectSerializer } // ); for (FieldInfo fieldInfo : getters) { if (fieldInfo.fieldClass.isPrimitive() // //|| fieldInfo.fieldClass.isEnum() // || fieldInfo.fieldClass == String.class) { continue; } new FieldWriter(cw, ACC_PUBLIC, fieldInfo.name + &quot;_asm_fieldType&quot;, &quot;Ljava/lang/reflect/Type;&quot;) // .visitEnd(); if (List.class.isAssignableFrom(fieldInfo.fieldClass)) { new FieldWriter(cw, ACC_PUBLIC, fieldInfo.name + &quot;_asm_list_item_ser_&quot;, ObjectSerializer_desc) // .visitEnd(); } new FieldWriter(cw, ACC_PUBLIC, fieldInfo.name + &quot;_asm_ser_&quot;, ObjectSerializer_desc) // .visitEnd(); } MethodVisitor mw = new MethodWriter(cw, ACC_PUBLIC, &quot;&lt;init&gt;&quot;, &quot;(&quot; + desc(SerializeBeanInfo.class) + &quot;)V&quot;, null, null); mw.visitVarInsn(ALOAD, 0); mw.visitVarInsn(ALOAD, 1); mw.visitMethodInsn(INVOKESPECIAL, JavaBeanSerializer, &quot;&lt;init&gt;&quot;, &quot;(&quot; + desc(SerializeBeanInfo.class) + &quot;)V&quot;); // init _asm_fieldType for (int i = 0; i &lt; getters.length; ++i) { FieldInfo fieldInfo = getters[i]; if (fieldInfo.fieldClass.isPrimitive() // // || fieldInfo.fieldClass.isEnum() // || fieldInfo.fieldClass == String.class) { continue; } mw.visitVarInsn(ALOAD, 0); if (fieldInfo.method != null) { mw.visitLdcInsn(com.alibaba.fastjson.asm.Type.getType(desc(fieldInfo.declaringClass))); mw.visitLdcInsn(fieldInfo.method.getName()); mw.visitMethodInsn(INVOKESTATIC, type(ASMUtils.class), &quot;getMethodType&quot;, &quot;(Ljava/lang/Class;Ljava/lang/String;)Ljava/lang/reflect/Type;&quot;); } else { mw.visitVarInsn(ALOAD, 0); mw.visitLdcInsn(i); mw.visitMethodInsn(INVOKESPECIAL, JavaBeanSerializer, &quot;getFieldType&quot;, &quot;(I)Ljava/lang/reflect/Type;&quot;); } mw.visitFieldInsn(PUTFIELD, classNameType, fieldInfo.name + &quot;_asm_fieldType&quot;, &quot;Ljava/lang/reflect/Type;&quot;); } mw.visitInsn(RETURN); mw.visitMaxs(4, 4); mw.visitEnd(); boolean DisableCircularReferenceDetect = false; if (jsonType != null) { for (SerializerFeature featrues : jsonType.serialzeFeatures()) { if (featrues == SerializerFeature.DisableCircularReferenceDetect) { DisableCircularReferenceDetect = true; break; } } } // 0 write // 1 writeNormal // 2 writeNonContext for (int i = 0; i &lt; 3; ++i) { String methodName; boolean nonContext = DisableCircularReferenceDetect; boolean writeDirect = false; if (i == 0) { methodName = &quot;write&quot;; writeDirect = true; } else if (i == 1) { methodName = &quot;writeNormal&quot;; } else { writeDirect = true; nonContext = true; methodName = &quot;writeDirectNonContext&quot;; } Context context = new Context(getters, beanInfo, classNameType, writeDirect, nonContext); mw = new MethodWriter(cw, // ACC_PUBLIC, // methodName, // &quot;(L&quot; + JSONSerializer + &quot;;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/reflect/Type;I)V&quot;, // null, // new String[] { &quot;java/io/IOException&quot; } // ); { Label endIf_ = new Label(); mw.visitVarInsn(ALOAD, Context.obj); //serializer.writeNull(); mw.visitJumpInsn(IFNONNULL, endIf_); mw.visitVarInsn(ALOAD, Context.serializer); mw.visitMethodInsn(INVOKEVIRTUAL, JSONSerializer, &quot;writeNull&quot;, &quot;()V&quot;); mw.visitInsn(RETURN); mw.visitLabel(endIf_); } mw.visitVarInsn(ALOAD, Context.serializer); mw.visitFieldInsn(GETFIELD, JSONSerializer, &quot;out&quot;, SerializeWriter_desc); mw.visitVarInsn(ASTORE, context.var(&quot;out&quot;)); if ((!nativeSorted) // &amp;&amp; !context.writeDirect) { if (jsonType == null || jsonType.alphabetic()) { Label _else = new Label(); mw.visitVarInsn(ALOAD, context.var(&quot;out&quot;)); mw.visitMethodInsn(INVOKEVIRTUAL, SerializeWriter, &quot;isSortField&quot;, &quot;()Z&quot;); mw.visitJumpInsn(IFNE, _else); mw.visitVarInsn(ALOAD, 0); mw.visitVarInsn(ALOAD, 1); mw.visitVarInsn(ALOAD, 2); mw.visitVarInsn(ALOAD, 3); mw.visitVarInsn(ALOAD, 4); mw.visitVarInsn(ILOAD, 5); mw.visitMethodInsn(INVOKEVIRTUAL, classNameType, &quot;writeUnsorted&quot;, &quot;(L&quot; + JSONSerializer + &quot;;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/reflect/Type;I)V&quot;); mw.visitInsn(RETURN); mw.visitLabel(_else); } } // isWriteDoubleQuoteDirect if (context.writeDirect &amp;&amp; !nonContext) { Label _direct = new Label(); Label _directElse = new Label(); mw.visitVarInsn(ALOAD, 0); mw.visitVarInsn(ALOAD, Context.serializer); mw.visitMethodInsn(INVOKEVIRTUAL, JavaBeanSerializer, &quot;writeDirect&quot;, &quot;(L&quot; + JSONSerializer + &quot;;)Z&quot;); mw.visitJumpInsn(IFNE, _directElse); mw.visitVarInsn(ALOAD, 0); mw.visitVarInsn(ALOAD, 1); mw.visitVarInsn(ALOAD, 2); mw.visitVarInsn(ALOAD, 3); mw.visitVarInsn(ALOAD, 4); mw.visitVarInsn(ILOAD, 5); mw.visitMethodInsn(INVOKEVIRTUAL, classNameType, &quot;writeNormal&quot;, &quot;(L&quot; + JSONSerializer + &quot;;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/reflect/Type;I)V&quot;); mw.visitInsn(RETURN); mw.visitLabel(_directElse); mw.visitVarInsn(ALOAD, context.var(&quot;out&quot;)); mw.visitLdcInsn(SerializerFeature.DisableCircularReferenceDetect.mask); mw.visitMethodInsn(INVOKEVIRTUAL, SerializeWriter, &quot;isEnabled&quot;, &quot;(I)Z&quot;); mw.visitJumpInsn(IFEQ, _direct); mw.visitVarInsn(ALOAD, 0); mw.visitVarInsn(ALOAD, 1); mw.visitVarInsn(ALOAD, 2); mw.visitVarInsn(ALOAD, 3); mw.visitVarInsn(ALOAD, 4); mw.visitVarInsn(ILOAD, 5); mw.visitMethodInsn(INVOKEVIRTUAL, classNameType, &quot;writeDirectNonContext&quot;, &quot;(L&quot; + JSONSerializer + &quot;;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/reflect/Type;I)V&quot;); mw.visitInsn(RETURN); mw.visitLabel(_direct); } mw.visitVarInsn(ALOAD, Context.obj); // obj mw.visitTypeInsn(CHECKCAST, type(clazz)); // serializer mw.visitVarInsn(ASTORE, context.var(&quot;entity&quot;)); // obj generateWriteMethod(clazz, mw, getters, context); mw.visitInsn(RETURN); mw.visitMaxs(7, context.variantIndex + 2); mw.visitEnd(); } if (!nativeSorted) { // sortField support Context context = new Context(getters, beanInfo, classNameType, false, DisableCircularReferenceDetect); mw = new MethodWriter(cw, ACC_PUBLIC, &quot;writeUnsorted&quot;, &quot;(L&quot; + JSONSerializer + &quot;;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/reflect/Type;I)V&quot;, null, new String[] { &quot;java/io/IOException&quot; }); mw.visitVarInsn(ALOAD, Context.serializer); mw.visitFieldInsn(GETFIELD, JSONSerializer, &quot;out&quot;, SerializeWriter_desc); mw.visitVarInsn(ASTORE, context.var(&quot;out&quot;)); mw.visitVarInsn(ALOAD, Context.obj); // obj mw.visitTypeInsn(CHECKCAST, type(clazz)); // serializer mw.visitVarInsn(ASTORE, context.var(&quot;entity&quot;)); // obj generateWriteMethod(clazz, mw, unsortedGetters, context); mw.visitInsn(RETURN); mw.visitMaxs(7, context.variantIndex + 2); mw.visitEnd(); } // 0 writeAsArray // 1 writeAsArrayNormal // 2 writeAsArrayNonContext for (int i = 0; i &lt; 3; ++i) { String methodName; boolean nonContext = DisableCircularReferenceDetect; boolean writeDirect = false; if (i == 0) { methodName = &quot;writeAsArray&quot;; writeDirect = true; } else if (i == 1) { methodName = &quot;writeAsArrayNormal&quot;; } else { writeDirect = true; nonContext = true; methodName = &quot;writeAsArrayNonContext&quot;; } Context context = new Context(getters, beanInfo, classNameType, writeDirect, nonContext); mw = new MethodWriter(cw, ACC_PUBLIC, methodName, &quot;(L&quot; + JSONSerializer + &quot;;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/reflect/Type;I)V&quot;, null, new String[] { &quot;java/io/IOException&quot; }); mw.visitVarInsn(ALOAD, Context.serializer); mw.visitFieldInsn(GETFIELD, JSONSerializer, &quot;out&quot;, SerializeWriter_desc); mw.visitVarInsn(ASTORE, context.var(&quot;out&quot;)); mw.visitVarInsn(ALOAD, Context.obj); // obj mw.visitTypeInsn(CHECKCAST, type(clazz)); // serializer mw.visitVarInsn(ASTORE, context.var(&quot;entity&quot;)); // obj generateWriteAsArray(clazz, mw, getters, context); mw.visitInsn(RETURN); mw.visitMaxs(7, context.variantIndex + 2); mw.visitEnd(); } byte[] code = cw.toByteArray(); Class&lt;?&gt; exampleClass = classLoader.defineClassPublic(classNameFull, code, 0, code.length); Constructor&lt;?&gt; constructor = exampleClass.getConstructor(SerializeBeanInfo.class); Object instance = constructor.newInstance(beanInfo); return (JavaBeanSerializer) instance; } 到这里为止，我们的分析就可以结束了，实际上这里是根据fieldInfo，通过CodeGen技术生成一个writer实例。而getJson被简单当作了json属性的getter，所以在writer.write(object)中调用了getJson从而出现了递归。那么这个问题的简单解决办法就是将getJson换个名字，比如toJson。最后，在github的issue中也翻到了一个对应的问题，作者给出的答案就是换个名字。","headline":"FastJson 踩坑记录","mainEntityOfPage":{"@type":"WebPage","@id":"/debug/%E6%97%A5%E5%BF%97/2017/05/14/FastJson-%E8%B8%A9%E5%9D%91%E8%AE%B0%E5%BD%95.html"},"url":"/debug/%E6%97%A5%E5%BF%97/2017/05/14/FastJson-%E8%B8%A9%E5%9D%91%E8%AE%B0%E5%BD%95.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="/feed.xml" title="W41ter's Bistro" /><!-- for mathjax support -->
+  
+</head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">W41ter&#39;s Bistro</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">FastJson 踩坑记录</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2017-05-14T04:49:05+08:00" itemprop="datePublished">May 14, 2017
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <blockquote>
+  <p>关键字: fastjson stackoverflow 
+本文使用的版本是 1.2.32</p>
+</blockquote>
+
+<p>fastjson 是阿里开源的Json格式化工具库。在项目中使用了fastjson，然后出现了一个奇怪的bug。程序在序列化的时候递归调用了我调用序列化函数的函数。简单点说就是序列化中递归地调用了自己，最后stackoverflow。</p>
+
+<p>下面是是使用的代码：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>public class Host {
+    private String name;
+    
+    public Host() {}
+    public String getName() {
+        return name;
+    }
+    public void setName(String name) {
+        this.name = name;
+    }
+    public static Host factory(byte [] bytes) {
+        return JSON.parseObjec(bytes, Host.class);
+    }
+    public byte[] getJson() {
+        return JSON.toJSONBytes(this);
+    }
+}
+</code></pre></div></div>
+
+<p>然后在程序中某处使用<code class="language-plaintext highlighter-rouge">byte []bytes = host.getJson()</code>，出现的错误大概如下：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>java.lang.StackOverflowError
+	at com.alibaba.fastjson.serializer.JSONSerializer.setContext(JSONSerializer.java:113)
+	at com.alibaba.fastjson.serializer.JSONSerializer.setContext(JSONSerializer.java:109)
+	at com.alibaba.fastjson.serializer.ASMSerializer_1_Host.write(Unknown Source)
+	at com.alibaba.fastjson.serializer.JSONSerializer.write(JSONSerializer.java:275)
+	at com.alibaba.fastjson.JSON.toJSONBytes(JSON.java:679)
+	at com.alibaba.fastjson.JSON.toJSONBytes(JSON.java:605)
+	at com.alibaba.fastjson.JSON.toJSONBytes(JSON.java:598)
+	at xxx.Host.getBytes(Host.java:38)
+	at com.alibaba.fastjson.serializer.ASMSerializer_1_Host.write(Unknown Source)
+	at com.alibaba.fastjson.serializer.JSONSerializer.write(JSONSerializer.java:275)
+	at com.alibaba.fastjson.JSON.toJSONBytes(JSON.java:679)
+	at com.alibaba.fastjson.JSON.toJSONBytes(JSON.java:605)
+	at com.alibaba.fastjson.JSON.toJSONBytes(JSON.java:598)
+	at xxx.Host.getBytes(Host.java:38)
+</code></pre></div></div>
+
+<p>分析调用堆栈发现fastjson在生成的<code class="language-plaintext highlighter-rouge">serializer.ASMSerializer\_1\_Host</code>中调用了<code class="language-plaintext highlighter-rouge">Host.getJson()</code>导致了递归。排除自己的错误后，就将代码定位到了fastjson中，应该是fastjson中出了问题。然后开始调试代码：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>public static byte[] toJSONBytes(Object object, SerializeConfig config, int defaultFeatures, SerializerFeature... features) {
+    SerializeWriter out = new SerializeWriter(null, defaultFeatures, features);
+
+    try {
+        JSONSerializer serializer = new JSONSerializer(out, config);
+        serializer.write(object);
+        return out.toBytes(IOUtils.UTF8);
+    } finally {
+        out.close();
+    }
+}
+</code></pre></div></div>
+
+<p>按照栈调用顺序来看，出错点应该在<code class="language-plaintext highlighter-rouge">serializer.write(object)</code>内部，继续深入：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>public final void write(Object object) {
+    if (object == null) {
+        out.writeNull();
+        return;
+    }
+
+    Class&lt;?&gt; clazz = object.getClass();
+    ObjectSerializer writer = getObjectWriter(clazz);
+
+    try {
+        writer.write(this, object, null, null, 0);
+    } catch (IOException e) {
+        throw new JSONException(e.getMessage(), e);
+    }
+}
+</code></pre></div></div>
+
+<p>这里发现通过<code class="language-plaintext highlighter-rouge">getObjectWriter(clazz)</code>取得了<code class="language-plaintext highlighter-rouge">host</code>的<code class="language-plaintext highlighter-rouge">writer</code>，想必就是自动生成的<code class="language-plaintext highlighter-rouge">ASMSerializer_1_Host</code>实例。本来想进入<code class="language-plaintext highlighter-rouge">writer.write</code>中观察，没有源代码只好放弃。然后将目标放到<code class="language-plaintext highlighter-rouge">getObjectWriter</code>中，看看在<code class="language-plaintext highlighter-rouge">writer</code>实例构造过程中能不能找到点线索。</p>
+
+<p>经过几层跳转，来到了真正的<code class="language-plaintext highlighter-rouge">getObjectWriter</code>中：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>private ObjectSerializer getObjectWriter(Class&lt;?&gt; clazz, boolean create) {
+    ObjectSerializer writer = serializers.get(clazz);
+
+    if (writer == null) {
+        try {
+            final ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
+            for (Object o : ServiceLoader.load(AutowiredObjectSerializer.class, classLoader)) {
+                if (!(o instanceof AutowiredObjectSerializer)) {
+                    continue;
+                }
+
+                AutowiredObjectSerializer autowired = (AutowiredObjectSerializer) o;
+                for (Type forType : autowired.getAutowiredFor()) {
+                    put(forType, autowired);
+                }
+            }
+        } catch (ClassCastException ex) {
+            // skip
+        }
+
+        writer = serializers.get(clazz);
+    }
+
+    if (writer == null) {
+        final ClassLoader classLoader = JSON.class.getClassLoader();
+        if (classLoader != Thread.currentThread().getContextClassLoader()) {
+            try {
+                for (Object o : ServiceLoader.load(AutowiredObjectSerializer.class, classLoader)) {
+
+                    if (!(o instanceof AutowiredObjectSerializer)) {
+                        continue;
+                    }
+
+                    AutowiredObjectSerializer autowired = (AutowiredObjectSerializer) o;
+                    for (Type forType : autowired.getAutowiredFor()) {
+                        put(forType, autowired);
+                    }
+                }
+            } catch (ClassCastException ex) {
+                // skip
+            }
+
+            writer = serializers.get(clazz);
+        }
+    }
+    
+    if (writer == null) {
+        if (Map.class.isAssignableFrom(clazz)) {
+            put(clazz, MapSerializer.instance);
+        } else if (List.class.isAssignableFrom(clazz)) {
+            put(clazz, ListSerializer.instance);
+        } else if (Collection.class.isAssignableFrom(clazz)) {
+            put(clazz, CollectionCodec.instance);
+        } else if (Date.class.isAssignableFrom(clazz)) {
+            put(clazz, DateCodec.instance);
+        } else if (JSONAware.class.isAssignableFrom(clazz)) {
+            put(clazz, JSONAwareSerializer.instance);
+        } else if (JSONSerializable.class.isAssignableFrom(clazz)) {
+            put(clazz, JSONSerializableSerializer.instance);
+        } else if (JSONStreamAware.class.isAssignableFrom(clazz)) {
+            put(clazz, MiscCodec.instance);
+        } else if (clazz.isEnum() || (clazz.getSuperclass() != null &amp;&amp; clazz.getSuperclass().isEnum())) {
+            JSONType jsonType = clazz.getAnnotation(JSONType.class);
+            if (jsonType != null &amp;&amp; jsonType.serializeEnumAsJavaBean()) {
+                put(clazz, createJavaBeanSerializer(clazz));
+            } else {
+                put(clazz, EnumSerializer.instance);
+            }
+        } else if (clazz.isArray()) {
+            Class&lt;?&gt; componentType = clazz.getComponentType();
+            ObjectSerializer compObjectSerializer = getObjectWriter(componentType);
+            put(clazz, new ArraySerializer(componentType, compObjectSerializer));
+        } else if (Throwable.class.isAssignableFrom(clazz)) {
+            SerializeBeanInfo beanInfo = TypeUtils.buildBeanInfo(clazz, null, propertyNamingStrategy);
+            beanInfo.features |= SerializerFeature.WriteClassName.mask;
+            put(clazz, new JavaBeanSerializer(beanInfo));
+        } else if (TimeZone.class.isAssignableFrom(clazz) || Map.Entry.class.isAssignableFrom(clazz)) {
+            put(clazz, MiscCodec.instance);
+        } else if (Appendable.class.isAssignableFrom(clazz)) {
+            put(clazz, AppendableSerializer.instance);
+        } else if (Charset.class.isAssignableFrom(clazz)) {
+            put(clazz, ToStringSerializer.instance);
+        } else if (Enumeration.class.isAssignableFrom(clazz)) {
+            put(clazz, EnumerationSerializer.instance);
+        } else if (Calendar.class.isAssignableFrom(clazz) //
+                || XMLGregorianCalendar.class.isAssignableFrom(clazz)) {
+            put(clazz, CalendarCodec.instance);
+        } else if (Clob.class.isAssignableFrom(clazz)) {
+            put(clazz, ClobSeriliazer.instance);
+        } else if (TypeUtils.isPath(clazz)) {
+            put(clazz, ToStringSerializer.instance);
+        } else if (Iterator.class.isAssignableFrom(clazz)) {
+            put(clazz, MiscCodec.instance);
+        } else {
+            String className = clazz.getName();
+            if (className.startsWith("java.awt.") //
+                &amp;&amp; AwtCodec.support(clazz) //
+            ) {
+                // awt
+                if (!awtError) {
+                    try {
+                        put(Class.forName("java.awt.Color"), AwtCodec.instance);
+                        put(Class.forName("java.awt.Font"), AwtCodec.instance);
+                        put(Class.forName("java.awt.Point"), AwtCodec.instance);
+                        put(Class.forName("java.awt.Rectangle"), AwtCodec.instance);
+                    } catch (Throwable e) {
+                        awtError = true;
+                        // skip
+                    }
+                }
+                return  AwtCodec.instance;
+            }
+            
+            // jdk8
+            if ((!jdk8Error) //
+                &amp;&amp; (className.startsWith("java.time.") //
+                    || className.startsWith("java.util.Optional") //
+                    || className.equals("java.util.concurrent.atomic.LongAdder")
+                    || className.equals("java.util.concurrent.atomic.DoubleAdder")
+                )) {
+                try {
+                    put(Class.forName("java.time.LocalDateTime"), Jdk8DateCodec.instance);
+                    put(Class.forName("java.time.LocalDate"), Jdk8DateCodec.instance);
+                    put(Class.forName("java.time.LocalTime"), Jdk8DateCodec.instance);
+                    put(Class.forName("java.time.ZonedDateTime"), Jdk8DateCodec.instance);
+                    put(Class.forName("java.time.OffsetDateTime"), Jdk8DateCodec.instance);
+                    put(Class.forName("java.time.OffsetTime"), Jdk8DateCodec.instance);
+                    put(Class.forName("java.time.ZoneOffset"), Jdk8DateCodec.instance);
+                    put(Class.forName("java.time.ZoneRegion"), Jdk8DateCodec.instance);
+                    put(Class.forName("java.time.Period"), Jdk8DateCodec.instance);
+                    put(Class.forName("java.time.Duration"), Jdk8DateCodec.instance);
+                    put(Class.forName("java.time.Instant"), Jdk8DateCodec.instance);
+
+                    put(Class.forName("java.util.Optional"), OptionalCodec.instance);
+                    put(Class.forName("java.util.OptionalDouble"), OptionalCodec.instance);
+                    put(Class.forName("java.util.OptionalInt"), OptionalCodec.instance);
+                    put(Class.forName("java.util.OptionalLong"), OptionalCodec.instance);
+
+                    put(Class.forName("java.util.concurrent.atomic.LongAdder"), AdderSerializer.instance);
+                    put(Class.forName("java.util.concurrent.atomic.DoubleAdder"), AdderSerializer.instance);
+                    
+                    writer = serializers.get(clazz);
+                    if (writer != null) {
+                        return writer;
+                    }
+                } catch (Throwable e) {
+                    // skip
+                    jdk8Error = true;
+                }
+            }
+            
+            if ((!oracleJdbcError) //
+                &amp;&amp; className.startsWith("oracle.sql.")) {
+                try {
+                    put(Class.forName("oracle.sql.DATE"), DateCodec.instance);
+                    put(Class.forName("oracle.sql.TIMESTAMP"), DateCodec.instance);
+                    
+                    writer = serializers.get(clazz);
+                    if (writer != null) {
+                        return writer;
+                    }
+                } catch (Throwable e) {
+                    // skip
+                    oracleJdbcError = true;
+                }
+            }
+            
+            if ((!springfoxError) //
+                &amp;&amp; className.equals("springfox.documentation.spring.web.json.Json")) {
+                try {
+                    put(Class.forName("springfox.documentation.spring.web.json.Json"), //
+                        SwaggerJsonSerializer.instance);
+                    
+                    writer = serializers.get(clazz);
+                    if (writer != null) {
+                        return writer;
+                    }
+                } catch (ClassNotFoundException e) {
+                    // skip
+                    springfoxError = true;
+                }
+            }
+
+            if ((!guavaError) //
+                    &amp;&amp; className.startsWith("com.google.common.collect.")) {
+                try {
+                    put(Class.forName("com.google.common.collect.HashMultimap"), //
+                            GuavaCodec.instance);
+                    put(Class.forName("com.google.common.collect.LinkedListMultimap"), //
+                            GuavaCodec.instance);
+                    put(Class.forName("com.google.common.collect.ArrayListMultimap"), //
+                            GuavaCodec.instance);
+                    put(Class.forName("com.google.common.collect.TreeMultimap"), //
+                            GuavaCodec.instance);
+
+                    writer = serializers.get(clazz);
+                    if (writer != null) {
+                        return writer;
+                    }
+                } catch (ClassNotFoundException e) {
+                    // skip
+                    guavaError = true;
+                }
+            }
+
+            if (className.equals("net.sf.json.JSONNull")) {
+                try {
+                    put(Class.forName("net.sf.json.JSONNull"), //
+                            MiscCodec.instance);
+                } catch (ClassNotFoundException e) {
+                    // skip
+                }
+                writer = serializers.get(clazz);
+                if (writer != null) {
+                    return writer;
+                }
+            }
+
+            if (TypeUtils.isProxy(clazz)) {
+                Class&lt;?&gt; superClazz = clazz.getSuperclass();
+
+                ObjectSerializer superWriter = getObjectWriter(superClazz);
+                put(clazz, superWriter);
+                return superWriter;
+            }
+
+            if (create) {
+                put(clazz, createJavaBeanSerializer(clazz));
+            }
+        }
+
+        writer = serializers.get(clazz);
+    }
+    return writer;
+}
+</code></pre></div></div>
+
+<p>简单扫描代码逻辑，发现<code class="language-plaintext highlighter-rouge">writer</code>是通过<code class="language-plaintext highlighter-rouge">serializers.get(clazz)</code>获取的。而代码中分别从<code class="language-plaintext highlighter-rouge">Thread.currentThread().getContextClassLoader</code>、<code class="language-plaintext highlighter-rouge">JSON.class.getClassLoader</code>以及最后对一下常见类分析来填充<code class="language-plaintext highlighter-rouge">serializers</code>。最后一种办法的末尾，走到了：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>put(clazz, createJavaBeanSerializer(clazz));
+</code></pre></div></div>
+
+<p>可以发现逻辑是实在找不到，使用<code class="language-plaintext highlighter-rouge">createJavaBeanSerializer(clazz)</code>来创建<code class="language-plaintext highlighter-rouge">clazz</code>对应的<code class="language-plaintext highlighter-rouge">writer</code>。看来我们的目标应该是这个<code class="language-plaintext highlighter-rouge">createJavaBeanSerializer</code>函数，所以进一步深入：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>private final ObjectSerializer createJavaBeanSerializer(Class&lt;?&gt; clazz) {
+    SerializeBeanInfo beanInfo = TypeUtils.buildBeanInfo(clazz, null, propertyNamingStrategy, fieldBased);
+    if (beanInfo.fields.length == 0 &amp;&amp; Iterable.class.isAssignableFrom(clazz)) {
+        return MiscCodec.instance;
+    }
+
+    return createJavaBeanSerializer(beanInfo);
+}
+</code></pre></div></div>
+
+<p>首先调用<code class="language-plaintext highlighter-rouge">TypeUtils.buildBeanInfo</code>来生成<code class="language-plaintext highlighter-rouge">SerializerBeanInfo</code>。</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>public static SerializeBeanInfo buildBeanInfo(Class&lt;?&gt; beanType //
+        , Map&lt;String, String&gt; aliasMap //
+        , PropertyNamingStrategy propertyNamingStrategy //
+        , boolean fieldBased //
+) {
+    
+    JSONType jsonType = beanType.getAnnotation(JSONType.class);
+
+    // fieldName,field ，先生成fieldName的快照，减少之后的findField的轮询
+    Map&lt;String, Field&gt; fieldCacheMap = new HashMap&lt;String, Field&gt;();
+    ParserConfig.parserAllFieldToCache(beanType, fieldCacheMap);
+
+    List&lt;FieldInfo&gt; fieldInfoList = fieldBased
+            ? computeGettersWithFieldBase(beanType, aliasMap, false, propertyNamingStrategy) //
+            : computeGetters(beanType, jsonType, aliasMap, fieldCacheMap, false, propertyNamingStrategy);
+    FieldInfo[] fields = new FieldInfo[fieldInfoList.size()];
+    fieldInfoList.toArray(fields);
+    
+    String[] orders = null;
+
+    final int features;
+    String typeName = null;
+    if (jsonType != null) {
+        orders = jsonType.orders();
+        typeName = jsonType.typeName();
+        if (typeName.length() == 0) {
+            typeName = null;
+        }
+        features = SerializerFeature.of(jsonType.serialzeFeatures());
+    } else {
+        features = 0;
+    }
+    
+    FieldInfo[] sortedFields;
+    List&lt;FieldInfo&gt; sortedFieldList;
+    if (orders != null &amp;&amp; orders.length != 0) {
+        sortedFieldList = fieldBased
+                ? computeGettersWithFieldBase(beanType, aliasMap, true, propertyNamingStrategy) //
+                : computeGetters(beanType, jsonType, aliasMap,fieldCacheMap, true, propertyNamingStrategy);
+    } else {
+        sortedFieldList = new ArrayList&lt;FieldInfo&gt;(fieldInfoList);
+        Collections.sort(sortedFieldList);
+    }
+    sortedFields = new FieldInfo[sortedFieldList.size()];
+    sortedFieldList.toArray(sortedFields);
+    
+    if (Arrays.equals(sortedFields, fields)) {
+        sortedFields = fields;
+    }
+    
+    return new SerializeBeanInfo(beanType, jsonType, typeName, features, fields, sortedFields);
+}
+</code></pre></div></div>
+
+<p>其中<code class="language-plaintext highlighter-rouge">parserAllFieldToCache</code>将字段保存起来，减少访问次数。紧接着设置<code class="language-plaintext highlighter-rouge">fieldInfoList</code>的值，此时<code class="language-plaintext highlighter-rouge">fieldBase</code>为<code class="language-plaintext highlighter-rouge">false</code>，所以进入了<code class="language-plaintext highlighter-rouge">computeGetters</code>。</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>public static List&lt;FieldInfo&gt; computeGetters(Class&lt;?&gt; clazz, //
+                                            JSONType jsonType, //
+                                            Map&lt;String, String&gt; aliasMap, //
+                                            Map&lt;String, Field&gt; fieldCacheMap, //
+                                            boolean sorted, //
+                                            PropertyNamingStrategy propertyNamingStrategy //
+) {
+    Map&lt;String, FieldInfo&gt; fieldInfoMap = new LinkedHashMap&lt;String, FieldInfo&gt;();
+
+    for (Method method : clazz.getMethods()) {
+        String methodName = method.getName();
+        int ordinal = 0, serialzeFeatures = 0, parserFeatures = 0;
+        String label = null;
+
+        if (Modifier.isStatic(method.getModifiers())) {
+            continue;
+        }
+
+        if (method.getReturnType().equals(Void.TYPE)) {
+            continue;
+        }
+
+        if (method.getParameterTypes().length != 0) {
+            continue;
+        }
+
+        if (method.getReturnType() == ClassLoader.class) {
+            continue;
+        }
+
+        if (method.getName().equals("getMetaClass")
+            &amp;&amp; method.getReturnType().getName().equals("groovy.lang.MetaClass")) {
+            continue;
+        }
+
+        JSONField annotation = method.getAnnotation(JSONField.class);
+
+        if (annotation == null) {
+            annotation = getSuperMethodAnnotation(clazz, method);
+        }
+
+        if (annotation != null) {
+            if (!annotation.serialize()) {
+                continue;
+            }
+
+            ordinal = annotation.ordinal();
+            serialzeFeatures = SerializerFeature.of(annotation.serialzeFeatures());
+            parserFeatures = Feature.of(annotation.parseFeatures());
+
+            if (annotation.name().length() != 0) {
+                String propertyName = annotation.name();
+
+                if (aliasMap != null) {
+                    propertyName = aliasMap.get(propertyName);
+                    if (propertyName == null) {
+                        continue;
+                    }
+                }
+
+                FieldInfo fieldInfo = new FieldInfo(propertyName, method, null, clazz, null, ordinal,
+                                                    serialzeFeatures, parserFeatures, annotation, null, label);
+                fieldInfoMap.put(propertyName, fieldInfo);
+                continue;
+            }
+
+            if (annotation.label().length() != 0) {
+                label = annotation.label();
+            }
+        }
+
+        if (methodName.startsWith("get")) {
+            if (methodName.length() &lt; 4) {
+                continue;
+            }
+
+            if (methodName.equals("getClass")) {
+                continue;
+            }
+
+            if (methodName.equals("getDeclaringClass") &amp;&amp; clazz.isEnum()) {
+                continue;
+            }
+
+            char c3 = methodName.charAt(3);
+
+            String propertyName;
+            if (Character.isUpperCase(c3) //
+                || c3 &gt; 512 // for unicode method name
+            ) {
+            if (compatibleWithJavaBean) {
+                    propertyName = decapitalize(methodName.substring(3));
+                } else {
+                    propertyName = Character.toLowerCase(methodName.charAt(3)) + methodName.substring(4);
+                }
+                propertyName = getPropertyNameByCompatibleFieldName(fieldCacheMap, methodName,  propertyName,3);
+            } else if (c3 == '_') {
+                propertyName = methodName.substring(4);
+            } else if (c3 == 'f') {
+                propertyName = methodName.substring(3);
+            } else if (methodName.length() &gt;= 5 &amp;&amp; Character.isUpperCase(methodName.charAt(4))) {
+                propertyName = decapitalize(methodName.substring(3));
+            } else {
+                continue;
+            }
+
+            boolean ignore = isJSONTypeIgnore(clazz, propertyName);
+
+            if (ignore) {
+                continue;
+            }
+            //假如bean的field很多的情况一下，轮询时将大大降低效率
+            Field field = ParserConfig.getFieldFromCache(propertyName, fieldCacheMap);
+
+            if (field == null &amp;&amp; propertyName.length() &gt; 1) {
+                char ch = propertyName.charAt(1);
+                if (ch &gt;= 'A' &amp;&amp; ch &lt;= 'Z') {
+                    String javaBeanCompatiblePropertyName = decapitalize(methodName.substring(3));
+                    field = ParserConfig.getFieldFromCache(javaBeanCompatiblePropertyName, fieldCacheMap);
+                }
+            }
+
+            JSONField fieldAnnotation = null;
+            if (field != null) {
+                fieldAnnotation = field.getAnnotation(JSONField.class);
+
+                if (fieldAnnotation != null) {
+                    if (!fieldAnnotation.serialize()) {
+                        continue;
+                    }
+
+                    ordinal = fieldAnnotation.ordinal();
+                    serialzeFeatures = SerializerFeature.of(fieldAnnotation.serialzeFeatures());
+                    parserFeatures = Feature.of(fieldAnnotation.parseFeatures());
+
+                    if (fieldAnnotation.name().length() != 0) {
+                        propertyName = fieldAnnotation.name();
+
+                        if (aliasMap != null) {
+                            propertyName = aliasMap.get(propertyName);
+                            if (propertyName == null) {
+                                continue;
+                            }
+                        }
+                    }
+
+                    if (fieldAnnotation.label().length() != 0) {
+                        label = fieldAnnotation.label();
+                    }
+                }
+            }
+
+            if (aliasMap != null) {
+                propertyName = aliasMap.get(propertyName);
+                if (propertyName == null) {
+                    continue;
+                }
+            }
+
+            if (propertyNamingStrategy != null) {
+                propertyName = propertyNamingStrategy.translate(propertyName);
+            }
+
+            FieldInfo fieldInfo = new FieldInfo(propertyName, method, field, clazz, null, ordinal, serialzeFeatures, parserFeatures,
+                                                annotation, fieldAnnotation, label);
+            fieldInfoMap.put(propertyName, fieldInfo);
+        }
+
+        if (methodName.startsWith("is")) {
+            if (methodName.length() &lt; 3) {
+                continue;
+            }
+
+            if (method.getReturnType() != Boolean.TYPE
+                    &amp;&amp; method.getReturnType() != Boolean.class) {
+                continue;
+            }
+
+            char c2 = methodName.charAt(2);
+
+            String propertyName;
+            if (Character.isUpperCase(c2)) {
+                if (compatibleWithJavaBean) {
+                    propertyName = decapitalize(methodName.substring(2));
+                } else {
+                    propertyName = Character.toLowerCase(methodName.charAt(2)) + methodName.substring(3);
+                }
+                propertyName = getPropertyNameByCompatibleFieldName(fieldCacheMap, methodName,  propertyName,2);
+            } else if (c2 == '_') {
+                propertyName = methodName.substring(3);
+            } else if (c2 == 'f') {
+                propertyName = methodName.substring(2);
+            } else {
+                continue;
+            }
+
+            boolean ignore = isJSONTypeIgnore(clazz, propertyName);
+
+            if (ignore) {
+                continue;
+            }
+
+            Field field = ParserConfig.getFieldFromCache(propertyName,fieldCacheMap);
+
+            if (field == null) {
+                field = ParserConfig.getFieldFromCache(methodName,fieldCacheMap);
+            }
+
+            JSONField fieldAnnotation = null;
+            if (field != null) {
+                fieldAnnotation = field.getAnnotation(JSONField.class);
+
+                if (fieldAnnotation != null) {
+                    if (!fieldAnnotation.serialize()) {
+                        continue;
+                    }
+
+                    ordinal = fieldAnnotation.ordinal();
+                    serialzeFeatures = SerializerFeature.of(fieldAnnotation.serialzeFeatures());
+                    parserFeatures = Feature.of(fieldAnnotation.parseFeatures());
+
+                    if (fieldAnnotation.name().length() != 0) {
+                        propertyName = fieldAnnotation.name();
+
+                        if (aliasMap != null) {
+                            propertyName = aliasMap.get(propertyName);
+                            if (propertyName == null) {
+                                continue;
+                            }
+                        }
+                    }
+
+                    if (fieldAnnotation.label().length() != 0) {
+                        label = fieldAnnotation.label();
+                    }
+                }
+            }
+
+            if (aliasMap != null) {
+                propertyName = aliasMap.get(propertyName);
+                if (propertyName == null) {
+                    continue;
+                }
+            }
+
+            if (propertyNamingStrategy != null) {
+                propertyName = propertyNamingStrategy.translate(propertyName);
+            }
+
+            //优先选择get
+            if (fieldInfoMap.containsKey(propertyName)) {
+                continue;
+            }
+
+            FieldInfo fieldInfo = new FieldInfo(propertyName, method, field, clazz, null, ordinal, serialzeFeatures, parserFeatures,
+                                                annotation, fieldAnnotation, label);
+            fieldInfoMap.put(propertyName, fieldInfo);
+        }
+    }
+
+    Field[] fields = clazz.getFields();
+    computeFields(clazz, aliasMap, propertyNamingStrategy, fieldInfoMap, fields);
+
+    return getFieldInfos(clazz, sorted, fieldInfoMap);
+}
+</code></pre></div></div>
+
+<p>这里针对<code class="language-plaintext highlighter-rouge">clazz</code>的每一个方法进行了判断，由于只有<code class="language-plaintext highlighter-rouge">get</code>和<code class="language-plaintext highlighter-rouge">set</code>开头的函数，所以只关心<code class="language-plaintext highlighter-rouge">methodName.startsWith("get")</code>分支。最后进入了<code class="language-plaintext highlighter-rouge">getPropertyNameByCompatibleFieldName</code>所在的分支，并将<code class="language-plaintext highlighter-rouge">propertyName</code>设置为对应<code class="language-plaintext highlighter-rouge">get</code>的属性名。在<code class="language-plaintext highlighter-rouge">getPropertyNameByCompatibleFieldName</code>函数中，而<code class="language-plaintext highlighter-rouge">compatibleWithFieldName</code>设置为<code class="language-plaintext highlighter-rouge">false</code>所以相当于跳过了。</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>private static String getPropertyNameByCompatibleFieldName(Map&lt;String, Field&gt; fieldCacheMap, String methodName,
+                                                            String propertyName,int fromIdx) {
+    if (compatibleWithFieldName){
+            if (!fieldCacheMap.containsKey(propertyName)){
+                String tempPropertyName=methodName.substring(fromIdx);
+                return  fieldCacheMap.containsKey(tempPropertyName)?tempPropertyName:propertyName;
+            }
+        }
+    return propertyName;
+}
+</code></pre></div></div>
+
+<p>继续分析，程序进入<code class="language-plaintext highlighter-rouge">isJSONTypeIgnore</code>根据注解判断是否跳过该字段，我的例子中不关心。紧接着调用了<code class="language-plaintext highlighter-rouge">getFieldFromCache</code>：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>public static Field getFieldFromCache(String fieldName, Map&lt;String, Field&gt; fieldCacheMap) {
+    Field field = fieldCacheMap.get(fieldName);
+
+    if (field == null) {
+        field = fieldCacheMap.get("_" + fieldName);
+    }
+
+    if (field == null) {
+        field = fieldCacheMap.get("m_" + fieldName);
+    }
+
+    if (field == null) {
+        char c0 = fieldName.charAt(0);
+        if (c0 &gt;= 'a' &amp;&amp; c0 &lt;= 'z') {
+            char[] chars = fieldName.toCharArray();
+            chars[0] -= 32; // lower
+            String fieldNameX = new String(chars);
+            field = fieldCacheMap.get(fieldNameX);
+        }
+    }
+
+    return field;
+}
+</code></pre></div></div>
+
+<p>这里按照刚才取出的方法名来查找字段，如果失败则加上<code class="language-plaintext highlighter-rouge">_</code>或者<code class="language-plaintext highlighter-rouge">m_</code>之类的方法继续判断。返回继续分析，在做了部分如注解别名之类的处理后，将分析得到的结果生成一个<code class="language-plaintext highlighter-rouge">FieldInfo</code>，并保存在<code class="language-plaintext highlighter-rouge">fieldInfoMap</code>中。最后调用<code class="language-plaintext highlighter-rouge">computeFields</code>进一步处理一些<code class="language-plaintext highlighter-rouge">public</code>属性的<code class="language-plaintext highlighter-rouge">fields</code>数据。最后经过<code class="language-plaintext highlighter-rouge">getFieldInfos</code>处理后，将得到的<code class="language-plaintext highlighter-rouge">List&lt;FieldInfo&gt;</code>中，返回上一级。</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>private static void computeFields(
+        Class&lt;?&gt; clazz, //
+        Map&lt;String, String&gt; aliasMap, //
+        PropertyNamingStrategy propertyNamingStrategy, //
+        Map&lt;String, FieldInfo&gt; fieldInfoMap, //
+        Field[] fields) {
+
+    for (Field field : fields) {
+        if (Modifier.isStatic(field.getModifiers())) {
+            continue;
+        }
+
+        JSONField fieldAnnotation = field.getAnnotation(JSONField.class);
+
+        int ordinal = 0, serialzeFeatures = 0, parserFeatures = 0;
+        String propertyName = field.getName();
+        String label = null;
+        if (fieldAnnotation != null) {
+            if (!fieldAnnotation.serialize()) {
+                continue;
+            }
+
+            ordinal = fieldAnnotation.ordinal();
+            serialzeFeatures = SerializerFeature.of(fieldAnnotation.serialzeFeatures());
+            parserFeatures = Feature.of(fieldAnnotation.parseFeatures());
+
+            if (fieldAnnotation.name().length() != 0) {
+                propertyName = fieldAnnotation.name();
+            }
+
+            if (fieldAnnotation.label().length() != 0) {
+                label = fieldAnnotation.label();
+            }
+        }
+
+        if (aliasMap != null) {
+            propertyName = aliasMap.get(propertyName);
+            if (propertyName == null) {
+                continue;
+            }
+        }
+
+        if (propertyNamingStrategy != null) {
+            propertyName = propertyNamingStrategy.translate(propertyName);
+        }
+
+        if (!fieldInfoMap.containsKey(propertyName)) {
+            FieldInfo fieldInfo = new FieldInfo(propertyName, null, field, clazz, null, ordinal, serialzeFeatures, parserFeatures,
+                                                null, fieldAnnotation, label);
+            fieldInfoMap.put(propertyName, fieldInfo);
+        }
+    }
+}
+</code></pre></div></div>
+
+<p>分析到这里，可以发现在<code class="language-plaintext highlighter-rouge">fieldInfoList</code>中实际上值：<code class="language-plaintext highlighter-rouge">name</code>,<code class="language-plaintext highlighter-rouge">json</code>。看到这里相比也能猜出大概了，现在继续跟踪。回到<code class="language-plaintext highlighter-rouge">buildBeanInfo</code>中，将刚才得到的<code class="language-plaintext highlighter-rouge">fieldInfoList</code>构造为<code class="language-plaintext highlighter-rouge">SerializeBeanInfo</code>并返回。</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>public ObjectSerializer createJavaBeanSerializer(SerializeBeanInfo beanInfo) {
+    JSONType jsonType = beanInfo.jsonType;
+    
+    if (jsonType != null) {
+        Class&lt;?&gt; serializerClass = jsonType.serializer();
+        if (serializerClass != Void.class) {
+            try {
+                Object seralizer = serializerClass.newInstance();
+                if (seralizer instanceof ObjectSerializer) {
+                    return (ObjectSerializer) seralizer;
+                }
+            } catch (Throwable e) {
+                // skip
+            }
+        }
+        
+        if (jsonType.asm() == false) {
+            asm = false;
+        }
+
+        for (SerializerFeature feature : jsonType.serialzeFeatures()) {
+            if (SerializerFeature.WriteNonStringValueAsString == feature //
+                    || SerializerFeature.WriteEnumUsingToString == feature //
+                    || SerializerFeature.NotWriteDefaultValue == feature) {
+                asm = false;
+                break;
+            }
+        }
+    }
+    
+    Class&lt;?&gt; clazz = beanInfo.beanType;
+    if (!Modifier.isPublic(beanInfo.beanType.getModifiers())) {
+        return new JavaBeanSerializer(beanInfo);
+    }
+
+    boolean asm = this.asm &amp;&amp; !fieldBased;
+
+    if (asm &amp;&amp; asmFactory.classLoader.isExternalClass(clazz)
+            || clazz == Serializable.class || clazz == Object.class) {
+        asm = false;
+    }
+
+    if (asm &amp;&amp; !ASMUtils.checkName(clazz.getSimpleName())) {
+        asm = false;
+    }
+    
+    if (asm) {
+        for(FieldInfo fieldInfo : beanInfo.fields){
+            Field field = fieldInfo.field;
+            if (field != null &amp;&amp; !field.getType().equals(fieldInfo.fieldClass)) {
+                asm = false;
+                break;
+            }
+
+            Method method = fieldInfo.method;
+            if (method != null &amp;&amp; !method.getReturnType().equals(fieldInfo.fieldClass)) {
+                asm = false;
+                break;
+            }
+
+            JSONField annotation = fieldInfo.getAnnotation();
+            
+            if (annotation == null) {
+                continue;
+            }
+
+            if ((!ASMUtils.checkName(annotation.name())) //
+                    || annotation.format().length() != 0
+                    || annotation.jsonDirect()
+                    || annotation.serializeUsing() != Void.class
+                    || annotation.unwrapped()
+                    ) {
+                asm = false;
+                break;
+            }
+
+            for (SerializerFeature feature : annotation.serialzeFeatures()) {
+                if (SerializerFeature.WriteNonStringValueAsString == feature //
+                        || SerializerFeature.WriteEnumUsingToString == feature //
+                        || SerializerFeature.NotWriteDefaultValue == feature) {
+                    asm = false;
+                    break;
+                }
+            }
+        }
+    }
+    
+    if (asm) {
+        try {
+            ObjectSerializer asmSerializer = createASMSerializer(beanInfo);
+            if (asmSerializer != null) {
+                return asmSerializer;
+            }
+        } catch (ClassFormatError e) {
+            // skip
+        } catch (ClassCastException e) {
+            // skip
+        } catch (Throwable e) {
+            throw new JSONException("create asm serializer error, class "
+                    + clazz, e);
+        }
+    }
+
+    return new JavaBeanSerializer(beanInfo);
+}
+</code></pre></div></div>
+
+<p>经过处理后进入了<code class="language-plaintext highlighter-rouge">createASMSerializer</code>，其中调用<code class="language-plaintext highlighter-rouge">createJavaBeanSerializer</code>来创建具体的<code class="language-plaintext highlighter-rouge">writer</code>：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>public JavaBeanSerializer createJavaBeanSerializer(SerializeBeanInfo beanInfo) throws Exception {
+    Class&lt;?&gt; clazz = beanInfo.beanType;
+    if (clazz.isPrimitive()) {
+        throw new JSONException("unsupportd class " + clazz.getName());
+    }
+
+    JSONType jsonType = clazz.getAnnotation(JSONType.class);
+
+    FieldInfo[] unsortedGetters = beanInfo.fields;;
+
+    for (FieldInfo fieldInfo : unsortedGetters) {
+        if (fieldInfo.field == null //
+            &amp;&amp; fieldInfo.method != null //
+            &amp;&amp; fieldInfo.method.getDeclaringClass().isInterface()) {
+            return new JavaBeanSerializer(clazz);
+        }
+    }
+
+    FieldInfo[] getters = beanInfo.sortedFields;
+
+    boolean nativeSorted = beanInfo.sortedFields == beanInfo.fields;
+
+    if (getters.length &gt; 256) {
+        return new JavaBeanSerializer(clazz);
+    }
+
+    for (FieldInfo getter : getters) {
+        if (!ASMUtils.checkName(getter.getMember().getName())) {
+            return new JavaBeanSerializer(clazz);
+        }
+    }
+
+    String className = "ASMSerializer_" + seed.incrementAndGet() + "_" + clazz.getSimpleName();
+    String packageName = ASMSerializerFactory.class.getPackage().getName();
+    String classNameType = packageName.replace('.', '/') + "/" + className;
+    String classNameFull = packageName + "." + className;
+
+    ClassWriter cw = new ClassWriter();
+    cw.visit(V1_5 //
+                , ACC_PUBLIC + ACC_SUPER //
+                , classNameType //
+                , JavaBeanSerializer //
+                , new String[] { ObjectSerializer } //
+    );
+
+    for (FieldInfo fieldInfo : getters) {
+        if (fieldInfo.fieldClass.isPrimitive() //
+            //|| fieldInfo.fieldClass.isEnum() //
+            || fieldInfo.fieldClass == String.class) {
+            continue;
+        }
+
+        new FieldWriter(cw, ACC_PUBLIC, fieldInfo.name + "_asm_fieldType", "Ljava/lang/reflect/Type;") //
+                                                                                                        .visitEnd();
+
+        if (List.class.isAssignableFrom(fieldInfo.fieldClass)) {
+            new FieldWriter(cw, ACC_PUBLIC, fieldInfo.name + "_asm_list_item_ser_",
+                            ObjectSerializer_desc) //
+                                                    .visitEnd();
+        }
+
+        new FieldWriter(cw, ACC_PUBLIC, fieldInfo.name + "_asm_ser_", ObjectSerializer_desc) //
+                                                                                                    .visitEnd();
+    }
+
+    MethodVisitor mw = new MethodWriter(cw, ACC_PUBLIC, "&lt;init&gt;", "(" + desc(SerializeBeanInfo.class) + ")V", null, null);
+    mw.visitVarInsn(ALOAD, 0);
+    mw.visitVarInsn(ALOAD, 1);
+    mw.visitMethodInsn(INVOKESPECIAL, JavaBeanSerializer, "&lt;init&gt;", "(" + desc(SerializeBeanInfo.class) + ")V");
+
+    // init _asm_fieldType
+    for (int i = 0; i &lt; getters.length; ++i) {
+        FieldInfo fieldInfo = getters[i];
+        if (fieldInfo.fieldClass.isPrimitive() //
+//                || fieldInfo.fieldClass.isEnum() //
+            || fieldInfo.fieldClass == String.class) {
+            continue;
+        }
+
+        mw.visitVarInsn(ALOAD, 0);
+
+        if (fieldInfo.method != null) {
+            mw.visitLdcInsn(com.alibaba.fastjson.asm.Type.getType(desc(fieldInfo.declaringClass)));
+            mw.visitLdcInsn(fieldInfo.method.getName());
+            mw.visitMethodInsn(INVOKESTATIC, type(ASMUtils.class), "getMethodType",
+                                "(Ljava/lang/Class;Ljava/lang/String;)Ljava/lang/reflect/Type;");
+
+        } else {
+            mw.visitVarInsn(ALOAD, 0);
+            mw.visitLdcInsn(i);
+            mw.visitMethodInsn(INVOKESPECIAL, JavaBeanSerializer, "getFieldType", "(I)Ljava/lang/reflect/Type;");
+        }
+
+        mw.visitFieldInsn(PUTFIELD, classNameType, fieldInfo.name + "_asm_fieldType", "Ljava/lang/reflect/Type;");
+    }
+
+    mw.visitInsn(RETURN);
+    mw.visitMaxs(4, 4);
+    mw.visitEnd();
+
+    boolean DisableCircularReferenceDetect = false;
+    if (jsonType != null) {
+        for (SerializerFeature featrues : jsonType.serialzeFeatures()) {
+            if (featrues == SerializerFeature.DisableCircularReferenceDetect) {
+                DisableCircularReferenceDetect = true;
+                break;
+            }
+        }
+    }
+
+    // 0 write
+    // 1 writeNormal
+    // 2 writeNonContext
+    for (int i = 0; i &lt; 3; ++i) {
+        String methodName;
+        boolean nonContext = DisableCircularReferenceDetect;
+        boolean writeDirect = false;
+        if (i == 0) {
+            methodName = "write";
+            writeDirect = true;
+        } else if (i == 1) {
+            methodName = "writeNormal";
+        } else {
+            writeDirect = true;
+            nonContext = true;
+            methodName = "writeDirectNonContext";
+        }
+
+        Context context = new Context(getters, beanInfo, classNameType, writeDirect,
+                                        nonContext);
+
+        mw = new MethodWriter(cw, //
+                                ACC_PUBLIC, //
+                                methodName, //
+                                "(L" + JSONSerializer
+                                            + ";Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/reflect/Type;I)V", //
+                                null, //
+                                new String[] { "java/io/IOException" } //
+        );
+
+        {
+            Label endIf_ = new Label();
+            mw.visitVarInsn(ALOAD, Context.obj);
+            //serializer.writeNull();
+            mw.visitJumpInsn(IFNONNULL, endIf_);
+            mw.visitVarInsn(ALOAD, Context.serializer);
+            mw.visitMethodInsn(INVOKEVIRTUAL, JSONSerializer,
+                    "writeNull", "()V");
+
+            mw.visitInsn(RETURN);
+            mw.visitLabel(endIf_);
+        }
+
+        mw.visitVarInsn(ALOAD, Context.serializer);
+        mw.visitFieldInsn(GETFIELD, JSONSerializer, "out", SerializeWriter_desc);
+        mw.visitVarInsn(ASTORE, context.var("out"));
+
+        if ((!nativeSorted) //
+            &amp;&amp; !context.writeDirect) {
+
+            if (jsonType == null || jsonType.alphabetic()) {
+                Label _else = new Label();
+
+                mw.visitVarInsn(ALOAD, context.var("out"));
+                mw.visitMethodInsn(INVOKEVIRTUAL, SerializeWriter, "isSortField", "()Z");
+
+                mw.visitJumpInsn(IFNE, _else);
+                mw.visitVarInsn(ALOAD, 0);
+                mw.visitVarInsn(ALOAD, 1);
+                mw.visitVarInsn(ALOAD, 2);
+                mw.visitVarInsn(ALOAD, 3);
+                mw.visitVarInsn(ALOAD, 4);
+                mw.visitVarInsn(ILOAD, 5);
+                mw.visitMethodInsn(INVOKEVIRTUAL, classNameType,
+                                    "writeUnsorted", "(L" + JSONSerializer
+                                                    + ";Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/reflect/Type;I)V");
+                mw.visitInsn(RETURN);
+
+                mw.visitLabel(_else);
+            }
+        }
+
+        // isWriteDoubleQuoteDirect
+        if (context.writeDirect &amp;&amp; !nonContext) {
+            Label _direct = new Label();
+            Label _directElse = new Label();
+
+            mw.visitVarInsn(ALOAD, 0);
+            mw.visitVarInsn(ALOAD, Context.serializer);
+            mw.visitMethodInsn(INVOKEVIRTUAL, JavaBeanSerializer, "writeDirect", "(L" + JSONSerializer + ";)Z");
+            mw.visitJumpInsn(IFNE, _directElse);
+
+            mw.visitVarInsn(ALOAD, 0);
+            mw.visitVarInsn(ALOAD, 1);
+            mw.visitVarInsn(ALOAD, 2);
+            mw.visitVarInsn(ALOAD, 3);
+            mw.visitVarInsn(ALOAD, 4);
+            mw.visitVarInsn(ILOAD, 5);
+            mw.visitMethodInsn(INVOKEVIRTUAL, classNameType,
+                                "writeNormal", "(L" + JSONSerializer
+                                                + ";Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/reflect/Type;I)V");
+            mw.visitInsn(RETURN);
+
+            mw.visitLabel(_directElse);
+            mw.visitVarInsn(ALOAD, context.var("out"));
+            mw.visitLdcInsn(SerializerFeature.DisableCircularReferenceDetect.mask);
+            mw.visitMethodInsn(INVOKEVIRTUAL, SerializeWriter, "isEnabled", "(I)Z");
+            mw.visitJumpInsn(IFEQ, _direct);
+
+            mw.visitVarInsn(ALOAD, 0);
+            mw.visitVarInsn(ALOAD, 1);
+            mw.visitVarInsn(ALOAD, 2);
+            mw.visitVarInsn(ALOAD, 3);
+            mw.visitVarInsn(ALOAD, 4);
+            mw.visitVarInsn(ILOAD, 5);
+            mw.visitMethodInsn(INVOKEVIRTUAL, classNameType, "writeDirectNonContext",
+                                "(L" + JSONSerializer + ";Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/reflect/Type;I)V");
+            mw.visitInsn(RETURN);
+
+            mw.visitLabel(_direct);
+        }
+
+        mw.visitVarInsn(ALOAD, Context.obj); // obj
+        mw.visitTypeInsn(CHECKCAST, type(clazz)); // serializer
+        mw.visitVarInsn(ASTORE, context.var("entity")); // obj
+        generateWriteMethod(clazz, mw, getters, context);
+        mw.visitInsn(RETURN);
+        mw.visitMaxs(7, context.variantIndex + 2);
+        mw.visitEnd();
+    }
+
+    if (!nativeSorted) {
+        // sortField support
+        Context context = new Context(getters, beanInfo, classNameType, false,
+                                        DisableCircularReferenceDetect);
+
+        mw = new MethodWriter(cw, ACC_PUBLIC, "writeUnsorted",
+                                "(L" + JSONSerializer + ";Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/reflect/Type;I)V",
+                                null, new String[] { "java/io/IOException" });
+
+        mw.visitVarInsn(ALOAD, Context.serializer);
+        mw.visitFieldInsn(GETFIELD, JSONSerializer, "out", SerializeWriter_desc);
+        mw.visitVarInsn(ASTORE, context.var("out"));
+
+        mw.visitVarInsn(ALOAD, Context.obj); // obj
+        mw.visitTypeInsn(CHECKCAST, type(clazz)); // serializer
+        mw.visitVarInsn(ASTORE, context.var("entity")); // obj
+
+        generateWriteMethod(clazz, mw, unsortedGetters, context);
+
+        mw.visitInsn(RETURN);
+        mw.visitMaxs(7, context.variantIndex + 2);
+        mw.visitEnd();
+    }
+
+    // 0 writeAsArray
+    // 1 writeAsArrayNormal
+    // 2 writeAsArrayNonContext
+    for (int i = 0; i &lt; 3; ++i) {
+        String methodName;
+        boolean nonContext = DisableCircularReferenceDetect;
+        boolean writeDirect = false;
+        if (i == 0) {
+            methodName = "writeAsArray";
+            writeDirect = true;
+        } else if (i == 1) {
+            methodName = "writeAsArrayNormal";
+        } else {
+            writeDirect = true;
+            nonContext = true;
+            methodName = "writeAsArrayNonContext";
+        }
+
+        Context context = new Context(getters, beanInfo, classNameType, writeDirect,
+                                        nonContext);
+
+        mw = new MethodWriter(cw, ACC_PUBLIC, methodName,
+                                "(L" + JSONSerializer + ";Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/reflect/Type;I)V",
+                                null, new String[] { "java/io/IOException" });
+
+        mw.visitVarInsn(ALOAD, Context.serializer);
+        mw.visitFieldInsn(GETFIELD, JSONSerializer, "out", SerializeWriter_desc);
+        mw.visitVarInsn(ASTORE, context.var("out"));
+
+        mw.visitVarInsn(ALOAD, Context.obj); // obj
+        mw.visitTypeInsn(CHECKCAST, type(clazz)); // serializer
+        mw.visitVarInsn(ASTORE, context.var("entity")); // obj
+        generateWriteAsArray(clazz, mw, getters, context);
+        mw.visitInsn(RETURN);
+        mw.visitMaxs(7, context.variantIndex + 2);
+        mw.visitEnd();
+    }
+
+    byte[] code = cw.toByteArray();
+
+    Class&lt;?&gt; exampleClass = classLoader.defineClassPublic(classNameFull, code, 0, code.length);
+    Constructor&lt;?&gt; constructor = exampleClass.getConstructor(SerializeBeanInfo.class);
+    Object instance = constructor.newInstance(beanInfo);
+
+    return (JavaBeanSerializer) instance;
+}
+
+</code></pre></div></div>
+
+<p>到这里为止，我们的分析就可以结束了，实际上这里是根据<code class="language-plaintext highlighter-rouge">fieldInfo</code>，通过CodeGen技术生成一个<code class="language-plaintext highlighter-rouge">writer</code>实例。而<code class="language-plaintext highlighter-rouge">getJson</code>被简单当作了<code class="language-plaintext highlighter-rouge">json</code>属性的<code class="language-plaintext highlighter-rouge">getter</code>，所以在<code class="language-plaintext highlighter-rouge">writer.write(object)</code>中调用了<code class="language-plaintext highlighter-rouge">getJson</code>从而出现了递归。那么这个问题的简单解决办法就是将<code class="language-plaintext highlighter-rouge">getJson</code>换个名字，比如<code class="language-plaintext highlighter-rouge">toJson</code>。最后，在github的issue中也翻到了一个对应的问题，作者给出的答案就是换个名字。</p>
+
+<p><img src="/uploads/images/2017/5/2.png" alt="question" /></p>
+
+<p><img src="/uploads/images/2017/5/3.png" alt="answer" /></p>
+
+  </div><a class="u-url" href="/debug/%E6%97%A5%E5%BF%97/2017/05/14/FastJson-%E8%B8%A9%E5%9D%91%E8%AE%B0%E5%BD%95.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">W41ter&#39;s Bistro</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">W41ter&#39;s Bistro</li><li><a class="u-email" href="mailto:w41ter.l@gmail.com">w41ter.l@gmail.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/w41ter"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">w41ter</span></a></li><li><a href="https://www.twitter.com/WalterM56697798"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">WalterM56697798</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Focus on distributed storage system, compiler.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>

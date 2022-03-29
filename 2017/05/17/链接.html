@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>链接 | W41ter’s Bistro</title>
+<meta name="generator" content="Jekyll v4.2.2" />
+<meta property="og:title" content="链接" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="链接是把各种代码、数据收集起来组合成单一文件的过程，这个文件可以被加载到内存中执行。在实际开发中，会将项目分散成小的、更容易管理的模块，然后独立的修改和编译这些模块。链接则是将各个模块组合成可执行文件的过程。 链接通常由链接器完成，不过现代编译器或编译环境已经处理了链接过程，需要手动使用链接器完成的场景已经很少了。大多数现代编译系统提供了编译驱动程序，它可以依次使用预处理、编译、汇编、链接器来完成编译到链接的过程，不需要用户干预。 比如由a.c和b.c两个文件，在编译驱动程序的帮助下，可以使用简单命令完成： gcc -o program a.c b.c 上述命令等价于下面这些命令： cpp a.c a.i cpp b.c b.i cc1 a.i -o a.S cc1 b.i -o b.S as -o a.o a.S as -o b.o b.S ld -o program a.o b.o 上述过程依次调用预处理、编译、汇编和链接器，最终生成了可执行文件。 像ld程序这样的静态链接器以一组可重定位的目标文件和参数作为输入，生成完全链接的可执行目标文件。可重定位目标文件由一系列的节(section)组成。 可重定位目标文件 目标文件有三种 可重定位目标文件 可执行目标文件 共享目标文件 这里只关心可重定位目标文件，它包含了二进制代码和数据，不过其中的信息并不完善，需要和其他文件一起才能组成一个可执行目标文件或者共享目标文件。 所谓可重定位，是指包含的二进制代码中有引用到其他模块的，由于不知道其他模块中二进制代码布局，所以留了空等待回填。使用例子更方便理解可重定位目标文件。假设有下面的代码： #include &lt;stdio.h&gt; int a, a1=1; int main(void) { static int b = 1; static int c; printf(&quot;hello world&quot;, a, b); return 0; } 将之命名为hello.c，然后使用命令生成重定位目标文件： gcc -c hello.o hello.c 此时hello.o便是可重定位目标文件，使用objdump -h hello.o可以看看可重定位目标文件的节(section)： /mnt/d/tmp$ objdump -h hello.o hello.o: file format elf64-x86-64 Sections: Idx Name Size VMA LMA File off Algn 0 .text 00000028 0000000000000000 0000000000000000 00000040 2**0 CONTENTS, ALLOC, LOAD, RELOC, READONLY, CODE 1 .data 00000008 0000000000000000 0000000000000000 00000068 2**2 CONTENTS, ALLOC, LOAD, DATA 2 .bss 00000004 0000000000000000 0000000000000000 00000070 2**2 ALLOC 3 .rodata 0000000c 0000000000000000 0000000000000000 00000070 2**0 CONTENTS, ALLOC, LOAD, READONLY, DATA 4 .comment 00000035 0000000000000000 0000000000000000 0000007c 2**0 CONTENTS, READONLY 5 .note.GNU-stack 00000000 0000000000000000 0000000000000000 000000b1 2**0 CONTENTS, READONLY 6 .eh_frame 00000038 0000000000000000 0000000000000000 000000b8 2**3 CONTENTS, ALLOC, LOAD, RELOC, READONLY, DATA Idx 是编号，Name 是节点名称，Size 是节大小，VMA 是在虚拟内存中的起点，LMA 是节的装载地址（除了ROM之外，通常与 VMA 相同），File off 是在文件中的具体偏移，Algn 是对齐地址。各节第二行描述了节的属性。CONTENTS 表示节在文件中占用了内存空间，ALLOC 则表示需要分配内存，RELOC 表示需要重定位。 .text 包含了已编译程序的二进制代码，.data是已经初始化的全局C变量或静态局部变量，.bss是未初始化的全局变量或静态局部变量，rodata包含只读数据。其他的数据暂时可以不用关心。 观察符号表来说明符号所在section： /mnt/d/tmp$ objdump -t hello.o hello.o: file format elf64-x86-64 SYMBOL TABLE: 0000000000000000 l df *ABS* 0000000000000000 hello.c 0000000000000000 l d .text 0000000000000000 .text 0000000000000000 l d .data 0000000000000000 .data 0000000000000000 l d .bss 0000000000000000 .bss 0000000000000000 l d .rodata 0000000000000000 .rodata 0000000000000004 l O .data 0000000000000004 b.2288 0000000000000000 l O .bss 0000000000000004 c.2289 0000000000000000 l d .note.GNU-stack 0000000000000000 .note.GNU-stack 0000000000000000 l d .eh_frame 0000000000000000 .eh_frame 0000000000000000 l d .comment 0000000000000000 .comment 0000000000000004 O *COM* 0000000000000004 a 0000000000000000 g O .data 0000000000000004 a1 0000000000000000 g F .text 0000000000000028 main 0000000000000000 *UND* 0000000000000000 printf 各列分别是解内偏移，标记位，所在节，对齐方式和符号名。ABS 表示这是一个不和任何节相关的绝对符号，UND则这个符号不在本文件中定义，COM 表示还未分配位置的未初始化数据目标。 a和c没有初始化，放到了.bss节中，b和a1则是放到了.data节中，而mian表示的函数放到了.text节中，printf则是未定义的符号，需要进行重定位。使用objdump -r可以显示可重定位目标文件的重定位项： /mnt/d/tmp$ objdump -r hello.o hello.o: file format elf64-x86-64 RELOCATION RECORDS FOR [.text]: OFFSET TYPE VALUE 0000000000000006 R_X86_64_PC32 .data 000000000000000c R_X86_64_PC32 a-0x0000000000000004 0000000000000013 R_X86_64_32 .rodata 000000000000001d R_X86_64_PC32 printf-0x0000000000000004 RELOCATION RECORDS FOR [.eh_frame]: OFFSET TYPE VALUE 0000000000000020 R_X86_64_PC32 .text 分别表示 .text 和 .eh_frame 节的重定位表。重定位表是在程序中留下的空位所在地方，可以修改代码简单验证一下。 #include &lt;stdio.h&gt; int a; int main(void) { static int b = 1; printf(&quot;hello world&quot;, a, b); printf(&quot;hello world&quot;, a, b); printf(&quot;hello world&quot;, a, b); return 0; } 这里将printf使用多次，然后看看重定位表： /mnt/d/tmp$ objdump -r hello.o hello.o: file format elf64-x86-64 RELOCATION RECORDS FOR [.text]: OFFSET TYPE VALUE 0000000000000006 R_X86_64_PC32 .data 000000000000000c R_X86_64_PC32 a-0x0000000000000004 0000000000000013 R_X86_64_32 .rodata 000000000000001d R_X86_64_PC32 printf-0x0000000000000004 0000000000000023 R_X86_64_PC32 .data 0000000000000029 R_X86_64_PC32 a-0x0000000000000004 0000000000000030 R_X86_64_32 .rodata 000000000000003a R_X86_64_PC32 printf-0x0000000000000004 0000000000000040 R_X86_64_PC32 .data 0000000000000046 R_X86_64_PC32 a-0x0000000000000004 000000000000004d R_X86_64_32 .rodata 0000000000000057 R_X86_64_PC32 printf-0x0000000000000004 RELOCATION RECORDS FOR [.eh_frame]: OFFSET TYPE VALUE 0000000000000020 R_X86_64_PC32 .text 这样的结果刚好印证了前面的说法。 链接器将可重定位目标文件组合成为可执行或共享目标文件时，必须完成两个任务： 符号解析 符号解析是将符号的定义和每次使用联系起来 重定位 重定位则是将引用符号时留空填上对应的符号地址 符号解析 链接器解析符号引用的办法是将每个引用与它输入的可重定位目标文件的符号表中一个确定的符号联系起来。如果符号的定义和引用都在同一文件内，解析起来非常方便。如果不是当前模块中定义的符号，则会在其他文件中查找，如果所有文件中都没有，那么会报错。比如对于下面的文件： void bar(int,int); int main() { bar(0,0); return 0; } 编译器能够正常执行，并生成可重定位目标文件，但是链接器会报错误: /tmp/cc672f5D.o: In function `main&#39;: test.c:(.text+0x5): undefined reference to `bar&#39; collect2: error: ld returned 1 exit status NOTICE: 注意C++中符号的命名不同于C语言（存在重载），所以在C++中可能看到的符号名类似于_Z3barii 当然，如果多个文件中存在多重定义的全局符号，则会按照一定的规则来选出一个符号作为目标符号，具体信息可以查阅相关资料。 重定位 你可能已经注意到在重定位表中存在这两种不同类型的重定义R_X86_64_PC32和R_X86_64_32。 前一种表示使用32位PC相对地址引用，比如pc+4之类的值，所以此处应该回填目标符号和当前符号的相对地址。 后一种表示使用32位绝对地址引用，说明此处可以直接填上符号的绝对地址，比如jmp bar。 链接器在所有的符号查找完成的同时记录下其真正的地址。链接器重定位算法大概如下： foreach section s { foreach relocation entry r { refptr = s + r.offset; if (r.type == XXXX_PC32) { refaddr = ADDR(s) + r.offset; *refptr = ADDR(r.symbol) + *refptr - refaddr; } if (r.type == XXXX_32) { *refptr = ADDR(r.symbol) + *refptr; } } } 其中的ADDR()表示了指定符号的真正地址。对于相对地址，首先用节的真实地址（这就是为甚么符号表中竟然含有节名）和符号在节中的偏移计算出需要回填的位置在内存中的真实地址。然后通过所引用符号的内存地址计算出其偏移。可能不能理解的是为何算法中加上了*refptr，我们可以看看重定位表项:a-0x0000000000000004，后面的值实际上就是*refptr的值。这样做可以在不同指令大小和编码方式不同的机器上，使用相同的链接器，即链接器可以透明的重定位引用，而不需要知道具体机器相关的细节。对于绝对地址，已经不需要再过解释。 静态链接库 有时会用到一些第三方提供的库文件，但是只用到其中一两个函数，而整个文件非常大，感觉非常不合算。比如标准库函数，如果我们只需要一个printf却把整个标准库包含进去，得不偿失。此时静态库的概念被提出来，将所有相关的目标模块打包成为一个单独的文件，然后链接器链接的时候，只拷贝被程序引用到的目标模块或函数。 共享库与位置无关代码 比如使用标准库，每个程序都拷贝一份标准库代码，如果 PC 中运行着非常多的程序时，那么标准库拷贝也会被复制多份，因此提出了共享库的概念。使用共享库，将原有的拷贝代码到程序中的方式改为 PC 中只运行一份代码库，所有程序中均调用该共享库的实例。共享库是一个目标模块，在运行时随机加载到储存器的任意地址，并和一个在储存器中的程序链接起来。这个过程成为动态链接，是由一个叫动态链接器的程序来执行的。共享库在 Unix 系统中通常使用后缀 so，在 Windows 系统中称为 DLL。 动态库是随机加载到存储器中，而用户程序怎么知道何时何地呢？此时使用叫做位置无关的代码(Position-Independent Code, PIC)来解决。举例来说明为何位置无关代码能解决这个问题，首先假设有 find_func_address 函数用于在共享库中查找目标函数地址： void *find_func_address(const char *name); 然后在具体的程序中使用共享库并使用内部函数： /* 假设共享库中有函数 bar，其签名如下 */ typedef void (*Bar)(); /* load library */ Bar bar = (Bar)find_func_address(&quot;bar&quot;); bar(); /* call */ /* release library */ 只需要 find_func_address 能找到函数在共享库中的地址，然后在需要的地方查找即可。不过程序员肯定受不了每次使用均调用一次 find_func_address ，并且程序中存在上千甚至更多次引用时，重复加载的效率也非常低。因此可以将代码改写一下： typedef void (*Bar)(); void bar() { static Bar bar_ = (Bar) find_func_address(&quot;bar&quot;); return bar_(); } ... bar(); /* call */ 这里的代码解决了上面的两个问题：1、程序中引用共享库中的 bar 函数只需要使用 void bar() 函数即可；2、利用局部静态变量的初始化特性保证只初始化一次。 注意，上述代码并不是线程安全的，参考：多线程中局部静态变量初始化的陷阱 当然，这部分工作已经由编译器完成，我们不需要操心。在编译器实现中，使用了 GOT (global offset table) 和 PLT (procedure linkage table) 完成，而这个过程称为延迟绑定(lazy binding)。所谓延迟绑定，就是将过程地址的绑定推迟到第一次调用该过程（函数）时。每个函数均有对应的 GOT 表项和 PLT 表项，如果将之和上面的代码对应，那么 GOT 表项相当于 void bar()，而 PLT 表项相当于 static Bar bar_ = (Bar) find_func_address(&quot;bar&quot;);。在使用延迟绑定技术时，用户调用了共享库函数，此时 IP 跳转到该函数的 GOT 表项所在位置；对于首次调用，GOT 表项填着 PLT 表项地址，所以 IP 继续跳转到 PLT 表项所在位置，而 PLT 负责完成查找函数地址，并将地址保存到 GOT 表项，然后跳转到 GOT 表项从新执行；对于非首次访问，直接跳转到 GOT 所在地址，完成调用过程。 references [1] 深入理解计算机系统 [2] Objdump 使用" />
+<meta property="og:description" content="链接是把各种代码、数据收集起来组合成单一文件的过程，这个文件可以被加载到内存中执行。在实际开发中，会将项目分散成小的、更容易管理的模块，然后独立的修改和编译这些模块。链接则是将各个模块组合成可执行文件的过程。 链接通常由链接器完成，不过现代编译器或编译环境已经处理了链接过程，需要手动使用链接器完成的场景已经很少了。大多数现代编译系统提供了编译驱动程序，它可以依次使用预处理、编译、汇编、链接器来完成编译到链接的过程，不需要用户干预。 比如由a.c和b.c两个文件，在编译驱动程序的帮助下，可以使用简单命令完成： gcc -o program a.c b.c 上述命令等价于下面这些命令： cpp a.c a.i cpp b.c b.i cc1 a.i -o a.S cc1 b.i -o b.S as -o a.o a.S as -o b.o b.S ld -o program a.o b.o 上述过程依次调用预处理、编译、汇编和链接器，最终生成了可执行文件。 像ld程序这样的静态链接器以一组可重定位的目标文件和参数作为输入，生成完全链接的可执行目标文件。可重定位目标文件由一系列的节(section)组成。 可重定位目标文件 目标文件有三种 可重定位目标文件 可执行目标文件 共享目标文件 这里只关心可重定位目标文件，它包含了二进制代码和数据，不过其中的信息并不完善，需要和其他文件一起才能组成一个可执行目标文件或者共享目标文件。 所谓可重定位，是指包含的二进制代码中有引用到其他模块的，由于不知道其他模块中二进制代码布局，所以留了空等待回填。使用例子更方便理解可重定位目标文件。假设有下面的代码： #include &lt;stdio.h&gt; int a, a1=1; int main(void) { static int b = 1; static int c; printf(&quot;hello world&quot;, a, b); return 0; } 将之命名为hello.c，然后使用命令生成重定位目标文件： gcc -c hello.o hello.c 此时hello.o便是可重定位目标文件，使用objdump -h hello.o可以看看可重定位目标文件的节(section)： /mnt/d/tmp$ objdump -h hello.o hello.o: file format elf64-x86-64 Sections: Idx Name Size VMA LMA File off Algn 0 .text 00000028 0000000000000000 0000000000000000 00000040 2**0 CONTENTS, ALLOC, LOAD, RELOC, READONLY, CODE 1 .data 00000008 0000000000000000 0000000000000000 00000068 2**2 CONTENTS, ALLOC, LOAD, DATA 2 .bss 00000004 0000000000000000 0000000000000000 00000070 2**2 ALLOC 3 .rodata 0000000c 0000000000000000 0000000000000000 00000070 2**0 CONTENTS, ALLOC, LOAD, READONLY, DATA 4 .comment 00000035 0000000000000000 0000000000000000 0000007c 2**0 CONTENTS, READONLY 5 .note.GNU-stack 00000000 0000000000000000 0000000000000000 000000b1 2**0 CONTENTS, READONLY 6 .eh_frame 00000038 0000000000000000 0000000000000000 000000b8 2**3 CONTENTS, ALLOC, LOAD, RELOC, READONLY, DATA Idx 是编号，Name 是节点名称，Size 是节大小，VMA 是在虚拟内存中的起点，LMA 是节的装载地址（除了ROM之外，通常与 VMA 相同），File off 是在文件中的具体偏移，Algn 是对齐地址。各节第二行描述了节的属性。CONTENTS 表示节在文件中占用了内存空间，ALLOC 则表示需要分配内存，RELOC 表示需要重定位。 .text 包含了已编译程序的二进制代码，.data是已经初始化的全局C变量或静态局部变量，.bss是未初始化的全局变量或静态局部变量，rodata包含只读数据。其他的数据暂时可以不用关心。 观察符号表来说明符号所在section： /mnt/d/tmp$ objdump -t hello.o hello.o: file format elf64-x86-64 SYMBOL TABLE: 0000000000000000 l df *ABS* 0000000000000000 hello.c 0000000000000000 l d .text 0000000000000000 .text 0000000000000000 l d .data 0000000000000000 .data 0000000000000000 l d .bss 0000000000000000 .bss 0000000000000000 l d .rodata 0000000000000000 .rodata 0000000000000004 l O .data 0000000000000004 b.2288 0000000000000000 l O .bss 0000000000000004 c.2289 0000000000000000 l d .note.GNU-stack 0000000000000000 .note.GNU-stack 0000000000000000 l d .eh_frame 0000000000000000 .eh_frame 0000000000000000 l d .comment 0000000000000000 .comment 0000000000000004 O *COM* 0000000000000004 a 0000000000000000 g O .data 0000000000000004 a1 0000000000000000 g F .text 0000000000000028 main 0000000000000000 *UND* 0000000000000000 printf 各列分别是解内偏移，标记位，所在节，对齐方式和符号名。ABS 表示这是一个不和任何节相关的绝对符号，UND则这个符号不在本文件中定义，COM 表示还未分配位置的未初始化数据目标。 a和c没有初始化，放到了.bss节中，b和a1则是放到了.data节中，而mian表示的函数放到了.text节中，printf则是未定义的符号，需要进行重定位。使用objdump -r可以显示可重定位目标文件的重定位项： /mnt/d/tmp$ objdump -r hello.o hello.o: file format elf64-x86-64 RELOCATION RECORDS FOR [.text]: OFFSET TYPE VALUE 0000000000000006 R_X86_64_PC32 .data 000000000000000c R_X86_64_PC32 a-0x0000000000000004 0000000000000013 R_X86_64_32 .rodata 000000000000001d R_X86_64_PC32 printf-0x0000000000000004 RELOCATION RECORDS FOR [.eh_frame]: OFFSET TYPE VALUE 0000000000000020 R_X86_64_PC32 .text 分别表示 .text 和 .eh_frame 节的重定位表。重定位表是在程序中留下的空位所在地方，可以修改代码简单验证一下。 #include &lt;stdio.h&gt; int a; int main(void) { static int b = 1; printf(&quot;hello world&quot;, a, b); printf(&quot;hello world&quot;, a, b); printf(&quot;hello world&quot;, a, b); return 0; } 这里将printf使用多次，然后看看重定位表： /mnt/d/tmp$ objdump -r hello.o hello.o: file format elf64-x86-64 RELOCATION RECORDS FOR [.text]: OFFSET TYPE VALUE 0000000000000006 R_X86_64_PC32 .data 000000000000000c R_X86_64_PC32 a-0x0000000000000004 0000000000000013 R_X86_64_32 .rodata 000000000000001d R_X86_64_PC32 printf-0x0000000000000004 0000000000000023 R_X86_64_PC32 .data 0000000000000029 R_X86_64_PC32 a-0x0000000000000004 0000000000000030 R_X86_64_32 .rodata 000000000000003a R_X86_64_PC32 printf-0x0000000000000004 0000000000000040 R_X86_64_PC32 .data 0000000000000046 R_X86_64_PC32 a-0x0000000000000004 000000000000004d R_X86_64_32 .rodata 0000000000000057 R_X86_64_PC32 printf-0x0000000000000004 RELOCATION RECORDS FOR [.eh_frame]: OFFSET TYPE VALUE 0000000000000020 R_X86_64_PC32 .text 这样的结果刚好印证了前面的说法。 链接器将可重定位目标文件组合成为可执行或共享目标文件时，必须完成两个任务： 符号解析 符号解析是将符号的定义和每次使用联系起来 重定位 重定位则是将引用符号时留空填上对应的符号地址 符号解析 链接器解析符号引用的办法是将每个引用与它输入的可重定位目标文件的符号表中一个确定的符号联系起来。如果符号的定义和引用都在同一文件内，解析起来非常方便。如果不是当前模块中定义的符号，则会在其他文件中查找，如果所有文件中都没有，那么会报错。比如对于下面的文件： void bar(int,int); int main() { bar(0,0); return 0; } 编译器能够正常执行，并生成可重定位目标文件，但是链接器会报错误: /tmp/cc672f5D.o: In function `main&#39;: test.c:(.text+0x5): undefined reference to `bar&#39; collect2: error: ld returned 1 exit status NOTICE: 注意C++中符号的命名不同于C语言（存在重载），所以在C++中可能看到的符号名类似于_Z3barii 当然，如果多个文件中存在多重定义的全局符号，则会按照一定的规则来选出一个符号作为目标符号，具体信息可以查阅相关资料。 重定位 你可能已经注意到在重定位表中存在这两种不同类型的重定义R_X86_64_PC32和R_X86_64_32。 前一种表示使用32位PC相对地址引用，比如pc+4之类的值，所以此处应该回填目标符号和当前符号的相对地址。 后一种表示使用32位绝对地址引用，说明此处可以直接填上符号的绝对地址，比如jmp bar。 链接器在所有的符号查找完成的同时记录下其真正的地址。链接器重定位算法大概如下： foreach section s { foreach relocation entry r { refptr = s + r.offset; if (r.type == XXXX_PC32) { refaddr = ADDR(s) + r.offset; *refptr = ADDR(r.symbol) + *refptr - refaddr; } if (r.type == XXXX_32) { *refptr = ADDR(r.symbol) + *refptr; } } } 其中的ADDR()表示了指定符号的真正地址。对于相对地址，首先用节的真实地址（这就是为甚么符号表中竟然含有节名）和符号在节中的偏移计算出需要回填的位置在内存中的真实地址。然后通过所引用符号的内存地址计算出其偏移。可能不能理解的是为何算法中加上了*refptr，我们可以看看重定位表项:a-0x0000000000000004，后面的值实际上就是*refptr的值。这样做可以在不同指令大小和编码方式不同的机器上，使用相同的链接器，即链接器可以透明的重定位引用，而不需要知道具体机器相关的细节。对于绝对地址，已经不需要再过解释。 静态链接库 有时会用到一些第三方提供的库文件，但是只用到其中一两个函数，而整个文件非常大，感觉非常不合算。比如标准库函数，如果我们只需要一个printf却把整个标准库包含进去，得不偿失。此时静态库的概念被提出来，将所有相关的目标模块打包成为一个单独的文件，然后链接器链接的时候，只拷贝被程序引用到的目标模块或函数。 共享库与位置无关代码 比如使用标准库，每个程序都拷贝一份标准库代码，如果 PC 中运行着非常多的程序时，那么标准库拷贝也会被复制多份，因此提出了共享库的概念。使用共享库，将原有的拷贝代码到程序中的方式改为 PC 中只运行一份代码库，所有程序中均调用该共享库的实例。共享库是一个目标模块，在运行时随机加载到储存器的任意地址，并和一个在储存器中的程序链接起来。这个过程成为动态链接，是由一个叫动态链接器的程序来执行的。共享库在 Unix 系统中通常使用后缀 so，在 Windows 系统中称为 DLL。 动态库是随机加载到存储器中，而用户程序怎么知道何时何地呢？此时使用叫做位置无关的代码(Position-Independent Code, PIC)来解决。举例来说明为何位置无关代码能解决这个问题，首先假设有 find_func_address 函数用于在共享库中查找目标函数地址： void *find_func_address(const char *name); 然后在具体的程序中使用共享库并使用内部函数： /* 假设共享库中有函数 bar，其签名如下 */ typedef void (*Bar)(); /* load library */ Bar bar = (Bar)find_func_address(&quot;bar&quot;); bar(); /* call */ /* release library */ 只需要 find_func_address 能找到函数在共享库中的地址，然后在需要的地方查找即可。不过程序员肯定受不了每次使用均调用一次 find_func_address ，并且程序中存在上千甚至更多次引用时，重复加载的效率也非常低。因此可以将代码改写一下： typedef void (*Bar)(); void bar() { static Bar bar_ = (Bar) find_func_address(&quot;bar&quot;); return bar_(); } ... bar(); /* call */ 这里的代码解决了上面的两个问题：1、程序中引用共享库中的 bar 函数只需要使用 void bar() 函数即可；2、利用局部静态变量的初始化特性保证只初始化一次。 注意，上述代码并不是线程安全的，参考：多线程中局部静态变量初始化的陷阱 当然，这部分工作已经由编译器完成，我们不需要操心。在编译器实现中，使用了 GOT (global offset table) 和 PLT (procedure linkage table) 完成，而这个过程称为延迟绑定(lazy binding)。所谓延迟绑定，就是将过程地址的绑定推迟到第一次调用该过程（函数）时。每个函数均有对应的 GOT 表项和 PLT 表项，如果将之和上面的代码对应，那么 GOT 表项相当于 void bar()，而 PLT 表项相当于 static Bar bar_ = (Bar) find_func_address(&quot;bar&quot;);。在使用延迟绑定技术时，用户调用了共享库函数，此时 IP 跳转到该函数的 GOT 表项所在位置；对于首次调用，GOT 表项填着 PLT 表项地址，所以 IP 继续跳转到 PLT 表项所在位置，而 PLT 负责完成查找函数地址，并将地址保存到 GOT 表项，然后跳转到 GOT 表项从新执行；对于非首次访问，直接跳转到 GOT 所在地址，完成调用过程。 references [1] 深入理解计算机系统 [2] Objdump 使用" />
+<link rel="canonical" href="/2017/05/17/%E9%93%BE%E6%8E%A5.html" />
+<meta property="og:url" content="/2017/05/17/%E9%93%BE%E6%8E%A5.html" />
+<meta property="og:site_name" content="W41ter’s Bistro" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2017-05-17T17:50:10+08:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="链接" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2017-05-17T17:50:10+08:00","datePublished":"2017-05-17T17:50:10+08:00","description":"链接是把各种代码、数据收集起来组合成单一文件的过程，这个文件可以被加载到内存中执行。在实际开发中，会将项目分散成小的、更容易管理的模块，然后独立的修改和编译这些模块。链接则是将各个模块组合成可执行文件的过程。 链接通常由链接器完成，不过现代编译器或编译环境已经处理了链接过程，需要手动使用链接器完成的场景已经很少了。大多数现代编译系统提供了编译驱动程序，它可以依次使用预处理、编译、汇编、链接器来完成编译到链接的过程，不需要用户干预。 比如由a.c和b.c两个文件，在编译驱动程序的帮助下，可以使用简单命令完成： gcc -o program a.c b.c 上述命令等价于下面这些命令： cpp a.c a.i cpp b.c b.i cc1 a.i -o a.S cc1 b.i -o b.S as -o a.o a.S as -o b.o b.S ld -o program a.o b.o 上述过程依次调用预处理、编译、汇编和链接器，最终生成了可执行文件。 像ld程序这样的静态链接器以一组可重定位的目标文件和参数作为输入，生成完全链接的可执行目标文件。可重定位目标文件由一系列的节(section)组成。 可重定位目标文件 目标文件有三种 可重定位目标文件 可执行目标文件 共享目标文件 这里只关心可重定位目标文件，它包含了二进制代码和数据，不过其中的信息并不完善，需要和其他文件一起才能组成一个可执行目标文件或者共享目标文件。 所谓可重定位，是指包含的二进制代码中有引用到其他模块的，由于不知道其他模块中二进制代码布局，所以留了空等待回填。使用例子更方便理解可重定位目标文件。假设有下面的代码： #include &lt;stdio.h&gt; int a, a1=1; int main(void) { static int b = 1; static int c; printf(&quot;hello world&quot;, a, b); return 0; } 将之命名为hello.c，然后使用命令生成重定位目标文件： gcc -c hello.o hello.c 此时hello.o便是可重定位目标文件，使用objdump -h hello.o可以看看可重定位目标文件的节(section)： /mnt/d/tmp$ objdump -h hello.o hello.o: file format elf64-x86-64 Sections: Idx Name Size VMA LMA File off Algn 0 .text 00000028 0000000000000000 0000000000000000 00000040 2**0 CONTENTS, ALLOC, LOAD, RELOC, READONLY, CODE 1 .data 00000008 0000000000000000 0000000000000000 00000068 2**2 CONTENTS, ALLOC, LOAD, DATA 2 .bss 00000004 0000000000000000 0000000000000000 00000070 2**2 ALLOC 3 .rodata 0000000c 0000000000000000 0000000000000000 00000070 2**0 CONTENTS, ALLOC, LOAD, READONLY, DATA 4 .comment 00000035 0000000000000000 0000000000000000 0000007c 2**0 CONTENTS, READONLY 5 .note.GNU-stack 00000000 0000000000000000 0000000000000000 000000b1 2**0 CONTENTS, READONLY 6 .eh_frame 00000038 0000000000000000 0000000000000000 000000b8 2**3 CONTENTS, ALLOC, LOAD, RELOC, READONLY, DATA Idx 是编号，Name 是节点名称，Size 是节大小，VMA 是在虚拟内存中的起点，LMA 是节的装载地址（除了ROM之外，通常与 VMA 相同），File off 是在文件中的具体偏移，Algn 是对齐地址。各节第二行描述了节的属性。CONTENTS 表示节在文件中占用了内存空间，ALLOC 则表示需要分配内存，RELOC 表示需要重定位。 .text 包含了已编译程序的二进制代码，.data是已经初始化的全局C变量或静态局部变量，.bss是未初始化的全局变量或静态局部变量，rodata包含只读数据。其他的数据暂时可以不用关心。 观察符号表来说明符号所在section： /mnt/d/tmp$ objdump -t hello.o hello.o: file format elf64-x86-64 SYMBOL TABLE: 0000000000000000 l df *ABS* 0000000000000000 hello.c 0000000000000000 l d .text 0000000000000000 .text 0000000000000000 l d .data 0000000000000000 .data 0000000000000000 l d .bss 0000000000000000 .bss 0000000000000000 l d .rodata 0000000000000000 .rodata 0000000000000004 l O .data 0000000000000004 b.2288 0000000000000000 l O .bss 0000000000000004 c.2289 0000000000000000 l d .note.GNU-stack 0000000000000000 .note.GNU-stack 0000000000000000 l d .eh_frame 0000000000000000 .eh_frame 0000000000000000 l d .comment 0000000000000000 .comment 0000000000000004 O *COM* 0000000000000004 a 0000000000000000 g O .data 0000000000000004 a1 0000000000000000 g F .text 0000000000000028 main 0000000000000000 *UND* 0000000000000000 printf 各列分别是解内偏移，标记位，所在节，对齐方式和符号名。ABS 表示这是一个不和任何节相关的绝对符号，UND则这个符号不在本文件中定义，COM 表示还未分配位置的未初始化数据目标。 a和c没有初始化，放到了.bss节中，b和a1则是放到了.data节中，而mian表示的函数放到了.text节中，printf则是未定义的符号，需要进行重定位。使用objdump -r可以显示可重定位目标文件的重定位项： /mnt/d/tmp$ objdump -r hello.o hello.o: file format elf64-x86-64 RELOCATION RECORDS FOR [.text]: OFFSET TYPE VALUE 0000000000000006 R_X86_64_PC32 .data 000000000000000c R_X86_64_PC32 a-0x0000000000000004 0000000000000013 R_X86_64_32 .rodata 000000000000001d R_X86_64_PC32 printf-0x0000000000000004 RELOCATION RECORDS FOR [.eh_frame]: OFFSET TYPE VALUE 0000000000000020 R_X86_64_PC32 .text 分别表示 .text 和 .eh_frame 节的重定位表。重定位表是在程序中留下的空位所在地方，可以修改代码简单验证一下。 #include &lt;stdio.h&gt; int a; int main(void) { static int b = 1; printf(&quot;hello world&quot;, a, b); printf(&quot;hello world&quot;, a, b); printf(&quot;hello world&quot;, a, b); return 0; } 这里将printf使用多次，然后看看重定位表： /mnt/d/tmp$ objdump -r hello.o hello.o: file format elf64-x86-64 RELOCATION RECORDS FOR [.text]: OFFSET TYPE VALUE 0000000000000006 R_X86_64_PC32 .data 000000000000000c R_X86_64_PC32 a-0x0000000000000004 0000000000000013 R_X86_64_32 .rodata 000000000000001d R_X86_64_PC32 printf-0x0000000000000004 0000000000000023 R_X86_64_PC32 .data 0000000000000029 R_X86_64_PC32 a-0x0000000000000004 0000000000000030 R_X86_64_32 .rodata 000000000000003a R_X86_64_PC32 printf-0x0000000000000004 0000000000000040 R_X86_64_PC32 .data 0000000000000046 R_X86_64_PC32 a-0x0000000000000004 000000000000004d R_X86_64_32 .rodata 0000000000000057 R_X86_64_PC32 printf-0x0000000000000004 RELOCATION RECORDS FOR [.eh_frame]: OFFSET TYPE VALUE 0000000000000020 R_X86_64_PC32 .text 这样的结果刚好印证了前面的说法。 链接器将可重定位目标文件组合成为可执行或共享目标文件时，必须完成两个任务： 符号解析 符号解析是将符号的定义和每次使用联系起来 重定位 重定位则是将引用符号时留空填上对应的符号地址 符号解析 链接器解析符号引用的办法是将每个引用与它输入的可重定位目标文件的符号表中一个确定的符号联系起来。如果符号的定义和引用都在同一文件内，解析起来非常方便。如果不是当前模块中定义的符号，则会在其他文件中查找，如果所有文件中都没有，那么会报错。比如对于下面的文件： void bar(int,int); int main() { bar(0,0); return 0; } 编译器能够正常执行，并生成可重定位目标文件，但是链接器会报错误: /tmp/cc672f5D.o: In function `main&#39;: test.c:(.text+0x5): undefined reference to `bar&#39; collect2: error: ld returned 1 exit status NOTICE: 注意C++中符号的命名不同于C语言（存在重载），所以在C++中可能看到的符号名类似于_Z3barii 当然，如果多个文件中存在多重定义的全局符号，则会按照一定的规则来选出一个符号作为目标符号，具体信息可以查阅相关资料。 重定位 你可能已经注意到在重定位表中存在这两种不同类型的重定义R_X86_64_PC32和R_X86_64_32。 前一种表示使用32位PC相对地址引用，比如pc+4之类的值，所以此处应该回填目标符号和当前符号的相对地址。 后一种表示使用32位绝对地址引用，说明此处可以直接填上符号的绝对地址，比如jmp bar。 链接器在所有的符号查找完成的同时记录下其真正的地址。链接器重定位算法大概如下： foreach section s { foreach relocation entry r { refptr = s + r.offset; if (r.type == XXXX_PC32) { refaddr = ADDR(s) + r.offset; *refptr = ADDR(r.symbol) + *refptr - refaddr; } if (r.type == XXXX_32) { *refptr = ADDR(r.symbol) + *refptr; } } } 其中的ADDR()表示了指定符号的真正地址。对于相对地址，首先用节的真实地址（这就是为甚么符号表中竟然含有节名）和符号在节中的偏移计算出需要回填的位置在内存中的真实地址。然后通过所引用符号的内存地址计算出其偏移。可能不能理解的是为何算法中加上了*refptr，我们可以看看重定位表项:a-0x0000000000000004，后面的值实际上就是*refptr的值。这样做可以在不同指令大小和编码方式不同的机器上，使用相同的链接器，即链接器可以透明的重定位引用，而不需要知道具体机器相关的细节。对于绝对地址，已经不需要再过解释。 静态链接库 有时会用到一些第三方提供的库文件，但是只用到其中一两个函数，而整个文件非常大，感觉非常不合算。比如标准库函数，如果我们只需要一个printf却把整个标准库包含进去，得不偿失。此时静态库的概念被提出来，将所有相关的目标模块打包成为一个单独的文件，然后链接器链接的时候，只拷贝被程序引用到的目标模块或函数。 共享库与位置无关代码 比如使用标准库，每个程序都拷贝一份标准库代码，如果 PC 中运行着非常多的程序时，那么标准库拷贝也会被复制多份，因此提出了共享库的概念。使用共享库，将原有的拷贝代码到程序中的方式改为 PC 中只运行一份代码库，所有程序中均调用该共享库的实例。共享库是一个目标模块，在运行时随机加载到储存器的任意地址，并和一个在储存器中的程序链接起来。这个过程成为动态链接，是由一个叫动态链接器的程序来执行的。共享库在 Unix 系统中通常使用后缀 so，在 Windows 系统中称为 DLL。 动态库是随机加载到存储器中，而用户程序怎么知道何时何地呢？此时使用叫做位置无关的代码(Position-Independent Code, PIC)来解决。举例来说明为何位置无关代码能解决这个问题，首先假设有 find_func_address 函数用于在共享库中查找目标函数地址： void *find_func_address(const char *name); 然后在具体的程序中使用共享库并使用内部函数： /* 假设共享库中有函数 bar，其签名如下 */ typedef void (*Bar)(); /* load library */ Bar bar = (Bar)find_func_address(&quot;bar&quot;); bar(); /* call */ /* release library */ 只需要 find_func_address 能找到函数在共享库中的地址，然后在需要的地方查找即可。不过程序员肯定受不了每次使用均调用一次 find_func_address ，并且程序中存在上千甚至更多次引用时，重复加载的效率也非常低。因此可以将代码改写一下： typedef void (*Bar)(); void bar() { static Bar bar_ = (Bar) find_func_address(&quot;bar&quot;); return bar_(); } ... bar(); /* call */ 这里的代码解决了上面的两个问题：1、程序中引用共享库中的 bar 函数只需要使用 void bar() 函数即可；2、利用局部静态变量的初始化特性保证只初始化一次。 注意，上述代码并不是线程安全的，参考：多线程中局部静态变量初始化的陷阱 当然，这部分工作已经由编译器完成，我们不需要操心。在编译器实现中，使用了 GOT (global offset table) 和 PLT (procedure linkage table) 完成，而这个过程称为延迟绑定(lazy binding)。所谓延迟绑定，就是将过程地址的绑定推迟到第一次调用该过程（函数）时。每个函数均有对应的 GOT 表项和 PLT 表项，如果将之和上面的代码对应，那么 GOT 表项相当于 void bar()，而 PLT 表项相当于 static Bar bar_ = (Bar) find_func_address(&quot;bar&quot;);。在使用延迟绑定技术时，用户调用了共享库函数，此时 IP 跳转到该函数的 GOT 表项所在位置；对于首次调用，GOT 表项填着 PLT 表项地址，所以 IP 继续跳转到 PLT 表项所在位置，而 PLT 负责完成查找函数地址，并将地址保存到 GOT 表项，然后跳转到 GOT 表项从新执行；对于非首次访问，直接跳转到 GOT 所在地址，完成调用过程。 references [1] 深入理解计算机系统 [2] Objdump 使用","headline":"链接","mainEntityOfPage":{"@type":"WebPage","@id":"/2017/05/17/%E9%93%BE%E6%8E%A5.html"},"url":"/2017/05/17/%E9%93%BE%E6%8E%A5.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="/feed.xml" title="W41ter's Bistro" /><!-- for mathjax support -->
+  
+</head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">W41ter&#39;s Bistro</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">链接</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2017-05-17T17:50:10+08:00" itemprop="datePublished">May 17, 2017
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p>链接是把各种代码、数据收集起来组合成单一文件的过程，这个文件可以被加载到内存中执行。在实际开发中，会将项目分散成小的、更容易管理的模块，然后独立的修改和编译这些模块。链接则是将各个模块组合成可执行文件的过程。</p>
+
+<p>链接通常由链接器完成，不过现代编译器或编译环境已经处理了链接过程，需要手动使用链接器完成的场景已经很少了。大多数现代编译系统提供了编译驱动程序，它可以依次使用预处理、编译、汇编、链接器来完成编译到链接的过程，不需要用户干预。</p>
+
+<p>比如由a.c和b.c两个文件，在编译驱动程序的帮助下，可以使用简单命令完成：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>gcc -o program a.c b.c
+</code></pre></div></div>
+
+<p>上述命令等价于下面这些命令：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>cpp a.c a.i
+cpp b.c b.i
+cc1 a.i -o a.S
+cc1 b.i -o b.S
+as -o a.o a.S
+as -o b.o b.S
+ld -o program a.o b.o
+</code></pre></div></div>
+
+<p>上述过程依次调用预处理、编译、汇编和链接器，最终生成了可执行文件。</p>
+
+<p>像ld程序这样的静态链接器以一组可重定位的目标文件和参数作为输入，生成完全链接的可执行目标文件。可重定位目标文件由一系列的节(section)组成。</p>
+
+<h2 id="可重定位目标文件">可重定位目标文件</h2>
+
+<p>目标文件有三种</p>
+
+<ul>
+  <li>可重定位目标文件</li>
+  <li>可执行目标文件</li>
+  <li>共享目标文件</li>
+</ul>
+
+<p>这里只关心可重定位目标文件，它包含了二进制代码和数据，不过其中的信息并不完善，需要和其他文件一起才能组成一个可执行目标文件或者共享目标文件。</p>
+
+<p>所谓可重定位，是指包含的二进制代码中有引用到其他模块的，由于不知道其他模块中二进制代码布局，所以留了空等待回填。使用例子更方便理解可重定位目标文件。假设有下面的代码：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>#include &lt;stdio.h&gt;
+
+int a, a1=1;
+
+int main(void) {
+  static int b = 1;
+  static int c;
+
+  printf("hello world", a, b);
+
+  return 0;
+}
+</code></pre></div></div>
+
+<p>将之命名为<code class="language-plaintext highlighter-rouge">hello.c</code>，然后使用命令生成重定位目标文件：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>gcc -c hello.o hello.c
+</code></pre></div></div>
+
+<p>此时<code class="language-plaintext highlighter-rouge">hello.o</code>便是可重定位目标文件，使用<code class="language-plaintext highlighter-rouge">objdump -h hello.o</code>可以看看可重定位目标文件的节(section)：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>/mnt/d/tmp$ objdump -h hello.o
+
+hello.o:     file format elf64-x86-64
+
+Sections:
+Idx Name          Size      VMA               LMA               File off  Algn
+  0 .text         00000028  0000000000000000  0000000000000000  00000040  2**0
+                  CONTENTS, ALLOC, LOAD, RELOC, READONLY, CODE
+  1 .data         00000008  0000000000000000  0000000000000000  00000068  2**2
+                  CONTENTS, ALLOC, LOAD, DATA
+  2 .bss          00000004  0000000000000000  0000000000000000  00000070  2**2
+                  ALLOC
+  3 .rodata       0000000c  0000000000000000  0000000000000000  00000070  2**0
+                  CONTENTS, ALLOC, LOAD, READONLY, DATA
+  4 .comment      00000035  0000000000000000  0000000000000000  0000007c  2**0
+                  CONTENTS, READONLY
+  5 .note.GNU-stack 00000000  0000000000000000  0000000000000000  000000b1  2**0
+                  CONTENTS, READONLY
+  6 .eh_frame     00000038  0000000000000000  0000000000000000  000000b8  2**3
+                  CONTENTS, ALLOC, LOAD, RELOC, READONLY, DATA
+</code></pre></div></div>
+
+<p><code class="language-plaintext highlighter-rouge">Idx</code> 是编号，<code class="language-plaintext highlighter-rouge">Name</code> 是节点名称，<code class="language-plaintext highlighter-rouge">Size</code> 是节大小，<code class="language-plaintext highlighter-rouge">VMA</code> 是在虚拟内存中的起点，<code class="language-plaintext highlighter-rouge">LMA</code> 是节的装载地址（除了ROM之外，通常与 VMA 相同），<code class="language-plaintext highlighter-rouge">File off</code> 是在文件中的具体偏移，<code class="language-plaintext highlighter-rouge">Algn</code> 是对齐地址。各节第二行描述了节的属性。<code class="language-plaintext highlighter-rouge">CONTENTS</code> 表示节在文件中占用了内存空间，<code class="language-plaintext highlighter-rouge">ALLOC</code> 则表示需要分配内存，<code class="language-plaintext highlighter-rouge">RELOC</code> 表示需要重定位。</p>
+
+<p><code class="language-plaintext highlighter-rouge">.text</code> 包含了已编译程序的二进制代码，<code class="language-plaintext highlighter-rouge">.data</code>是已经初始化的全局C变量或静态局部变量，<code class="language-plaintext highlighter-rouge">.bss</code>是未初始化的全局变量或静态局部变量，<code class="language-plaintext highlighter-rouge">rodata</code>包含只读数据。其他的数据暂时可以不用关心。</p>
+
+<p>观察符号表来说明符号所在section：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>/mnt/d/tmp$ objdump -t hello.o
+
+hello.o:     file format elf64-x86-64
+
+SYMBOL TABLE:
+0000000000000000 l    df *ABS*  0000000000000000 hello.c
+0000000000000000 l    d  .text  0000000000000000 .text
+0000000000000000 l    d  .data  0000000000000000 .data
+0000000000000000 l    d  .bss   0000000000000000 .bss
+0000000000000000 l    d  .rodata        0000000000000000 .rodata
+0000000000000004 l     O .data  0000000000000004 b.2288
+0000000000000000 l     O .bss   0000000000000004 c.2289
+0000000000000000 l    d  .note.GNU-stack        0000000000000000 .note.GNU-stack
+0000000000000000 l    d  .eh_frame      0000000000000000 .eh_frame
+0000000000000000 l    d  .comment       0000000000000000 .comment
+0000000000000004       O *COM*  0000000000000004 a
+0000000000000000 g     O .data  0000000000000004 a1
+0000000000000000 g     F .text  0000000000000028 main
+0000000000000000         *UND*  0000000000000000 printf
+</code></pre></div></div>
+
+<p>各列分别是解内偏移，标记位，所在节，对齐方式和符号名。<em>ABS</em> 表示这是一个不和任何节相关的绝对符号，<em>UND</em>则这个符号不在本文件中定义，<em>COM</em> 表示还未分配位置的未初始化数据目标。</p>
+
+<p><code class="language-plaintext highlighter-rouge">a</code>和<code class="language-plaintext highlighter-rouge">c</code>没有初始化，放到了<code class="language-plaintext highlighter-rouge">.bss</code>节中，<code class="language-plaintext highlighter-rouge">b</code>和<code class="language-plaintext highlighter-rouge">a1</code>则是放到了<code class="language-plaintext highlighter-rouge">.data</code>节中，而<code class="language-plaintext highlighter-rouge">mian</code>表示的函数放到了<code class="language-plaintext highlighter-rouge">.text</code>节中，<code class="language-plaintext highlighter-rouge">printf</code>则是未定义的符号，需要进行重定位。使用<code class="language-plaintext highlighter-rouge">objdump -r</code>可以显示可重定位目标文件的重定位项：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>/mnt/d/tmp$ objdump -r hello.o
+
+hello.o:     file format elf64-x86-64
+
+RELOCATION RECORDS FOR [.text]:
+OFFSET           TYPE              VALUE
+0000000000000006 R_X86_64_PC32     .data
+000000000000000c R_X86_64_PC32     a-0x0000000000000004
+0000000000000013 R_X86_64_32       .rodata
+000000000000001d R_X86_64_PC32     printf-0x0000000000000004
+
+
+RELOCATION RECORDS FOR [.eh_frame]:
+OFFSET           TYPE              VALUE
+0000000000000020 R_X86_64_PC32     .text
+</code></pre></div></div>
+
+<p>分别表示 <code class="language-plaintext highlighter-rouge">.text</code> 和 <code class="language-plaintext highlighter-rouge">.eh_frame</code> 节的重定位表。重定位表是在程序中留下的空位所在地方，可以修改代码简单验证一下。</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>#include &lt;stdio.h&gt;
+
+int a;
+
+int main(void) {
+  static int b = 1;
+
+  printf("hello world", a, b);
+  printf("hello world", a, b);
+  printf("hello world", a, b);
+  return 0;
+}
+</code></pre></div></div>
+
+<p>这里将<code class="language-plaintext highlighter-rouge">printf</code>使用多次，然后看看重定位表：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>/mnt/d/tmp$ objdump -r hello.o
+
+hello.o:     file format elf64-x86-64
+
+RELOCATION RECORDS FOR [.text]:
+OFFSET           TYPE              VALUE
+0000000000000006 R_X86_64_PC32     .data
+000000000000000c R_X86_64_PC32     a-0x0000000000000004
+0000000000000013 R_X86_64_32       .rodata
+000000000000001d R_X86_64_PC32     printf-0x0000000000000004
+0000000000000023 R_X86_64_PC32     .data
+0000000000000029 R_X86_64_PC32     a-0x0000000000000004
+0000000000000030 R_X86_64_32       .rodata
+000000000000003a R_X86_64_PC32     printf-0x0000000000000004
+0000000000000040 R_X86_64_PC32     .data
+0000000000000046 R_X86_64_PC32     a-0x0000000000000004
+000000000000004d R_X86_64_32       .rodata
+0000000000000057 R_X86_64_PC32     printf-0x0000000000000004
+
+
+RELOCATION RECORDS FOR [.eh_frame]:
+OFFSET           TYPE              VALUE
+0000000000000020 R_X86_64_PC32     .text
+</code></pre></div></div>
+
+<p>这样的结果刚好印证了前面的说法。</p>
+
+<p>链接器将可重定位目标文件组合成为可执行或共享目标文件时，必须完成两个任务：</p>
+
+<ul>
+  <li>符号解析 符号解析是将符号的定义和每次使用联系起来</li>
+  <li>重定位 重定位则是将引用符号时留空填上对应的符号地址</li>
+</ul>
+
+<h2 id="符号解析">符号解析</h2>
+
+<p>链接器解析符号引用的办法是将每个引用与它输入的可重定位目标文件的符号表中一个确定的符号联系起来。如果符号的定义和引用都在同一文件内，解析起来非常方便。如果不是当前模块中定义的符号，则会在其他文件中查找，如果所有文件中都没有，那么会报错。比如对于下面的文件：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>void bar(int,int);
+int main() {
+    bar(0,0);
+    return 0;
+}
+</code></pre></div></div>
+
+<p>编译器能够正常执行，并生成可重定位目标文件，但是链接器会报错误:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>/tmp/cc672f5D.o: In function `main':
+test.c:(.text+0x5): undefined reference to `bar'
+collect2: error: ld returned 1 exit status
+</code></pre></div></div>
+
+<blockquote>
+  <p>NOTICE: 注意C++中符号的命名不同于C语言（存在重载），所以在C++中可能看到的符号名类似于<code class="language-plaintext highlighter-rouge">_Z3barii</code></p>
+</blockquote>
+
+<p>当然，如果多个文件中存在多重定义的全局符号，则会按照一定的规则来选出一个符号作为目标符号，具体信息可以查阅相关资料。</p>
+
+<h2 id="重定位">重定位</h2>
+
+<p>你可能已经注意到在重定位表中存在这两种不同类型的重定义<code class="language-plaintext highlighter-rouge">R_X86_64_PC32</code>和<code class="language-plaintext highlighter-rouge">R_X86_64_32</code>。</p>
+
+<p>前一种表示使用32位PC相对地址引用，比如<code class="language-plaintext highlighter-rouge">pc+4</code>之类的值，所以此处应该回填目标符号和当前符号的相对地址。</p>
+
+<p>后一种表示使用32位绝对地址引用，说明此处可以直接填上符号的绝对地址，比如<code class="language-plaintext highlighter-rouge">jmp bar</code>。</p>
+
+<p>链接器在所有的符号查找完成的同时记录下其真正的地址。链接器重定位算法大概如下：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>foreach section s {
+  foreach relocation entry r {
+    refptr = s + r.offset;
+    if (r.type == XXXX_PC32) {
+      refaddr = ADDR(s) + r.offset;
+      *refptr = ADDR(r.symbol) + *refptr - refaddr;
+    }
+    if (r.type == XXXX_32) {
+      *refptr = ADDR(r.symbol) + *refptr;
+    }
+  }
+}
+</code></pre></div></div>
+
+<p>其中的<code class="language-plaintext highlighter-rouge">ADDR()</code>表示了指定符号的真正地址。对于相对地址，首先用节的真实地址（这就是为甚么符号表中竟然含有节名）和符号在节中的偏移计算出需要回填的位置在内存中的真实地址。然后通过所引用符号的内存地址计算出其偏移。可能不能理解的是为何算法中加上了<code class="language-plaintext highlighter-rouge">*refptr</code>，我们可以看看重定位表项:<code class="language-plaintext highlighter-rouge">a-0x0000000000000004</code>，后面的值实际上就是<code class="language-plaintext highlighter-rouge">*refptr</code>的值。这样做可以在不同指令大小和编码方式不同的机器上，使用相同的链接器，即链接器可以透明的重定位引用，而不需要知道具体机器相关的细节。对于绝对地址，已经不需要再过解释。</p>
+
+<h2 id="静态链接库">静态链接库</h2>
+
+<p>有时会用到一些第三方提供的库文件，但是只用到其中一两个函数，而整个文件非常大，感觉非常不合算。比如标准库函数，如果我们只需要一个<code class="language-plaintext highlighter-rouge">printf</code>却把整个标准库包含进去，得不偿失。此时静态库的概念被提出来，将所有相关的目标模块打包成为一个单独的文件，然后链接器链接的时候，只拷贝被程序引用到的目标模块或函数。</p>
+
+<h2 id="共享库与位置无关代码">共享库与位置无关代码</h2>
+
+<p>比如使用标准库，每个程序都拷贝一份标准库代码，如果 PC 中运行着非常多的程序时，那么标准库拷贝也会被复制多份，因此提出了共享库的概念。使用共享库，将原有的拷贝代码到程序中的方式改为 PC 中只运行一份代码库，所有程序中均调用该共享库的实例。共享库是一个目标模块，在运行时随机加载到储存器的任意地址，并和一个在储存器中的程序链接起来。这个过程成为动态链接，是由一个叫动态链接器的程序来执行的。共享库在 Unix 系统中通常使用后缀 so，在 Windows 系统中称为 DLL。</p>
+
+<p>动态库是随机加载到存储器中，而用户程序怎么知道何时何地呢？此时使用叫做<strong>位置无关的代码</strong>(Position-Independent Code, PIC)来解决。举例来说明为何位置无关代码能解决这个问题，首先假设有 <code class="language-plaintext highlighter-rouge">find_func_address</code> 函数用于在共享库中查找目标函数地址：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>void *find_func_address(const char *name);
+</code></pre></div></div>
+
+<p>然后在具体的程序中使用共享库并使用内部函数：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>/* 假设共享库中有函数 bar，其签名如下 */
+typedef void (*Bar)();
+
+/* load library */
+Bar bar = (Bar)find_func_address("bar");  
+
+bar(); /* call */
+
+/* release library */
+</code></pre></div></div>
+
+<p>只需要 <code class="language-plaintext highlighter-rouge">find_func_address</code> 能找到函数在共享库中的地址，然后在需要的地方查找即可。不过程序员肯定受不了每次使用均调用一次 <code class="language-plaintext highlighter-rouge">find_func_address</code> ，并且程序中存在上千甚至更多次引用时，重复加载的效率也非常低。因此可以将代码改写一下：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>typedef void (*Bar)();
+void bar() {
+  static Bar bar_ = (Bar) find_func_address("bar");
+  return bar_();
+}
+
+...
+
+bar(); /* call */
+</code></pre></div></div>
+
+<p>这里的代码解决了上面的两个问题：1、程序中引用共享库中的 <code class="language-plaintext highlighter-rouge">bar</code> 函数只需要使用 <code class="language-plaintext highlighter-rouge">void bar()</code> 函数即可；2、利用局部静态变量的初始化特性保证只初始化一次。</p>
+
+<blockquote>
+  <p>注意，上述代码并不是线程安全的，参考：<a href="http://blog.csdn.net/wingfiring/article/details/498242">多线程中局部静态变量初始化的陷阱</a></p>
+</blockquote>
+
+<p>当然，这部分工作已经由编译器完成，我们不需要操心。在编译器实现中，使用了 GOT (global offset table) 和 PLT (procedure linkage table) 完成，而这个过程称为延迟绑定(lazy binding)。所谓延迟绑定，就是将过程地址的绑定推迟到第一次调用该过程（函数）时。每个函数均有对应的 GOT 表项和 PLT 表项，如果将之和上面的代码对应，那么 GOT 表项相当于 <code class="language-plaintext highlighter-rouge">void bar()</code>，而 PLT 表项相当于 <code class="language-plaintext highlighter-rouge">static Bar bar_ = (Bar) find_func_address("bar");</code>。在使用延迟绑定技术时，用户调用了共享库函数，此时 IP 跳转到该函数的 GOT 表项所在位置；对于首次调用，GOT 表项填着 PLT 表项地址，所以 IP 继续跳转到 PLT 表项所在位置，而 PLT 负责完成查找函数地址，并将地址保存到 GOT 表项，然后跳转到 GOT 表项从新执行；对于非首次访问，直接跳转到 GOT 所在地址，完成调用过程。</p>
+
+<h2 id="references">references</h2>
+
+<p>[1] 深入理解计算机系统
+[2] <a href="/2017/05/03/%E5%B8%B8%E7%94%A8Linux%E5%B7%A5%E5%85%B7%E6%95%B4%E7%90%86/">Objdump 使用</a></p>
+
+  </div><a class="u-url" href="/2017/05/17/%E9%93%BE%E6%8E%A5.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">W41ter&#39;s Bistro</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">W41ter&#39;s Bistro</li><li><a class="u-email" href="mailto:w41ter.l@gmail.com">w41ter.l@gmail.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/w41ter"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">w41ter</span></a></li><li><a href="https://www.twitter.com/WalterM56697798"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">WalterM56697798</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Focus on distributed storage system, compiler.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>

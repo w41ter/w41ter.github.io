@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Mysql 事务隔离级别的使用 | W41ter’s Bistro</title>
+<meta name="generator" content="Jekyll v4.2.2" />
+<meta property="og:title" content="Mysql 事务隔离级别的使用" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="最近在项目中遇到一个问题，在 Mysql 的 Repeatable Read 隔离级别下，出现了数据丢失更新。一开始怀疑的是事务失效，被排查后否定。最后定位到 Mysql 事务的使用问题上。我们的 Sql 场景类似于： SELECT number FROM A WHERE ID = 1; UPDATE A SET NUMBER = number + 1 WHERE ID = 1; 事务回顾 事务有四种特性（ACID）： 原子性 隔离性 一致性 持久性 在执行事务时可能出现以下问题： 丢失更新： 第一类丢失更新：事务失败回滚时将其他事务已经提交的数据覆盖 第二类丢失更新：事务提交时，覆盖了其他事务的提交（类似 += ，是不可重复读的特例） 脏读：事务读取了其他事务还未提交的内容 不可重复读：一个事务中多次读取同一个内容，结果不一致 幻读：一个事务中两次查询，但第二次查询比第一次查询多了或少了几行或几列数据 为了解决上述问题，数据库系统提供了四种事务隔离级别供用户选择： Read Uncommitted 读未提交：不允许第一类更新丢失。允许脏读，不隔离事务。 Read Committed 读已提交：不允许脏读，允许不可重复读。 Repeatable Read 可重复读：不允许不可重复读。但可能出现幻读。 Serializable 串行化：所有的增删改查串行执行。 在传统的事务隔离级别的实现中，可重复读已经能够避免了两类丢失更新，对于绝大多数的事务，只需要将 隔离级别设置为可重复读。 Snapshot isolation &amp; MVCC 需要明确的是，以上的ACID和隔离级别定义是在SQL规范层面的定义，不同数据库的实现方式和使用方式并不相同。上面的隔离级别标准是SQL92 基于读写锁的实现方式制定的规范。 为了克服并发问题，各个数据库厂商都引入了 MVCC （多版本并发控制）来提高并发度。所以实际上的事务实现与规范定义的出现了细微的差别，而这细微的差别，就是本文出现的原因。（下文主要以 Mysql innoDB 存储引擎的 MVCC 实现为主，InnoDB 中的 MVCC 为表添加了隐藏的列，打上版本号，来提供多版本功能）。 所以在 MVCC 中，SELECT 语句执行时，会执行快照读取（称为快照读，也称为一致性读）。如果数据被锁，直接读取 undo log 来读取其被锁前的副本。在 Read Commit 隔离级别中，快照读总是读取对应行的最新版本；如果该行被锁住，则会读取最近一次的快照。在 Repeatable Read 隔离级别中，快照读总是读取事务开始时的数据版本。 这种方式极大的提升了并发读取的效率，本质也非常类似乐观锁。所以这种方式实现的隔离级别与规范定义存在一定差异，在 Repeatable Read 中，这种差异导致了 innoDB 第二类更新丢失的出现。因此，使用 MVCC 实现的隔离级别也被称为快照隔离级别。 SI 隔离与规范的 RR 隔离级别的区别在于读取 SI 的 SELECT 语句为快照读，而传统的 SELECT 语句则为当前读（加读锁:locking read, LR）。 在 InnoDB 中，update, delete 执行的是加锁读，想要将 SELECT 语句也设置为加锁读，需要在语句后加上 FOR UPDATE, LOCK IN SHARE MODE。具体的加锁方式取决于用户使用的是那种查询计划： unique index with a unique search condition a range-type search condition 对于第一种方式，InnoDB 只对其所在的索引进行加锁，不影响其他内容。对于第二种方式，InnoDB 通过使用间隙锁（gap locks)或者 next-key locks 来实现。因为这种加锁落实到区间上，所以也有可能锁住不必要的内容。因此 InnoDB 也号称在 RR 级别上实现了 Serializable 隔离级别。 next-key locks 能排除大多数的幻读现象，只会存在 write skew style 的幻读。 回到题目最开始的问题上，因为这种不规范的事务实现，导致了在高并发情况下会存在第二类丢失更新问题。只需要在 SELECT 后面加上 FOR UPDATE 就能避免出现的问题。 References 事务并发的问题以及其解决方案 事务隔离级别与 Mysql 中事务的使用 Innodb中的事务隔离级别和锁的关系 Consistent Nonlocking Reads innodb-transaction-isolation-levels" />
+<meta property="og:description" content="最近在项目中遇到一个问题，在 Mysql 的 Repeatable Read 隔离级别下，出现了数据丢失更新。一开始怀疑的是事务失效，被排查后否定。最后定位到 Mysql 事务的使用问题上。我们的 Sql 场景类似于： SELECT number FROM A WHERE ID = 1; UPDATE A SET NUMBER = number + 1 WHERE ID = 1; 事务回顾 事务有四种特性（ACID）： 原子性 隔离性 一致性 持久性 在执行事务时可能出现以下问题： 丢失更新： 第一类丢失更新：事务失败回滚时将其他事务已经提交的数据覆盖 第二类丢失更新：事务提交时，覆盖了其他事务的提交（类似 += ，是不可重复读的特例） 脏读：事务读取了其他事务还未提交的内容 不可重复读：一个事务中多次读取同一个内容，结果不一致 幻读：一个事务中两次查询，但第二次查询比第一次查询多了或少了几行或几列数据 为了解决上述问题，数据库系统提供了四种事务隔离级别供用户选择： Read Uncommitted 读未提交：不允许第一类更新丢失。允许脏读，不隔离事务。 Read Committed 读已提交：不允许脏读，允许不可重复读。 Repeatable Read 可重复读：不允许不可重复读。但可能出现幻读。 Serializable 串行化：所有的增删改查串行执行。 在传统的事务隔离级别的实现中，可重复读已经能够避免了两类丢失更新，对于绝大多数的事务，只需要将 隔离级别设置为可重复读。 Snapshot isolation &amp; MVCC 需要明确的是，以上的ACID和隔离级别定义是在SQL规范层面的定义，不同数据库的实现方式和使用方式并不相同。上面的隔离级别标准是SQL92 基于读写锁的实现方式制定的规范。 为了克服并发问题，各个数据库厂商都引入了 MVCC （多版本并发控制）来提高并发度。所以实际上的事务实现与规范定义的出现了细微的差别，而这细微的差别，就是本文出现的原因。（下文主要以 Mysql innoDB 存储引擎的 MVCC 实现为主，InnoDB 中的 MVCC 为表添加了隐藏的列，打上版本号，来提供多版本功能）。 所以在 MVCC 中，SELECT 语句执行时，会执行快照读取（称为快照读，也称为一致性读）。如果数据被锁，直接读取 undo log 来读取其被锁前的副本。在 Read Commit 隔离级别中，快照读总是读取对应行的最新版本；如果该行被锁住，则会读取最近一次的快照。在 Repeatable Read 隔离级别中，快照读总是读取事务开始时的数据版本。 这种方式极大的提升了并发读取的效率，本质也非常类似乐观锁。所以这种方式实现的隔离级别与规范定义存在一定差异，在 Repeatable Read 中，这种差异导致了 innoDB 第二类更新丢失的出现。因此，使用 MVCC 实现的隔离级别也被称为快照隔离级别。 SI 隔离与规范的 RR 隔离级别的区别在于读取 SI 的 SELECT 语句为快照读，而传统的 SELECT 语句则为当前读（加读锁:locking read, LR）。 在 InnoDB 中，update, delete 执行的是加锁读，想要将 SELECT 语句也设置为加锁读，需要在语句后加上 FOR UPDATE, LOCK IN SHARE MODE。具体的加锁方式取决于用户使用的是那种查询计划： unique index with a unique search condition a range-type search condition 对于第一种方式，InnoDB 只对其所在的索引进行加锁，不影响其他内容。对于第二种方式，InnoDB 通过使用间隙锁（gap locks)或者 next-key locks 来实现。因为这种加锁落实到区间上，所以也有可能锁住不必要的内容。因此 InnoDB 也号称在 RR 级别上实现了 Serializable 隔离级别。 next-key locks 能排除大多数的幻读现象，只会存在 write skew style 的幻读。 回到题目最开始的问题上，因为这种不规范的事务实现，导致了在高并发情况下会存在第二类丢失更新问题。只需要在 SELECT 后面加上 FOR UPDATE 就能避免出现的问题。 References 事务并发的问题以及其解决方案 事务隔离级别与 Mysql 中事务的使用 Innodb中的事务隔离级别和锁的关系 Consistent Nonlocking Reads innodb-transaction-isolation-levels" />
+<link rel="canonical" href="/%E6%80%BB%E7%BB%93/2017/12/07/Mysql-%E4%BA%8B%E5%8A%A1%E9%9A%94%E7%A6%BB%E7%BA%A7%E5%88%AB%E7%9A%84%E4%BD%BF%E7%94%A8.html" />
+<meta property="og:url" content="/%E6%80%BB%E7%BB%93/2017/12/07/Mysql-%E4%BA%8B%E5%8A%A1%E9%9A%94%E7%A6%BB%E7%BA%A7%E5%88%AB%E7%9A%84%E4%BD%BF%E7%94%A8.html" />
+<meta property="og:site_name" content="W41ter’s Bistro" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2017-12-07T23:00:00+08:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Mysql 事务隔离级别的使用" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2017-12-07T23:00:00+08:00","datePublished":"2017-12-07T23:00:00+08:00","description":"最近在项目中遇到一个问题，在 Mysql 的 Repeatable Read 隔离级别下，出现了数据丢失更新。一开始怀疑的是事务失效，被排查后否定。最后定位到 Mysql 事务的使用问题上。我们的 Sql 场景类似于： SELECT number FROM A WHERE ID = 1; UPDATE A SET NUMBER = number + 1 WHERE ID = 1; 事务回顾 事务有四种特性（ACID）： 原子性 隔离性 一致性 持久性 在执行事务时可能出现以下问题： 丢失更新： 第一类丢失更新：事务失败回滚时将其他事务已经提交的数据覆盖 第二类丢失更新：事务提交时，覆盖了其他事务的提交（类似 += ，是不可重复读的特例） 脏读：事务读取了其他事务还未提交的内容 不可重复读：一个事务中多次读取同一个内容，结果不一致 幻读：一个事务中两次查询，但第二次查询比第一次查询多了或少了几行或几列数据 为了解决上述问题，数据库系统提供了四种事务隔离级别供用户选择： Read Uncommitted 读未提交：不允许第一类更新丢失。允许脏读，不隔离事务。 Read Committed 读已提交：不允许脏读，允许不可重复读。 Repeatable Read 可重复读：不允许不可重复读。但可能出现幻读。 Serializable 串行化：所有的增删改查串行执行。 在传统的事务隔离级别的实现中，可重复读已经能够避免了两类丢失更新，对于绝大多数的事务，只需要将 隔离级别设置为可重复读。 Snapshot isolation &amp; MVCC 需要明确的是，以上的ACID和隔离级别定义是在SQL规范层面的定义，不同数据库的实现方式和使用方式并不相同。上面的隔离级别标准是SQL92 基于读写锁的实现方式制定的规范。 为了克服并发问题，各个数据库厂商都引入了 MVCC （多版本并发控制）来提高并发度。所以实际上的事务实现与规范定义的出现了细微的差别，而这细微的差别，就是本文出现的原因。（下文主要以 Mysql innoDB 存储引擎的 MVCC 实现为主，InnoDB 中的 MVCC 为表添加了隐藏的列，打上版本号，来提供多版本功能）。 所以在 MVCC 中，SELECT 语句执行时，会执行快照读取（称为快照读，也称为一致性读）。如果数据被锁，直接读取 undo log 来读取其被锁前的副本。在 Read Commit 隔离级别中，快照读总是读取对应行的最新版本；如果该行被锁住，则会读取最近一次的快照。在 Repeatable Read 隔离级别中，快照读总是读取事务开始时的数据版本。 这种方式极大的提升了并发读取的效率，本质也非常类似乐观锁。所以这种方式实现的隔离级别与规范定义存在一定差异，在 Repeatable Read 中，这种差异导致了 innoDB 第二类更新丢失的出现。因此，使用 MVCC 实现的隔离级别也被称为快照隔离级别。 SI 隔离与规范的 RR 隔离级别的区别在于读取 SI 的 SELECT 语句为快照读，而传统的 SELECT 语句则为当前读（加读锁:locking read, LR）。 在 InnoDB 中，update, delete 执行的是加锁读，想要将 SELECT 语句也设置为加锁读，需要在语句后加上 FOR UPDATE, LOCK IN SHARE MODE。具体的加锁方式取决于用户使用的是那种查询计划： unique index with a unique search condition a range-type search condition 对于第一种方式，InnoDB 只对其所在的索引进行加锁，不影响其他内容。对于第二种方式，InnoDB 通过使用间隙锁（gap locks)或者 next-key locks 来实现。因为这种加锁落实到区间上，所以也有可能锁住不必要的内容。因此 InnoDB 也号称在 RR 级别上实现了 Serializable 隔离级别。 next-key locks 能排除大多数的幻读现象，只会存在 write skew style 的幻读。 回到题目最开始的问题上，因为这种不规范的事务实现，导致了在高并发情况下会存在第二类丢失更新问题。只需要在 SELECT 后面加上 FOR UPDATE 就能避免出现的问题。 References 事务并发的问题以及其解决方案 事务隔离级别与 Mysql 中事务的使用 Innodb中的事务隔离级别和锁的关系 Consistent Nonlocking Reads innodb-transaction-isolation-levels","headline":"Mysql 事务隔离级别的使用","mainEntityOfPage":{"@type":"WebPage","@id":"/%E6%80%BB%E7%BB%93/2017/12/07/Mysql-%E4%BA%8B%E5%8A%A1%E9%9A%94%E7%A6%BB%E7%BA%A7%E5%88%AB%E7%9A%84%E4%BD%BF%E7%94%A8.html"},"url":"/%E6%80%BB%E7%BB%93/2017/12/07/Mysql-%E4%BA%8B%E5%8A%A1%E9%9A%94%E7%A6%BB%E7%BA%A7%E5%88%AB%E7%9A%84%E4%BD%BF%E7%94%A8.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="/feed.xml" title="W41ter's Bistro" /><!-- for mathjax support -->
+  
+</head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">W41ter&#39;s Bistro</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">Mysql 事务隔离级别的使用</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2017-12-07T23:00:00+08:00" itemprop="datePublished">Dec 7, 2017
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p>最近在项目中遇到一个问题，在 Mysql 的 Repeatable Read 隔离级别下，出现了数据丢失更新。一开始怀疑的是事务失效，被排查后否定。最后定位到 Mysql 事务的使用问题上。我们的 Sql 场景类似于：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>SELECT number FROM A WHERE ID = 1;
+UPDATE A SET NUMBER = number + 1 WHERE ID = 1;
+</code></pre></div></div>
+
+<h2 id="事务回顾">事务回顾</h2>
+
+<p>事务有四种特性（ACID）：</p>
+
+<ul>
+  <li>原子性</li>
+  <li>隔离性</li>
+  <li>一致性</li>
+  <li>持久性</li>
+</ul>
+
+<p>在执行事务时可能出现以下问题：</p>
+
+<ul>
+  <li>丢失更新：
+    <ol>
+      <li>第一类丢失更新：事务失败回滚时将其他事务已经提交的数据覆盖</li>
+      <li>第二类丢失更新：事务提交时，覆盖了其他事务的提交（类似 += ，是不可重复读的特例）</li>
+    </ol>
+  </li>
+  <li>脏读：事务读取了其他事务还未提交的内容</li>
+  <li>不可重复读：一个事务中多次读取同一个内容，结果不一致</li>
+  <li>幻读：一个事务中两次查询，但第二次查询比第一次查询多了或少了几行或几列数据</li>
+</ul>
+
+<p>为了解决上述问题，数据库系统提供了四种事务隔离级别供用户选择：</p>
+
+<ul>
+  <li>Read Uncommitted 读未提交：不允许第一类更新丢失。允许脏读，不隔离事务。</li>
+  <li>Read Committed 读已提交：不允许脏读，允许不可重复读。</li>
+  <li>Repeatable Read 可重复读：不允许不可重复读。但可能出现幻读。</li>
+  <li>Serializable 串行化：所有的增删改查串行执行。</li>
+</ul>
+
+<p>在传统的事务隔离级别的实现中，可重复读已经能够避免了两类丢失更新，对于绝大多数的事务，只需要将
+隔离级别设置为可重复读。</p>
+
+<h2 id="snapshot-isolation--mvcc">Snapshot isolation &amp; MVCC</h2>
+
+<p>需要明确的是，以上的ACID和隔离级别定义是在SQL规范层面的定义，不同数据库的实现方式和使用方式并不相同。上面的隔离级别标准是SQL92 基于读写锁的实现方式制定的规范。</p>
+
+<p>为了克服并发问题，各个数据库厂商都引入了 MVCC （多版本并发控制）来提高并发度。所以实际上的事务实现与规范定义的出现了细微的差别，而这细微的差别，就是本文出现的原因。（下文主要以 Mysql innoDB 存储引擎的 MVCC 实现为主，InnoDB 中的 MVCC 为表添加了隐藏的列，打上版本号，来提供多版本功能）。</p>
+
+<p>所以在 MVCC 中，SELECT 语句执行时，会执行快照读取（称为快照读，也称为一致性读）。如果数据被锁，直接读取 undo log 来读取其被锁前的副本。在 Read Commit 隔离级别中，快照读总是读取对应行的最新版本；如果该行被锁住，则会读取最近一次的快照。在 Repeatable Read 隔离级别中，快照读总是读取事务开始时的数据版本。</p>
+
+<p>这种方式极大的提升了并发读取的效率，本质也非常类似乐观锁。所以这种方式实现的隔离级别与规范定义存在一定差异，在 Repeatable Read 中，这种差异导致了 innoDB 第二类更新丢失的出现。因此，使用 MVCC 实现的隔离级别也被称为快照隔离级别。</p>
+
+<p>SI 隔离与规范的 RR 隔离级别的区别在于读取 SI 的 SELECT 语句为快照读，而传统的 SELECT 语句则为当前读（加读锁:locking read, LR）。</p>
+
+<p>在 InnoDB 中，update, delete 执行的是加锁读，想要将 SELECT 语句也设置为加锁读，需要在语句后加上 FOR UPDATE, LOCK IN SHARE MODE。具体的加锁方式取决于用户使用的是那种查询计划：</p>
+
+<ul>
+  <li>unique index with a unique search condition</li>
+  <li>a range-type search condition</li>
+</ul>
+
+<p>对于第一种方式，InnoDB 只对其所在的索引进行加锁，不影响其他内容。对于第二种方式，InnoDB 通过使用间隙锁（gap locks)或者 next-key locks 来实现。因为这种加锁落实到区间上，所以也有可能锁住不必要的内容。因此 InnoDB 也号称在 RR 级别上实现了 Serializable 隔离级别。</p>
+
+<p>next-key locks 能排除大多数的幻读现象，只会存在 write skew style 的幻读。</p>
+
+<p>回到题目最开始的问题上，因为这种不规范的事务实现，导致了在高并发情况下会存在第二类丢失更新问题。只需要在 SELECT 后面加上 FOR UPDATE 就能避免出现的问题。</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li><a href="http://www.jianshu.com/p/71a79d838443">事务并发的问题以及其解决方案</a></li>
+  <li><a href="http://www.fanyilun.me/2015/12/29/%E4%BA%8B%E5%8A%A1%E7%9A%84%E9%9A%94%E7%A6%BB%E7%BA%A7%E5%88%AB%E4%BB%A5%E5%8F%8AMysql%E4%BA%8B%E5%8A%A1%E7%9A%84%E4%BD%BF%E7%94%A8/">事务隔离级别与 Mysql 中事务的使用</a></li>
+  <li><a href="https://tech.meituan.com/innodb-lock.html">Innodb中的事务隔离级别和锁的关系</a></li>
+  <li><a href="https://dev.mysql.com/doc/refman/5.6/en/innodb-consistent-read.html">Consistent Nonlocking Reads</a></li>
+  <li><a href="https://dev.mysql.com/doc/refman/5.6/en/innodb-transaction-isolation-levels.html">innodb-transaction-isolation-levels</a></li>
+</ul>
+
+  </div><a class="u-url" href="/%E6%80%BB%E7%BB%93/2017/12/07/Mysql-%E4%BA%8B%E5%8A%A1%E9%9A%94%E7%A6%BB%E7%BA%A7%E5%88%AB%E7%9A%84%E4%BD%BF%E7%94%A8.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">W41ter&#39;s Bistro</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">W41ter&#39;s Bistro</li><li><a class="u-email" href="mailto:w41ter.l@gmail.com">w41ter.l@gmail.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/w41ter"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">w41ter</span></a></li><li><a href="https://www.twitter.com/WalterM56697798"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">WalterM56697798</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Focus on distributed storage system, compiler.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>

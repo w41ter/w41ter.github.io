@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Android asynchronized programming summary | W41ter’s Bistro</title>
+<meta name="generator" content="Jekyll v4.2.2" />
+<meta property="og:title" content="Android asynchronized programming summary" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="开发过程中涉及到异步操作非常多，更确切的说不涉及的非常少。这里说一说我遇到的一些问题。" />
+<meta property="og:description" content="开发过程中涉及到异步操作非常多，更确切的说不涉及的非常少。这里说一说我遇到的一些问题。" />
+<link rel="canonical" href="/android/2016/10/17/Android-asynchronized-programming-summary.html" />
+<meta property="og:url" content="/android/2016/10/17/Android-asynchronized-programming-summary.html" />
+<meta property="og:site_name" content="W41ter’s Bistro" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2016-10-17T05:47:48+08:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Android asynchronized programming summary" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2016-10-17T05:47:48+08:00","datePublished":"2016-10-17T05:47:48+08:00","description":"开发过程中涉及到异步操作非常多，更确切的说不涉及的非常少。这里说一说我遇到的一些问题。","headline":"Android asynchronized programming summary","mainEntityOfPage":{"@type":"WebPage","@id":"/android/2016/10/17/Android-asynchronized-programming-summary.html"},"url":"/android/2016/10/17/Android-asynchronized-programming-summary.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="/feed.xml" title="W41ter's Bistro" /><!-- for mathjax support -->
+  
+</head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">W41ter&#39;s Bistro</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">Android asynchronized programming summary</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2016-10-17T05:47:48+08:00" itemprop="datePublished">Oct 17, 2016
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p>开发过程中涉及到异步操作非常多，更确切的说不涉及的非常少。这里说一说我遇到的一些问题。</p>
+
+<!-- more -->
+
+<h1 id="messagequeuelooperhandler-与-thread">MessageQueue、Looper、Handler 与 Thread</h1>
+
+<p>Thread 是最基本的调度单位，也是异步操作的基础。Thread 内有一个 MessageQueue，用与处理外部发送的 Message。Looper 则被 Thread 用于处理 MessageQueue, 并把 Message 发送给对应的 Handler。Handler 正是用来处理各种 Message，同时也是 Message 的发送者。</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>// 简单结构描述代码
+class thread {
+    void run {
+        mLooper.loop(mQueue);
+    }
+}
+</code></pre></div></div>
+
+<p>在 Thread 内部，由 Looper 处理消息队列，而 Looper 中不断取出消息并发送。</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>class Looper {
+    void loop(MessageQueue queue) {
+        while (true) {
+            Message message = queue.pop();
+            if (message == null)
+                return;
+            message.handler.detachMessage();
+        }
+    }
+}
+</code></pre></div></div>
+
+<p>Handler 同时是消息真正处理者，也是消息发送者。除了给当前 Thread 发送消息外，也能给其他 Thread 发送，这就奠定了多线程协作的基础。比如， Android 为我们提供了几种在 UI 线程中运行 Runable 对象的方法：</p>
+
+<ol>
+  <li>Activity.runOnUiThread(Runnable)</li>
+  <li>View.post(Runnable)</li>
+  <li>View.postDelayed(Runnable, long)</li>
+  <li>Handler</li>
+</ol>
+
+<h1 id="blocking-request--asynctask">Blocking Request &amp; AsyncTask</h1>
+
+<p>Android 无时无刻不进行了大量异步操作，当我们打开一个 App 时，后台正在请求网络数据，数据库操作和图片处理等。如果这些费时的工作全部像工厂里流水线一样执行，那么阻塞在某一个异步操作上都会导致其余部分无法进展任何工作即用户眼中的程序无响应。且等到上一个步骤完成后才能进行下一步操作，这一定不是一个好的用户体验。</p>
+
+<p>现在假设某个 App 需要请求网络图片资源，那么应该这么写：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>new Thread(new Runable() {
+    final Bitmap bitmap = getBitmapFromNet(url);
+    runOnUiThread(new Runable() {
+        renderImageView(bitmap);
+    });
+}).run();
+</code></pre></div></div>
+
+<p>这样写能够正确的工作，在下载期间，用户还可以与程序进行沟通。</p>
+
+<p>不过，这一定不是最佳实践，实际生产环境中建议不要这么写（应该使用我们后面将会介绍的 AsyncTask 替代），下面会详细说明为什么。首先，Thread 的准备工作其实是非常耗时的。这里只展示了加载一涨图片，而实际应用中，可能由几十甚至上百张图片同时加载，而频繁的 new Thread 不仅会耗尽系统内存和计算资源，而且会增加上下文切换时间占用比。更好的方法是使用线程池。其次，异步嵌套逻辑不宜过长，更好的实践是将它封装起来。简单的例子就是”Callback Hell”。</p>
+
+<p>因为上面的问题，Android 为我们提供了 AsyncTask 专门处理这种逻辑。所以在实际 Android 开发中，上面的代码应该写成下面的形式：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>new AsyncTask() {
+    protected Bitmap doInBackground(String... urls) {
+        return getBitmapFromNet();
+    }
+
+    protected void onPostExecute(Bitmap bitmap) {
+        renderImageView(bitmap);
+    }
+}
+</code></pre></div></div>
+
+<p>当然，这里的代码只是演示作用，关于 AsyncTask 详细使用说明请看 SDK。</p>
+
+<h1 id="rxjava-和-异步流水线操作">RxJava 和 异步流水线操作</h1>
+
+<blockquote>
+  <p>RxJava 在 GitHub 主页上的自我介绍是 “a library for composing asynchronous and event-based programs using observable sequences for the Java VM”（一个在 Java VM 上使用可观测的序列来组成异步的、基于事件的程序的库）。RxJava 的本质可以压缩为异步这一个词。说到根上，它就是一个实现异步操作的库，而别的定语都是基于这之上的。</p>
+</blockquote>
+
+<p>RxJava 的魅力在于能够在完成复杂的逻辑工作，并极大地保持代码整洁度。关于 RxJava 的学习请看<a href="https://github.com/lzyzsd/Awesome-RxJava">这里</a>。</p>
+
+<p>异步流水线操作 - 其实我也不知道该怎么说明这种情况，所以就给它取了这么个名字。这个名词主要用来描述一些逻辑上是流水线执行，但是实现上涉及到异步操作比如文件操作、数据库操作还有就是网络请求。</p>
+
+<p>假设你 Boss 让你每天登录网页写当天总结，几天后你再也无法忍受每天干些重复性的工作，所以你想写个程序来帮你做：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>// 你希望敲下面几个键就能完成工作
+fuck_work summary.txt
+</code></pre></div></div>
+
+<p>现在你要来实现这个程序。假设写总结的流程如下：登录 -&gt; 编辑 -&gt; 保存 
+所以你写成了下面的代码:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>new AsyncTask() {
+    Object doInBackground() {
+        // Login
+    }
+
+    void onPostExecute() {
+        new AsyncTask() {
+            Object doInBackground() {
+                // edit
+            }
+
+            void onPostExecute() {
+                new AsyncTask() {
+                    Object doInBackground() {
+                        // save
+                    }
+                }.run();
+            }
+        }.run();
+    }
+}.run();
+</code></pre></div></div>
+
+<p>上面的代码惨不忍睹，为了实现这种流水线操作你不得不忍受这种 “Callback Hell”。这里 RxJava 就可以大展身手了，你可以把代码写成下面的样子：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Observable.create()
+    .flatMap(Task::login)
+    .flatMap(Task::edit)
+    .flatMap(Task::save)
+    .subscribe();
+</code></pre></div></div>
+
+<p>上述代码只是简单演示，不完整。可以看到 RxJava 可以非常简单明了的表达这种逻辑，这也是我非常喜欢它的原因。</p>
+
+<h1 id="be-cautious">Be cautious</h1>
+
+<p>异步操作不像同步操作，它并不按照人逻辑思维来进行，所以在使用的时候应该多注意避免任何可能出现的逻辑顺序假设。</p>
+
+<p>比如你正在写一个网络图片浏览页面，你准备使用 ListView 来做，所以你把代码写成了下面的样子：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>View getView(int pos, View c, ViewGroup parent) {
+    // ...
+    imageView = ...
+    new AsyncTask() {
+        Bitmap doInBackground() {
+            return getBitmapFromNet()
+        }
+
+        onPostExecute(bitmap Bitmap) {
+            imageView.setBitmap(bitmap);
+        }
+    }.run();
+    // ...
+    return c;
+}
+</code></pre></div></div>
+
+<p>实际上上面包含了一种假想的逻辑顺序，即当图片加载完成时，ImageView 没有被挪作他用。然而用户在实际使用中，可能出现任何未知行为，其中某些行为比如稍稍滑动了一下界面，就可能导致图片显示到错误的位置上。</p>
+
+<p>Last but not least, 实际生产中，如果有可用的三方库，还是不要自己造轮子吧。</p>
+
+  </div><a class="u-url" href="/android/2016/10/17/Android-asynchronized-programming-summary.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">W41ter&#39;s Bistro</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">W41ter&#39;s Bistro</li><li><a class="u-email" href="mailto:w41ter.l@gmail.com">w41ter.l@gmail.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/w41ter"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">w41ter</span></a></li><li><a href="https://www.twitter.com/WalterM56697798"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">WalterM56697798</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Focus on distributed storage system, compiler.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>
