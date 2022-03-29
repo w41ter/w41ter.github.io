@@ -1,4 +1,58 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.2.2">Jekyll</generator><link href="/feed.xml" rel="self" type="application/atom+xml" /><link href="/" rel="alternate" type="text/html" /><updated>2022-03-29T16:42:57+08:00</updated><id>/feed.xml</id><title type="html">W41ter’s Bistro</title><subtitle>Focus on distributed storage system, compiler.</subtitle><entry><title type="html">探究 Linux 下 TCP 的 RST Packet</title><link href="/network/2019/01/26/Linux-TCP-Rst.html" rel="alternate" type="text/html" title="探究 Linux 下 TCP 的 RST Packet" /><published>2019-01-26T15:13:00+08:00</published><updated>2019-01-26T15:13:00+08:00</updated><id>/network/2019/01/26/Linux-TCP-Rst</id><content type="html" xml:base="/network/2019/01/26/Linux-TCP-Rst.html"><![CDATA[<blockquote>
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.2.2">Jekyll</generator><link href="/feed.xml" rel="self" type="application/atom+xml" /><link href="/" rel="alternate" type="text/html" /><updated>2022-03-29T17:57:30+08:00</updated><id>/feed.xml</id><title type="html">W41ter’s Bistro</title><subtitle>Focus on distributed storage system, compiler.</subtitle><entry><title type="html">HotRing - A Hotspot Aware In-Memory Key-Value Store</title><link href="/papers/2022/03/29/HotRing-A-Hotspot-Aware-In-Memory-Key-Value-Store.html" rel="alternate" type="text/html" title="HotRing - A Hotspot Aware In-Memory Key-Value Store" /><published>2022-03-29T00:00:00+08:00</published><updated>2022-03-29T00:00:00+08:00</updated><id>/papers/2022/03/29/HotRing-A-Hotspot-Aware-In-Memory-Key-Value-Store</id><content type="html" xml:base="/papers/2022/03/29/HotRing-A-Hotspot-Aware-In-Memory-Key-Value-Store.html"><![CDATA[<p>在 Alibaba 的生产环境中，KVS 的请求里有 50%-90% 只访问了 1% 的数据。如下图：</p>
+
+<p><img src="/uploads/images/2022/hotring-1.png" alt="Figure 1: Access ratio of different keys." /></p>
+
+<p>实现 KVS 有很多可用的索引结构，其中 HASH 用得最多。目前的 HASH 算法并没有优化热点访问，也就是说读取一条热点数据，所付出的代价和读取其他数据是一样的。如下图，传统 HASH INDEX 结构的热点数据可能分布在 collision chaining 的任意位置。</p>
+
+<p><img src="/uploads/images/2022/hotring-2.png" alt="Figure 2: The conventional hash index structure" /></p>
+
+<p>理想情况下，查找一条数据的内存访问次数应该和它的冷热层度负相关。</p>
+
+<p><img src="/uploads/images/2022/hotring-3.png" alt="Figure 3: Expected memory accesses for an index lookup" /></p>
+
+<p>想要达到理想的情况，需要解决两个问题：</p>
+<ol>
+  <li>检测并适应 hotspot shift</li>
+  <li>concurrent access</li>
+</ol>
+
+<h2 id="hotring">HotRing</h2>
+
+<p>论文的做法是：针对问题 1，将传统哈希表中的 collision chain 替换成 ordered-ring。如果热点发生迁移，那么直接将 bucket header 指向新的热点 item 即可。针对问题 2，采用 lock-free 设计。</p>
+
+<p><img src="/uploads/images/2022/hotring-4.png" alt="Figure 4: The index structure of HotRing" /></p>
+
+<p>ordered ring 的结构如上图所示，整个 ring 首尾相连，一旦发现热点迁移，只需要将 bucket 的 header 更新到新热点 item 即可。这样做的好处是热点迁移时无需重新给 ring 上数据排序。</p>
+
+<p>查找时从 header 开始，遍历整个 ring ；同时 Ring 上的数据会按照 <code class="language-plaintext highlighter-rouge">&lt;tag, key&gt;</code> 的顺序插入到合适的位置。这样做的目的是：</p>
+<ul>
+  <li>tag 主要用来避免对 key 的比较</li>
+  <li>顺序则是用于查询时判断 ring 是否结束，否则查找时可能会受到并发更新操作的影响，无法判断是否已经遍历完整个 ring。</li>
+</ul>
+
+<p><img src="/uploads/images/2022/hotring-5.png" alt="Figure 5: Lookup Termination" /></p>
+
+<p>此外，排序还有另一个好处，根据 termination 条件，平均查找次数约为传统 collision chain 实现方式的一半。</p>
+
+<h2 id="hotspot-shift-identification">Hotspot Shift Identification</h2>
+
+<p>由于 hash 的 strongly uniformed distribution，可以认为热点数据也分布在各个 bucket 中，热点迁移识别的工作主要在 bucket 内部。</p>
+
+<p>论文提出了两种识别方式：</p>
+<ol>
+  <li>random movement</li>
+  <li>statistical sampling</li>
+</ol>
+
+<p>第一种方式是每隔 R 个请求，如果第 R 个请求是 hot access，则不做任何改变；如果第 R 个请求是 cold access ，那么这个请求对应的 item 会成为新的 hot item。</p>
+
+<p>这种方式是一个简单的概率实现，其缺点也非常明显：参数 R 的大小显著影响热点识别效果；如果数据访问频率分布是均匀的，或者 collision ring 中有多个热点，那么 head pointer 可能会频繁在这些热点中跳变；</p>
+
+<p>另一种方式则是在 item 里记录下访问次数，根据次数选择出合适的 item 来作为新的 hot item。</p>
+
+<h2 id="concurrent">Concurrent</h2>
+
+<p>TODO</p>]]></content><author><name></name></author><category term="papers" /><category term="concurrent" /><summary type="html"><![CDATA[在 Alibaba 的生产环境中，KVS 的请求里有 50%-90% 只访问了 1% 的数据。如下图： 实现 KVS 有很多可用的索引结构，其中 HASH 用得最多。目前的 HASH 算法并没有优化热点访问，也就是说读取一条热点数据，所付出的代价和读取其他数据是一样的。如下图，传统 HASH INDEX 结构的热点数据可能分布在 collision chaining 的任意位置。 理想情况下，查找一条数据的内存访问次数应该和它的冷热层度负相关。 想要达到理想的情况，需要解决两个问题： 检测并适应 hotspot shift concurrent access HotRing 论文的做法是：针对问题 1，将传统哈希表中的 collision chain 替换成 ordered-ring。如果热点发生迁移，那么直接将 bucket header 指向新的热点 item 即可。针对问题 2，采用 lock-free 设计。 ordered ring 的结构如上图所示，整个 ring 首尾相连，一旦发现热点迁移，只需要将 bucket 的 header 更新到新热点 item 即可。这样做的好处是热点迁移时无需重新给 ring 上数据排序。 查找时从 header 开始，遍历整个 ring ；同时 Ring 上的数据会按照 &lt;tag, key&gt; 的顺序插入到合适的位置。这样做的目的是： tag 主要用来避免对 key 的比较 顺序则是用于查询时判断 ring 是否结束，否则查找时可能会受到并发更新操作的影响，无法判断是否已经遍历完整个 ring。 此外，排序还有另一个好处，根据 termination 条件，平均查找次数约为传统 collision chain 实现方式的一半。 Hotspot Shift Identification 由于 hash 的 strongly uniformed distribution，可以认为热点数据也分布在各个 bucket 中，热点迁移识别的工作主要在 bucket 内部。 论文提出了两种识别方式： random movement statistical sampling 第一种方式是每隔 R 个请求，如果第 R 个请求是 hot access，则不做任何改变；如果第 R 个请求是 cold access ，那么这个请求对应的 item 会成为新的 hot item。 这种方式是一个简单的概率实现，其缺点也非常明显：参数 R 的大小显著影响热点识别效果；如果数据访问频率分布是均匀的，或者 collision ring 中有多个热点，那么 head pointer 可能会频繁在这些热点中跳变； 另一种方式则是在 item 里记录下访问次数，根据次数选择出合适的 item 来作为新的 hot item。 Concurrent TODO]]></summary></entry><entry><title type="html">探究 Linux 下 TCP 的 RST Packet</title><link href="/network/2019/01/26/Linux-TCP-Rst.html" rel="alternate" type="text/html" title="探究 Linux 下 TCP 的 RST Packet" /><published>2019-01-26T15:13:00+08:00</published><updated>2019-01-26T15:13:00+08:00</updated><id>/network/2019/01/26/Linux-TCP-Rst</id><content type="html" xml:base="/network/2019/01/26/Linux-TCP-Rst.html"><![CDATA[<blockquote>
   <p>注：<strong>本文结论来自网络，真实性未考究，请批判性阅读，如果谬误，请斧正。</strong>本文所讨论内容，均假设工作环境为 Linux 服务器。</p>
 </blockquote>
 
@@ -1593,444 +1647,4 @@ table_open_cache 2000
 
 <h2 id="代理模式">代理模式</h2>
 
-<p>说到代理，常见有 VPN、HTTP Proxy ，代理模式用于控制对对象的访问。比如实现一个 RPC 功能，在客户端定义一个接口，由代理服务生成接口对应的实例。客户在调用接口时，代理服务监测并将请求转发给服务器，等到服务端计算完成并返回时，代理服务把结果返回给客户端。从客户端的角度上，这个过程和调用一个耗时的函数没有区别。</p>]]></content><author><name></name></author><category term="总结" /><summary type="html"><![CDATA[面对对象原则 单一职责：不要存在多于一个导致类变更的原因；通俗的说，即一个类只负责一项职责； 里氏替换：所有引用基类的地方必须能透明地使用其子类的对象；通俗的来讲就是：子类可以扩展父类的功能，但不能改变父类原有的功能； 依赖倒置：高层模块不应该依赖低层模块，二者都应该依赖其抽象；抽象不应该依赖细节；细节应该依赖抽象； 接口隔离：客户端不应该依赖它不需要的接口；一个类对另一个类的依赖应该建立在最小的接口上； 迪米特法则：一个对象应该对其他对象保持最少的了解； 开闭原则：一个软件实体如类、模块和函数应该对扩展开放，对修改关闭； 23种设计模式 References 设计模式大总汇 单例模式：确保整个程序中只有一个实例，并自行实例化以向整个体统提供实例 工厂方法模式：将实例的创建延迟到子类 抽象工厂模式：为创建一组相互依赖的对象提供一个接口，并将创建过程延迟到子类 建造者模式：将一个复杂对象的创建和表示分离开来，使得同一个创建过程可以得到不同的表示 原型模式： 迭代器模式：在不暴露内部实现的情况下，使客户可以遍历容器内部对象 责任联模式：将对象连成一条链，并沿着这条链传递该请求，直到有对象处理该请求位置，解决了发送方和接收方的耦合 桥梁模式：将抽象和实现解耦，使两者可以独立变化 适配器模式：将一个对象的接口转换成另一个对象期待的接口，从而使原本不匹配的对象能在一起工作 中介者模式：将一系列对象的交互封装起来，使其耦合松散，而且可以独立变化 观察者模式：定义一种1-N的关系，使得当一个对象更新时，所有依赖它的对象都能收到通知并响应 命令模式：将客户参数化，使得客户请求可以记录、排队，并能实现撤销，恢复等功能 亨元模式：使用共享对象可以有效的支持大量细粒度的对象 状态模式：当一个对象状态改变时改变其行为，使得对象看起来像是改变了类 解释器模式：定义一组语言及其解释器 访问者模式：定义一组接口，从而是现在不改变数据结构自身的情况下添加职责 装饰器模式：动态的为一个对象添加一些额外的职责，比生成子类要简单 代理模式：提供一种代理以控制对对象的访问 策略模式：定义并封装一组可以互换的算法 模板方法模式：定义一个算法的骨架，将一些具体步骤延迟到子类。使得子类可以不改变算法结构即重定义算法特定步骤 组合模式： 门面模式： 备忘录模式： 单例模式 单例模式重点在两个方面： 系统只有一个实例； 自行实例化并向整个系统提供这个实例； 单例模式的实现上有两个重要的因素： 线程安全； 延迟加载； 延迟加载技术可以解耦依赖链与初始化顺序。如果单例在程序执行前就进行初始化，某一个单例的初始化过程中，又引用到了另一个单例，便出现了加载顺序的决议问题。而使用延迟加载技术将这种依赖过程与初始化顺序进行了自动决议。 void instance() { static Singleston * sing = NULL; if (sing == NULL) { sing = new Singleston; } return sing; } 线程安全方面则根据语言不同而有所差异，以 C++ 为例，C++11 标准规定了局部静态变量初始化的线程安全特性，所以写起来非常方便： void instance() { static Class ins; return ins; } 按照这种写法不仅线程安全，同时还解决了依赖问题。如果不想用这种办法，也可以使用标准库提供的：call_once() 函数。 Java 在方面就要麻烦得多，我个人比较偏爱的是 DCL 这种方式： public class Singleston { private static volatile Singleston instance; public static getInstance() { if (instance == null) synchronized(Singleston.class) { if (instance == null) instance = new Singleston; } return instance; } } Java 版本的 DCL 需要注意使用 volatile 修饰，从 1.5 版本开始这种写法已经不存在问题了。 建造者模式 建造者模式用于将一个复杂对象的建造过程和表示过程分开。这种比较适合一旦创建好后不会怎么更改的对象。在 Android 中的 AlertDialg 就使用这种方式： protected void dialog() { new Builder(this) .setMessage("are you sure?") .setTitle("tips") .setPositiveButtion("yes", new OnClickListener() { @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); Main.this.finish(); } }) .setNegativeButton("No", new OnClickListener() { @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); } }) .create() .show(); } 无独有偶，在 Java 著名网络库 Netty 中，创建 Channel 也是使用建造者模式： Bootstrap b = new Bootstrap(); b.group(group) .channel(NioSocketChannel.class) .option(ChannelOption.TCP_NODELAY, true) .handler(new ChannelInitializer&lt;SocketChannel&gt;() { @Override public void initChannel(SocketChannel ch) throws Exception { // ... } }); ChannelFuture f = b.connect(host, port).sync(); 迭代器模式 容器需要提供用户一个访问机制，而又不暴露内部细节，这种方法就叫迭代器模式。C++ 和 Java 中均有迭代器模式的影子： // C++ vector&lt;int&gt; arrays; // ... auto it = arrays.begin(); // Java ArrayList&lt;Integer&gt; arrays = new ArrayList&lt;Integer&gt;(); // ... Iterator&lt;Integer&gt; it = arrays.iterator(); while (it.hasNext()) { ... } 责任链模式 如其名，整个处理过程就像链一样，一级一级传递下去，从而接触了发送方和接收方的耦合。责任链模式常见于各种事件处理机制，比如 Android 的事件处理机制、Win32 中的消息机制。责任链模式的显著特点是如果一个事件（消息）在当前处理逻辑中不处理，就将其传递给下一级处理逻辑。 void slove(Message msg, Handler handle) { switch (msg) { case xxx: ...; break; default: handle.slove(msg); } } 桥梁模式 将抽象和实现解耦的就是桥梁模式。通常在设计时，不要传播设计，而桥梁模式正好可以处理。比如一开始只有一台实验仪器，所以用单例模式来表示，某一天实验室又购进了一台新的仪器，那么之前所有引用单例的代码都要修改。而设计时如果将获取设备接口和单例分开，就没有这么多麻烦了： public class Device { private class SingleDevice { // singleston } public static Device getByRandom() { return SingleDevice.getInstance(); } } 桥梁模式的另一个常见用途在 C++ 中，常用于实现减少 C++ 头文件编译负担： // a.h 中 class A { class AImpl; public: void do(); private: std::shared_ptr&lt;AImpl&gt; impl; }; // A.cpp 中 class A::AImpl { public: void do() { ... } }; void A::do() { impl-&gt;do(); } 适配器模式 适配器模式可以使两个不兼容的接口一起工作，有 Andoird 开发经验的一定对 Adaptor 非常熟悉，这里不细讲。 中介者模式 中介者模式把两个独立对象的一系列操作封装起来，把这两个对象之间的联系解耦，这样两个对象不依赖对方，可以独立变化。 观察者模式 解耦操作最好的还属观察者模式。观察者模式重新定义了对象之间的依赖关系，将原有的监听操作转变为通知操作。 关于使用观察者模式，比较典型的例子是控件事件的监听–在指定控件上绑定一个回调函数，事件发生的时候，控件负责调用该函数通知用户。在 Java 中大名鼎鼎的响应式库 RxJava 就是以观察者模式为基础，还解决了长期以来困扰的 Callback hell 问题。Vue.js 中实现数据绑定也是以观察者模式为基础的。 命令模式 命令模式最重要的一点就是将客户端的请求参数化，从而实现请求排队、记录回滚等。在游戏中，命令模式可以将用户对角色控制的输入进行参数化，实现死亡回放等。在服务器开发中，将客户端的请求参数化，并放入请求队列，实现流量控制。 状态模式 说到命令模式不得不提状态模式，以任务操纵为例，人在地面上可以进行跳跃，而在跳跃的过程中则不可以。那么对于相同的命令，在不同的状态下有不同的响应，这就是状态模式。状态模式可以在改变对象状态的同时改变对象的行为。 享元模式 游戏中地图大量元素存在重复的情况，大量创建相同的对象非常浪费内存，此时可以创建几个单例，让地图引用具体的单例，这就是享元模式。 解释器模式 现在很多游戏的基本框架由 C/C++ 来写，具体业务逻辑则交给 lua 之类的脚本处理。如果是自己设计的脚本，那么就需要写出对应的解释器： class Expr { public: Value execute(); private: char c; Expr * left, * right; }; // 解释器模式 访问者模式 一开始我们只提供了游戏脚本解释器的解释功能，某次调试的时候希望将具体的抽象语法书打印出来，所以在每个元素类中添加了打印支持： class Expr { public: Value execute(); Value dump() { left-&gt;dump(); cout &lt;&lt; c ; right-&gt;dump(); } private: char c; Expr * left, * right; }; 每当出现一个新的需求时，都要对原有的数据结构进行修改。而访问者模式为我们提供了遍历，可以在不修改数据结构的同时增加数据结构上的操作。 class Visitor { public: virtual void visit(Expr *ptr); virtual void visit(Value *ptr); }; class Visitable { public: virtual void accept(Visitor *visitor); }; //... class Expr : public Visitable { public: void accept(Visitor *visitor) { visitor-&gt;visit(this); } }; class Dump : public Visitor { public: void visit(Value * v); void visit(Expr * e) { e-&gt;left-&gt;accept(this); cout &lt;&lt; e-&gt;c; e-&gt;right-&gt;accept(this); } }; 装饰器模式 装饰器模式可以在不继承对象的同时给对象增加操作。Python 中有一个装饰器的概念，比如我们要给原来的函数添加上调用记录到日志的功能： def log(func): def wrapper(*args, **kw): print('call %s():' % func.__name__) return func(*args, **kw) return wrapper @log def do(): pass 与之类似的还有 Java 提供的注解功能，这里不展开。 代理模式 说到代理，常见有 VPN、HTTP Proxy ，代理模式用于控制对对象的访问。比如实现一个 RPC 功能，在客户端定义一个接口，由代理服务生成接口对应的实例。客户在调用接口时，代理服务监测并将请求转发给服务器，等到服务端计算完成并返回时，代理服务把结果返回给客户端。从客户端的角度上，这个过程和调用一个耗时的函数没有区别。]]></summary></entry><entry><title type="html">CSKS-(二)、数据库系统</title><link href="/%E6%80%BB%E7%BB%93/2017/08/26/CSKS-%E4%BA%8C-%E6%95%B0%E6%8D%AE%E5%BA%93%E7%B3%BB%E7%BB%9F.html" rel="alternate" type="text/html" title="CSKS-(二)、数据库系统" /><published>2017-08-26T17:58:09+08:00</published><updated>2017-08-26T17:58:09+08:00</updated><id>/%E6%80%BB%E7%BB%93/2017/08/26/CSKS-%E4%BA%8C-%E3%80%81%E6%95%B0%E6%8D%AE%E5%BA%93%E7%B3%BB%E7%BB%9F</id><content type="html" xml:base="/%E6%80%BB%E7%BB%93/2017/08/26/CSKS-%E4%BA%8C-%E6%95%B0%E6%8D%AE%E5%BA%93%E7%B3%BB%E7%BB%9F.html"><![CDATA[<h1 id="数据库基础">数据库基础</h1>
-
-<p>现在主流的数据库系统主要是关系数据库。关系数据库使用集合代数等概念和方法来处理数据库中的数据，同时数据组织成描述性的表格。关系数据库通常由三级模式两层映像组成。在具体设计数据库的时候，通常使用范式来对数据库进行约束设计。</p>
-
-<p>近些年 NoSQL（非关系型数据库）应用也比较多，主要以 Key-Value 类数据库为主，比如 Redis。</p>
-
-<h2 id="理论基础">理论基础</h2>
-
-<p><em>References</em></p>
-
-<ul>
-  <li><a href="http://baike.baidu.com/link?url=IOAIJlfSxYMpboZE_on0EAaeqZbdplcD4PvK6rzlwEw_v0ulRPQXEV-3Yfvhd5aNr-0jfW8d6XDidC3O-42tElXbQ3ixxfDyfGwASgxMhxRupcFaRcNTqlhkBA0RnEMS">关系代数</a></li>
-  <li><a href="/2017/08/26/CSKS-%E4%B8%80-%E3%80%81%E6%95%B0%E6%8D%AE%E7%BB%93%E6%9E%84%E5%92%8C%E7%AE%97%E6%B3%95/#B-树">数据库底层结构 - B 树</a></li>
-</ul>
-
-<h2 id="sql-语言">SQL 语言</h2>
-
-<p>SQL 语言共分为四大类：</p>
-<ul>
-  <li>数据查询语言 DQL</li>
-  <li>数据操纵语言 DML</li>
-  <li>数据定义语言 DDL</li>
-  <li>数据控制语言 DCL</li>
-</ul>
-
-<h3 id="数据查询语言dql">数据查询语言DQL</h3>
-
-<p>数据查询语言 DQL 基本结构是由 <code class="language-plaintext highlighter-rouge">SELECT</code> 子句，<code class="language-plaintext highlighter-rouge">FROM</code> 子句，<code class="language-plaintext highlighter-rouge">WHERE</code> 子句组成的查询块：</p>
-
-<div class="language-sql highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">SELECT</span> <span class="o">&lt;</span><span class="err">字段名表</span><span class="o">&gt;</span>
-<span class="k">FROM</span> <span class="o">&lt;</span><span class="err">表或视图名</span><span class="o">&gt;</span>
-<span class="k">WHERE</span> <span class="o">&lt;</span><span class="err">查询条件</span><span class="o">&gt;</span>
-</code></pre></div></div>
-
-<h3 id="数据操纵语言dml">数据操纵语言DML</h3>
-
-<p>主要有三种形式：</p>
-
-<ul>
-  <li>插入：<code class="language-plaintext highlighter-rouge">INSERT</code></li>
-  <li>更新：<code class="language-plaintext highlighter-rouge">UPDATE</code></li>
-  <li>删除：<code class="language-plaintext highlighter-rouge">DELETE</code></li>
-</ul>
-
-<h3 id="数据定义语言-ddl">数据定义语言 DDL</h3>
-
-<p>数据定义语言 DDL 用来创建数据库中的各种对象—–表、视图、索引、同义词、聚簇等如：</p>
-
-<div class="language-sql highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">CREATE</span> <span class="k">TABLE</span><span class="o">/</span><span class="k">VIEW</span><span class="o">/</span><span class="k">INDEX</span><span class="o">/</span><span class="n">SYN</span><span class="o">/</span><span class="k">CLUSTER</span>
-<span class="k">ALTER</span>
-<span class="k">DROP</span>
-</code></pre></div></div>
-
-<blockquote>
-  <p>DDL 操作是隐性提交的！不能 rollback。</p>
-</blockquote>
-
-<h3 id="数据控制语言-dcl">数据控制语言 DCL</h3>
-
-<p>数据控制语言 DCL 用来授予或回收访问数据库的某种特权，并控制
-数据库操纵事务发生的时间及效果，对数据库实行监视等。如：</p>
-
-<ul>
-  <li><code class="language-plaintext highlighter-rouge">GRANT</code>：授权</li>
-  <li><code class="language-plaintext highlighter-rouge">ROLLBACK [WORK] TO [SAVEPOINT]</code>：回退到某一点。</li>
-  <li><code class="language-plaintext highlighter-rouge">COMMIT [WORK]</code>：提交</li>
-</ul>
-
-<p>回滚—<code class="language-plaintext highlighter-rouge">ROLLBACK</code> 回滚命令使数据库状态回到上次最后提交的状态。其格式为:</p>
-
-<div class="language-sql highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">SQL</span><span class="o">&gt;</span> <span class="k">ROLLBACK</span><span class="p">;</span>
-</code></pre></div></div>
-
-<p><em>References</em></p>
-<ul>
-  <li><a href="http://blog.csdn.net/tomatofly/article/details/5949070">DQL、DDL、DML、DCL</a></li>
-  <li><a href="http://www.w3school.com.cn/sql/index.asp">SQL语言入门</a></li>
-  <li><a href="http://blog.csdn.net/ws0513/article/details/49980547">drop、truncate和delete的区别</a></li>
-  <li><a href="http://www.cppblog.com/init/articles/204159.html">数据库中视图的作用</a></li>
-</ul>
-
-<h2 id="数据库范式">数据库范式</h2>
-
-<p>数据库范式是指数据库中数据满足的某种约束，用来指导数据库设计。随意设计的数据库可能存在数据冗余、插入异常、更新异常、删除异常等。数据库范式用于减少或消除上述异常。</p>
-
-<p>数据库范式分为：1NF,2NF,3NF,BCNF,4NF,5NF。通常设计时只需要考虑到 BCNF。符合高一级的范式，必定符合低一级范式。</p>
-
-<h3 id="1nf">1NF</h3>
-
-<p><strong>1NF的定义为：符合1NF的关系中的每个属性都不可再分</strong>。实际上，1NF 是所有关系型数据库的最基本要求，你在关系型数据库管理系统（RDBMS），例如 SQL Server，Oracle，MySQL 中创建数据表的时候，如果数据表的设计不符合这个最基本的要求，那么操作一定是不能成功的。也就是说，只要在 RDBMS 中已经存在的数据表，一定是符合 1NF 的。</p>
-
-<h3 id="函数依赖">函数依赖</h3>
-
-<p><strong>函数依赖指出了一张表中属性之间的函数关系：将属性分为 X,Y 两组，对于任意的 X 满足 X 相同时 Y 一定相同，即 X 值确定的情况下，Y 的值也能确定，此时称为 X → Y</strong>。从“函数依赖”这个概念展开，还有两个概念：</p>
-
-<ul>
-  <li>
-    <p>完全函数依赖：在一张表中，若 X → Y，且对于 X 的任何一个真子集（假如属性组 X 包含超过一个属性的话），X’ → Y 不成立，那么我们称 Y 对于 X 完全函数依赖，记作 X F→ Y。</p>
-  </li>
-  <li>
-    <p>部分函数依赖假：如 Y 函数依赖于 X，但同时 Y 并不完全函数依赖于 X，那么我们就称 Y 部分函数依赖于 X，记作 X  P→ Y，</p>
-  </li>
-</ul>
-
-<h3 id="码">码</h3>
-
-<p><strong>设 K 为某表中的一个属性或属性组，若除 K 之外的所有属性都完全函数依赖于 K（这个“完全”不要漏了），那么我们称 K 为候选码，简称为码</strong>。在实际中我们通常可以理解为：假如当 K 确定的情况下，该表除 K 之外的所有属性的值也就随之确定，那么 K 就是码。一张表中可以有超过一个码。（实际应用中为了方便，通常选择其中的一个码作为主码）。</p>
-
-<p>在任意一个码中的属性称为主属性，与之对应的就是非主属性。</p>
-
-<h3 id="2nf">2NF</h3>
-
-<p><strong>2NF的定义为：非主属性不部分地依赖于码</strong>。第二范式要求数据具有唯一性。以学生、学校、学校地址(st,sc,addr)为例，其中学生、学校为主属性，学校地址只依赖于学校，不满足第二范式。如果新办了座学校，校内还没有学生上课，那么就无法插入数据（插入异常）；如果学校地址改变了，需要对每一条数据中的学校地址都进行更新，非常麻烦（更新异常）。</p>
-
-<h3 id="2nf-1">2NF</h3>
-
-<p><strong>3NF的定义为：非主属性不传递地依赖于码</strong>。第三范式要求任何非主属性不能由其他属性派生出来。</p>
-
-<h3 id="bcnf">BCNF</h3>
-
-<p><strong>BCNF的定义为：主属性既不部分地依赖于码，也不传递地依赖于码</strong>。BCNF 要求主属性之间满足唯一且不能由其他属性派生出来。</p>
-
-<p>关于范式的详解可以参考：<a href="https://zhuanlan.zhihu.com/p/20028672">数据库第一二三范式到底在说什么？</a>。</p>
-
-<h2 id="数据库完整性约束">数据库完整性约束</h2>
-
-<p>关系完整性是为保证数据库中数据的正确性和相容性，对关系模型提出的某种约束条件或规则。完整性通常包括域完整性，实体完整性、参照完整性和用户定义完整性，其中域完整性，实体完整性和参照完整性，是关系模型必须满足的完整性约束条件。</p>
-
-<p>域完整性约束：域完整性是保证数据库字段取值的合理性。属性值应是域中的值，这是关系模式规定了的。除此之外，一个属性能否为 NULL，这是由语义决定的，也是域完整性约束的主要内容。域完整性约束是最简单、最基本的约束。在当今的关系 DBMS 中，一般都有域完整性约束检查功能。包括检查（CHECK）、默认值（DEFAULT）、不为空（NOT NULL）等。</p>
-
-<h3 id="实体完整性">实体完整性</h3>
-
-<p><strong>实体完整性是指关系的主关键字不能重复也不能取“空值”。</strong>一个关系对应现实世界中一个实体集。现实世界中的实体是可以相互区分、识别的，也即它们应具有某种惟一性标识。在关系模式中，以主关键字作为惟一性标识，而主关键字中的属性(称为主属性)不能取空值，否则，表明关系模式中存在着不可标识的实体(因空值是“不确定”的)，这与现实世界的实际情况相矛盾，这样的实体就不是一个完整实体。按实体完整性规则要求，主属性不得取空值，如主关键字是多个属性的组合，则所有主属性均不得取空值。</p>
-
-<h3 id="参照完整性">参照完整性</h3>
-
-<p><strong>参照完整性是定义建立关系之间联系的主关键字与外部关键字引用的约束条件。</strong>关系数据库中通常都包含多个存在相互联系的关系，关系与关系之间的联系是通过公共属性来实现的。所谓公共属性，它是一个关系 R (称为被参照关系或目标关系)的主关键字，同时又是另一关系 K (称为参照关系)的外部关键字。如果参照关系 K 中外部关键字的取值，要么与被参照关系 R 中某元组主关键字的值相同，要么取空值，那么，在这两个关系间建立关联的主关键字和外部关键字引用，符合参照完整性规则要求。如果参照关系 K 的外部关键字也是其主关键字，根据实体完整性要求，主关键字不得取空值，因此，参照关系 K 外部关键字的取值实际上只能取相应被参照关系 R 中已经存在的主关键字值。</p>
-
-<h3 id="用户定义完整性">用户定义完整性</h3>
-
-<p>实体完整性和参照完整性适用于任何关系型数据库系统，它主要是针对关系的主关键字和外部关键字取值必须有效而做出的约束。<strong>用户定义完整性则是根据应用环境的要求和实际的需要，对某一具体应用所涉及的数据提出约束性条件</strong>。这一约束机制一般不应由应用程序提供，而应有由关系模型提供定义并检验，用户定义完整性主要包括字段有效性约束和记录有效性。</p>
-
-<h2 id="数据库事务">数据库事务</h2>
-
-<p><strong>数据库事务(Database Transaction) ，是指作为单个逻辑工作单元执行的一系列操作，要么完全地执行，要么完全地不执行。</strong> 事务处理可以确保除非事务性单元内的所有操作都成功完成，否则不会永久更新面向数据的资源。通过将一组相关操作组合为一个要么全部成功要么全部失败的单元，可以简化错误恢复并使应用程序更加可靠。一个逻辑工作单元要成为事务，必须满足所谓的ACID（原子性、一致性、隔离性和持久性）属性。</p>
-
-<h3 id="事务的-acid">事务的 ACID</h3>
-
-<h4 id="atomicity">Atomicity</h4>
-
-<p>原子性是指事务包含的所有操作要么全部成功，要么全部失败回滚。事务的操作如果成功就必须要完全应用到数据库，如果操作失败则不能对数据库有任何影响。</p>
-
-<h4 id="consistency">Consistency</h4>
-
-<p>一致性是指事务必须使数据库从一个一致性状态变换到另一个一致性状态，也就是说一个事务执行之前和执行之后都必须处于一致性状态。拿转账来说，假设用户A和用户B两者的钱加起来一共是5000，那么不管A和B之间如何转账，转几次账，事务结束后两个用户的钱相加起来应该还得是5000，这就是事务的一致性。换句话说就是：事务开始和结束之间的中间状态不会被其他事务看到。</p>
-
-<h4 id="isolation">Isolation</h4>
-
-<p>隔离性是当多个用户并发访问数据库时，比如操作同一张表时，数据库为每一个用户开启的事务，不能被其他事务的操作所干扰，多个并发事务之间要相互隔离。即要达到这么一种效果：对于任意两个并发的事务T1和T2，在事务T1看来，T2要么在T1开始之前就已经结束，要么在T1结束之后才开始，这样每个事务都感觉不到有其他事务在并发地执行。</p>
-
-<p>隔离性主要涉及到事务的并发控制，根据不同的并发控制策略，可能出现脏读、不可重复读、幻读。</p>
-
-<h5 id="脏读">脏读</h5>
-
-<p><strong>脏读是指在一个事务处理过程里读取了另一个未提交的事务中的数据</strong>。当一个事务正在多次修改某个数据，而在这个事务中这多次的修改都还未提交，这时一个并发的事务来访问该数据，就会造成两个事务得到的数据不一致。例如：用户 A 向用户 B 转账 $100$ 元，对应 SQL 命令如下:</p>
-
-<div class="language-sql highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">update</span> <span class="n">account</span> <span class="k">set</span> <span class="n">money</span><span class="o">=</span><span class="n">money</span><span class="o">+</span><span class="mi">100</span> <span class="k">where</span> <span class="n">name</span><span class="o">=</span><span class="err">’</span><span class="n">B</span><span class="err">’</span><span class="p">;</span>  <span class="p">(</span><span class="err">此时</span><span class="n">A</span><span class="err">通知</span><span class="n">B</span><span class="p">)</span>
-<span class="k">update</span> <span class="n">account</span> <span class="k">set</span> <span class="n">money</span><span class="o">=</span><span class="n">money</span><span class="o">-</span><span class="mi">100</span> <span class="k">where</span> <span class="n">name</span><span class="o">=</span><span class="err">’</span><span class="n">A</span><span class="err">’</span><span class="p">;</span>
-</code></pre></div></div>
-
-<p>当只执行第一条 SQL 时，A 通知 B 查看账户，B 发现确实钱已到账（此时即发生了脏读），而之后无论第二条 SQL 是否执行，只要该事务不提交，则所有操作都将回滚，那么当 B 以后再次查看账户时就会发现钱其实并没有转。</p>
-
-<h5 id="不可重复读">不可重复读</h5>
-
-<p>不可重复读是指在对于数据库中的某个数据，<strong>一个事务范围内</strong>多次查询却返回了不同的数据值，这是由于在查询间隔，被另一个事务修改并提交了。<strong>不可重复读就是一个事务范围内多次查询结果不同</strong>。例如事务 T1 读取了某一数据，而事务 T2 立马修改了这个数据并且提交事务给数据库，事务 T1 再次读取该数据就得到了不同的结果，发送了不可重复读。</p>
-
-<p>不可重复读和脏读的区别是，脏读是某一事务读取了另一个事务未提交的脏数据，而不可重复读则是读取了前一事务提交的数据。</p>
-
-<h5 id="虚读幻读">虚读(幻读)</h5>
-
-<p><strong>幻读是事务非独立执行时发生的一种现象</strong>。例如事务 T1 对一个表中所有的行的某个数据项做了从 $1$ 修改为 $2$ 的操作，这时事务 T2 又对这个表中插入了一行数据项，而这个数据项的数值还是为 $1$ 并且提交给数据库。而操作事务 T1 的用户如果再查看刚刚修改的数据，会发现还有一行没有修改，其实这行是从事务 T2 中添加的，就好像产生幻觉一样，这就是发生了幻读。</p>
-
-<p>幻读和不可重复读都是读取了另一条已经提交的事务（这点就脏读不同），所不同的是不可重复读查询的都是同一个数据项，而幻读针对的是一批数据整体（比如数据的个数）。</p>
-
-<h4 id="durability">Durability</h4>
-
-<p>持久性是指一个事务一旦被提交了，那么对数据库中的数据的改变就是永久性的，即便是在数据库系统遇到故障的情况下也不会丢失提交事务的操作。</p>
-
-<h3 id="事务的-4-种隔离级别">事务的 4 种隔离级别</h3>
-
-<table>
-  <thead>
-    <tr>
-      <th>隔离级别</th>
-      <th style="text-align: center">脏读</th>
-      <th style="text-align: center">不可重复读</th>
-      <th style="text-align: center">幻读</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>Read uncommitted</td>
-      <td style="text-align: center">×</td>
-      <td style="text-align: center">×</td>
-      <td style="text-align: center">×</td>
-    </tr>
-    <tr>
-      <td>Read committed</td>
-      <td style="text-align: center">✓</td>
-      <td style="text-align: center">×</td>
-      <td style="text-align: center">×</td>
-    </tr>
-    <tr>
-      <td>Repetable read</td>
-      <td style="text-align: center">✓</td>
-      <td style="text-align: center">✓</td>
-      <td style="text-align: center">×</td>
-    </tr>
-    <tr>
-      <td>Serializable</td>
-      <td style="text-align: center">✓</td>
-      <td style="text-align: center">✓</td>
-      <td style="text-align: center">✓</td>
-    </tr>
-  </tbody>
-</table>
-
-<p>四种隔离级别，重高到低有：</p>
-
-<ul>
-  <li><code class="language-plaintext highlighter-rouge">Serializable</code>  串行化</li>
-  <li><code class="language-plaintext highlighter-rouge">Repeatable read</code> 可重复读</li>
-  <li><code class="language-plaintext highlighter-rouge">Read committed</code> 读已提交</li>
-  <li><code class="language-plaintext highlighter-rouge">Read uncommitted</code> 读未提交</li>
-</ul>
-
-<p><code class="language-plaintext highlighter-rouge">Serializable</code> 采用的是范围锁 <code class="language-plaintext highlighter-rouge">RangeS</code>、<code class="language-plaintext highlighter-rouge">RangeS_S</code> 模式，<strong>锁定检索范围为只读</strong>，这样就避免了幻影读问题。<code class="language-plaintext highlighter-rouge">Repeatable read</code> <strong>读取数据时加共享锁，写数据时加排他锁，都是事务提交才释放锁</strong>。读取时候不允许其他事物修改该数据，不管数据在事务过程中读取多少次，数据都是一致的，避免了不可重复读问题。<code class="language-plaintext highlighter-rouge">Read committed</code> <strong>修改时加排他锁，直到事务提交后才释放，读取时加共享锁，读取完释放</strong>。事务1读取数据时加上共享锁后（这样在事务1读取数据的过程中，其他事务就不会修改该数据），不允许任何事物操作该数据，只能读取，之后1如果有更新操作，那么会转换为排他锁，其他事务更无权参与进来读写，这样就防止了脏读问题。<code class="language-plaintext highlighter-rouge">Read uncommitted</code> 相当于不加锁。</p>
-
-<p><em>在 MySQL 数据库中默认的隔离级别为 <code class="language-plaintext highlighter-rouge">Repeatable read</code> (可重复读)</em>。</p>
-
-<h3 id="事务的提交和回滚">事务的提交和回滚</h3>
-
-<p>在数据库的插入、删除和修改操作时，只有当事务在提交到数据库时才算完成。在事务提交前，只有操作数据库的这个人才能有权看到所做的事情，别人只有在最后提交完成后才可以看到。</p>
-
-<p>提交数据有三种类型：显式提交、隐式提交及自动提交。下面分别说明这三种类型。</p>
-
-<h4 id="显式提交">显式提交</h4>
-
-<p>用 <code class="language-plaintext highlighter-rouge">COMMIT</code> 命令直接完成的提交为显式提交。其格式为：</p>
-
-<div class="language-sql highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">SQL</span><span class="o">&gt;</span> <span class="k">COMMIT</span><span class="p">;</span>
-</code></pre></div></div>
-
-<h4 id="隐式提交">隐式提交</h4>
-
-<p>用 SQL 命令间接完成的提交为隐式提交。这些命令是：</p>
-
-<div class="language-sql highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">ALTER</span><span class="err">，</span><span class="n">AUDIT</span><span class="err">，</span><span class="k">COMMENT</span><span class="err">，</span><span class="k">CONNECT</span><span class="err">，</span><span class="k">CREATE</span><span class="err">，</span><span class="k">DISCONNECT</span><span class="err">，</span><span class="k">DROP</span><span class="err">，</span><span class="n">EXIT</span><span class="err">，</span><span class="k">GRANT</span><span class="err">，</span><span class="n">NOAUDIT</span><span class="err">，</span><span class="n">QUIT</span><span class="err">，</span><span class="k">REVOKE</span><span class="err">，</span><span class="k">RENAME</span>
-</code></pre></div></div>
-
-<h4 id="自动提交">自动提交</h4>
-
-<p>若把 <code class="language-plaintext highlighter-rouge">AUTOCOMMIT</code> 设置为 <code class="language-plaintext highlighter-rouge">ON</code> ，则在插入、修改、删除语句执行后，系统将自动进行提交，这就是自动提交。其格式为：</p>
-
-<div class="language-sql highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">SQL</span><span class="o">&gt;</span> <span class="k">SET</span> <span class="n">AUTOCOMMIT</span> <span class="k">ON</span><span class="p">;</span>
-</code></pre></div></div>
-
-<p>有时执行 SQL 语句会出现异常，又或提交事务失败，总之事务没有成功完成。这种情况下，需要把事务前面执行了的语句回滚，才能保证事务的 ACID。</p>
-
-<p>如果出现了异常导致数据库没有执行到 <code class="language-plaintext highlighter-rouge">COMMIT</code>，用户需要手动执行 <code class="language-plaintext highlighter-rouge">ROLLBACK</code> 回滚刚才的操作。</p>
-
-<h3 id="undoredo-与检查点">undo、redo 与检查点</h3>
-
-<p>数据库刚提交的事务通常存放在缓冲区中，等到缓冲区满或者其他需要写入硬盘的时候，才写入硬盘。数据库通常用日志文件记录操作，<code class="language-plaintext highlighter-rouge">undo</code> 日志记录某数据被修改前的值，可以用来在事务失败时进行 <code class="language-plaintext highlighter-rouge">rollback</code>；<code class="language-plaintext highlighter-rouge">redo</code> 日志记录某数据块被修改后的值，可以用来恢复未写入。</p>
-
-<p>数据库先将操作写入日志文件，然后把数据写入缓冲区。等到时机合适时才将数据持久化到硬盘上。这种顺序保证了数据库故障时恢复最后修改的操作，也可以用于 <code class="language-plaintext highlighter-rouge">rollback</code>。当进行恢复操作时，对未提交的操作执行 <code class="language-plaintext highlighter-rouge">undo</code>，对提交了的执行 <code class="language-plaintext highlighter-rouge">redo</code>。</p>
-
-<p>在持久化时，会记录 checkpoint 发生的”时刻“。在故障回复时候，只需要 <code class="language-plaintext highlighter-rouge">redo</code>/<code class="language-plaintext highlighter-rouge">undo</code>最近的一次 <code class="language-plaintext highlighter-rouge">checkpoint</code> 之后的操作。</p>
-
-<p><em>References</em></p>
-
-<ul>
-  <li><a href="关于spring手动进行事务提交以及回滚的问题">关于spring手动进行事务提交以及回滚的问题</a></li>
-  <li><a href="http://www.cnblogs.com/jaejaking/p/5342285.html">对mysql事务提交、回滚的错误理解</a></li>
-  <li><a href="http://blog.csdn.net/kobejayandy/article/details/50885693">理解数据库中的undo日志、redo日志、检查点</a></li>
-</ul>
-
-<h1 id="数据库索引">数据库索引</h1>
-
-<p>数据库索引是对数据库中一个或多个值进行排序的结构，用于加速数据查询等。数据库索引类似与书籍附录的名词索引，在不用扫描整个数据库表的情况下，允许程序快速找到表中的数据。</p>
-
-<p>索引加快了数据查找速度，提高系统性能。而维护索引需要使用额外的物理空间，同时插入、更新、删除时也需要对索引进行维护。</p>
-
-<p>从底层的视角来看，索引通常以 B+ 树为数据结构。B+ 树是多路搜索树，所以能保证索引的查找速度。对于高纬度如 GIS 数据索引，可以考虑使用 <a href="http://blog.csdn.net/zhouxuguang236/article/details/7898272">R 树</a>作为数据结构。</p>
-
-<p>从物理空间的角度来看，索引通常分为聚簇索引和非聚簇索引。聚簇索引是指表中的数据存储顺序和索引的顺序一致；非聚簇索引正好相反。因此，聚簇索引一张表只能有一个。非聚簇索引又通常被成为辅助索引。</p>
-
-<p>在实际的程序逻辑中，有主键索引、唯一索引和普通索引。主键索引要求内容不能为空值，唯一索引要求数据不能重复。自然的，主键索引是唯一索引的特殊情况，其要求能唯一确定具体表项。一般情况下，DBMS 会在主键上建立聚簇索引，比如 Mysql 的 Innodb。如果索引不止建立在一列上，就称之为联合索引（与之对应的成为单列索引），一般情况下，联合索引使用时通常按照最左前缀原则匹配。</p>
-
-<p>References</p>
-<ul>
-  <li><a href="https://www.kancloud.cn/kancloud/theory-of-mysql-index/">Mysql 索引背后的数据结构和算法原理</a></li>
-  <li><a href="https://my.oschina.net/u/2250599/blog/551423">Mysql 之辅助索引</a></li>
-  <li><a href="https://www.kancloud.cn/kancloud/theory-of-mysql-index/41857">最左前缀原理与相关优化</a></li>
-  <li><a href="https://tech.meituan.com/mysql-index.html">MySQL索引原理及慢查询优化</a></li>
-  <li><a href="http://www.cnblogs.com/hustcat/archive/2009/10/28/1591648.html">Mysql 索引优化</a></li>
-  <li><a href="http://blog.csdn.net/barrier9591/article/details/5060638">索引效率优化</a></li>
-  <li><a href="https://www.kancloud.cn/thinkphp/mysql-design-optimalize/39320">慢查询</a></li>
-  <li><a href="https://www.kancloud.cn/thinkphp/mysql-design-optimalize/39319">mysql的最佳索引攻略</a></li>
-  <li><a href="http://blog.csdn.net/gzh0222/article/details/7976127">Mysql 性能调优三部曲（慢查询、Explain 和 Profile）</a></li>
-</ul>
-
-<h1 id="锁与并发控制">锁与并发控制</h1>
-
-<h2 id="锁">锁</h2>
-
-<p>从功能角度来看：</p>
-
-<ul>
-  <li>共享锁：允许多个读，不允许写；</li>
-  <li>排他锁：只允许一个读写；</li>
-  <li><a href="http://www.jianshu.com/p/325a492a859b">意向锁</a></li>
-</ul>
-
-<p>共享锁、排他锁通常有具体作用范围：表、页、行。有时需要给整个表加锁，加锁前需要检查有无事务对某一行加了锁，如果一行一行检测，效率是不可接受的。这种情况下，DBMS 要求事务在某子节点加上读、写锁时，要持有父节点的意向锁；后面加锁的事务只需要检查父节点的意向锁就能得知。</p>
-
-<p>从范围角度来看：</p>
-
-<ul>
-  <li>行级锁：表示只针对当前操作的行进行加锁</li>
-  <li>表级锁：表示对当前操作的整张表加锁</li>
-  <li>页级锁：介于行级锁和表级锁之间</li>
-</ul>
-
-<p>下面看看 Mysql 中的行级锁、表级锁及页级锁。</p>
-
-<table>
-  <thead>
-    <tr>
-      <th style="text-align: center">类别</th>
-      <th style="text-align: center">开销</th>
-      <th style="text-align: center">速度</th>
-      <th style="text-align: center">冲突率</th>
-      <th style="text-align: center">粒度</th>
-      <th style="text-align: center">并发度</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td style="text-align: center">行级锁</td>
-      <td style="text-align: center">最大</td>
-      <td style="text-align: center">最慢</td>
-      <td style="text-align: center">低</td>
-      <td style="text-align: center">最小</td>
-      <td style="text-align: center">最高</td>
-    </tr>
-    <tr>
-      <td style="text-align: center">表级锁</td>
-      <td style="text-align: center">小</td>
-      <td style="text-align: center">快</td>
-      <td style="text-align: center">最高</td>
-      <td style="text-align: center">最大</td>
-      <td style="text-align: center">最低</td>
-    </tr>
-    <tr>
-      <td style="text-align: center">页级锁</td>
-      <td style="text-align: center">一般</td>
-      <td style="text-align: center">一般</td>
-      <td style="text-align: center">一般</td>
-      <td style="text-align: center">一般</td>
-      <td style="text-align: center">一般</td>
-    </tr>
-  </tbody>
-</table>
-
-<p><em>References</em></p>
-
-<ul>
-  <li><a href="http://blog.sina.com.cn/s/blog_a1e9c7910102vkg4.html">Mysql 共享锁、排他锁和意向锁</a></li>
-  <li><a href="http://www.hollischuang.com/archives/914">MySQL中的行级锁,表级锁,页级锁</a></li>
-</ul>
-
-<h2 id="两阶段锁协议">两阶段锁协议</h2>
-
-<p>整个事务分为两个阶段，前一个阶段为加锁，后一个阶段为解锁。<strong>在加锁阶段，事务只能加锁，也可以操作数据，但不能解锁，直到事务释放第一个锁，就进入解锁阶段，此过程中事务只能解锁，也可以操作数据，不能再加锁</strong>。两阶段锁协议使得事务具有较高的并发度，因为解锁不必发生在事务结尾。它的不足是没有解决死锁的问题，因为它在加锁阶段没有顺序要求。如两个事务分别申请了A, B锁，接着又申请对方的锁，此时进入死锁状态。</p>
-
-<h2 id="并发控制">并发控制</h2>
-
-<p>数据库管理系统（DBMS）中的并发控制的任务是：</p>
-
-<ol>
-  <li>确保在多个事务同时存取数据库中同一数据时不破坏事务的隔离性；</li>
-  <li>统一性以及数据库的统一性；</li>
-</ol>
-
-<p>乐观并发控制(乐观锁)和悲观并发控制（悲观锁）是并发控制主要采用的技术手段：</p>
-
-<ol>
-  <li>悲观锁：假定会发生并发冲突，屏蔽一切可能违反数据完整性的操作；</li>
-  <li>乐观锁：假设不会发生并发冲突，只在提交操作时检查是否违反数据完整性；</li>
-</ol>
-
-<p>无论是悲观锁还是乐观锁，都是人们定义出来的概念，可以认为是一种思想。所以，不要把乐观并发控制和悲观并发控制狭义的理解为 DBMS 中的概念，更不要把他们和数据中提供的锁机制（行锁、表锁、排他锁、共享锁）混为一谈。其实，在 DBMS 中，悲观锁正是利用数据库本身提供的锁机制来实现的。</p>
-
-<p>在 Mysql 中，悲观锁通过 <code class="language-plaintext highlighter-rouge">select for update</code> 实现，乐观锁则在表中加上 <code class="language-plaintext highlighter-rouge">version</code> 字段实现。</p>
-
-<p>具体关于加锁时机可以参考<a href="http://www.importnew.com/21037.html">深入详解乐观锁和悲观锁</a>、<a href="http://www.digpage.com/lock.html">乐观锁、悲观锁</a>。</p>
-
-<blockquote>
-  <p>事务隔离级别和乐观锁、悲观锁的关系：事务隔离级别是并发控制的整体解决方案，其实际上是综合利用各种类型的锁和行版本控制，来解决并发问题。锁是数据库并发控制的内部机制，是基础。对用户来说，只有当事务隔离级别无法解决一些并发问题和需求时，才有必要在语句中手动设置锁。</p>
-</blockquote>
-
-<h1 id="数据库扩展">数据库扩展</h1>
-
-<p>随着业务规模的不断扩大，需要选择合适的方案去应对数据规模的增长，以应对逐渐增长的访问压力和数据量。</p>
-
-<p>关于数据库的扩展主要包括：主从复制、读写分离、数据库分库与分表。</p>
-
-<p><em>References</em></p>
-
-<ul>
-  <li><a href="http://blog.csdn.net/justdb/article/details/17331569">MySQL 读写分离</a></li>
-  <li><a href="http://blog.csdn.net/hguisu/article/details/7325124">高性能 Mysql 主从架构的复制原理及配置详解</a></li>
-  <li><a href="http://blog.jobbole.com/94595/">Mysql 主从复制原理和配置</a></li>
-  <li><a href="http://www.jianshu.com/p/ab704b437ebd">Mysql 主从复制(Binary log)</a></li>
-  <li><a href="http://www.voidcn.com/article/p-fbygsnps-rp.html">数据库分库分表策略的具体实现方案</a></li>
-  <li><a href="https://tech.meituan.com/dianping_order_db_sharding.html">大众点评订单系统分库分表实践</a></li>
-  <li><a href="http://www.infoq.com/cn/articles/summary-and-key-steps-of-vip-orders-depots-table">唯品会订单分库分表的实践总结已经关键步骤</a></li>
-  <li><a href="http://www.infoq.com/cn/articles/key-steps-and-likely-problems-of-split-table">分库分表的几种常见形式以及可能遇到的难</a></li>
-</ul>
-
-<h1 id="mysql">Mysql</h1>
-
-<p><em>References</em></p>
-
-<ul>
-  <li><a href="http://www.ha97.com/2549.html">MySQL数据库的各种存储引擎详解</a></li>
-  <li><a href="http://blog.csdn.net/qh_java/article/details/14045827">MySQL中的存储引擎讲解（InnoDB,MyISAM,Memory等各存储引擎对比）</a></li>
-</ul>
-
-<h1 id="redis--memcached">Redis &amp; Memcached</h1>]]></content><author><name></name></author><category term="总结" /><summary type="html"><![CDATA[数据库基础 现在主流的数据库系统主要是关系数据库。关系数据库使用集合代数等概念和方法来处理数据库中的数据，同时数据组织成描述性的表格。关系数据库通常由三级模式两层映像组成。在具体设计数据库的时候，通常使用范式来对数据库进行约束设计。 近些年 NoSQL（非关系型数据库）应用也比较多，主要以 Key-Value 类数据库为主，比如 Redis。 理论基础 References 关系代数 数据库底层结构 - B 树 SQL 语言 SQL 语言共分为四大类： 数据查询语言 DQL 数据操纵语言 DML 数据定义语言 DDL 数据控制语言 DCL 数据查询语言DQL 数据查询语言 DQL 基本结构是由 SELECT 子句，FROM 子句，WHERE 子句组成的查询块： SELECT &lt;字段名表&gt; FROM &lt;表或视图名&gt; WHERE &lt;查询条件&gt; 数据操纵语言DML 主要有三种形式： 插入：INSERT 更新：UPDATE 删除：DELETE 数据定义语言 DDL 数据定义语言 DDL 用来创建数据库中的各种对象—–表、视图、索引、同义词、聚簇等如： CREATE TABLE/VIEW/INDEX/SYN/CLUSTER ALTER DROP DDL 操作是隐性提交的！不能 rollback。 数据控制语言 DCL 数据控制语言 DCL 用来授予或回收访问数据库的某种特权，并控制 数据库操纵事务发生的时间及效果，对数据库实行监视等。如： GRANT：授权 ROLLBACK [WORK] TO [SAVEPOINT]：回退到某一点。 COMMIT [WORK]：提交 回滚—ROLLBACK 回滚命令使数据库状态回到上次最后提交的状态。其格式为: SQL&gt; ROLLBACK; References DQL、DDL、DML、DCL SQL语言入门 drop、truncate和delete的区别 数据库中视图的作用 数据库范式 数据库范式是指数据库中数据满足的某种约束，用来指导数据库设计。随意设计的数据库可能存在数据冗余、插入异常、更新异常、删除异常等。数据库范式用于减少或消除上述异常。 数据库范式分为：1NF,2NF,3NF,BCNF,4NF,5NF。通常设计时只需要考虑到 BCNF。符合高一级的范式，必定符合低一级范式。 1NF 1NF的定义为：符合1NF的关系中的每个属性都不可再分。实际上，1NF 是所有关系型数据库的最基本要求，你在关系型数据库管理系统（RDBMS），例如 SQL Server，Oracle，MySQL 中创建数据表的时候，如果数据表的设计不符合这个最基本的要求，那么操作一定是不能成功的。也就是说，只要在 RDBMS 中已经存在的数据表，一定是符合 1NF 的。 函数依赖 函数依赖指出了一张表中属性之间的函数关系：将属性分为 X,Y 两组，对于任意的 X 满足 X 相同时 Y 一定相同，即 X 值确定的情况下，Y 的值也能确定，此时称为 X → Y。从“函数依赖”这个概念展开，还有两个概念： 完全函数依赖：在一张表中，若 X → Y，且对于 X 的任何一个真子集（假如属性组 X 包含超过一个属性的话），X’ → Y 不成立，那么我们称 Y 对于 X 完全函数依赖，记作 X F→ Y。 部分函数依赖假：如 Y 函数依赖于 X，但同时 Y 并不完全函数依赖于 X，那么我们就称 Y 部分函数依赖于 X，记作 X P→ Y， 码 设 K 为某表中的一个属性或属性组，若除 K 之外的所有属性都完全函数依赖于 K（这个“完全”不要漏了），那么我们称 K 为候选码，简称为码。在实际中我们通常可以理解为：假如当 K 确定的情况下，该表除 K 之外的所有属性的值也就随之确定，那么 K 就是码。一张表中可以有超过一个码。（实际应用中为了方便，通常选择其中的一个码作为主码）。 在任意一个码中的属性称为主属性，与之对应的就是非主属性。 2NF 2NF的定义为：非主属性不部分地依赖于码。第二范式要求数据具有唯一性。以学生、学校、学校地址(st,sc,addr)为例，其中学生、学校为主属性，学校地址只依赖于学校，不满足第二范式。如果新办了座学校，校内还没有学生上课，那么就无法插入数据（插入异常）；如果学校地址改变了，需要对每一条数据中的学校地址都进行更新，非常麻烦（更新异常）。 2NF 3NF的定义为：非主属性不传递地依赖于码。第三范式要求任何非主属性不能由其他属性派生出来。 BCNF BCNF的定义为：主属性既不部分地依赖于码，也不传递地依赖于码。BCNF 要求主属性之间满足唯一且不能由其他属性派生出来。 关于范式的详解可以参考：数据库第一二三范式到底在说什么？。 数据库完整性约束 关系完整性是为保证数据库中数据的正确性和相容性，对关系模型提出的某种约束条件或规则。完整性通常包括域完整性，实体完整性、参照完整性和用户定义完整性，其中域完整性，实体完整性和参照完整性，是关系模型必须满足的完整性约束条件。 域完整性约束：域完整性是保证数据库字段取值的合理性。属性值应是域中的值，这是关系模式规定了的。除此之外，一个属性能否为 NULL，这是由语义决定的，也是域完整性约束的主要内容。域完整性约束是最简单、最基本的约束。在当今的关系 DBMS 中，一般都有域完整性约束检查功能。包括检查（CHECK）、默认值（DEFAULT）、不为空（NOT NULL）等。 实体完整性 实体完整性是指关系的主关键字不能重复也不能取“空值”。一个关系对应现实世界中一个实体集。现实世界中的实体是可以相互区分、识别的，也即它们应具有某种惟一性标识。在关系模式中，以主关键字作为惟一性标识，而主关键字中的属性(称为主属性)不能取空值，否则，表明关系模式中存在着不可标识的实体(因空值是“不确定”的)，这与现实世界的实际情况相矛盾，这样的实体就不是一个完整实体。按实体完整性规则要求，主属性不得取空值，如主关键字是多个属性的组合，则所有主属性均不得取空值。 参照完整性 参照完整性是定义建立关系之间联系的主关键字与外部关键字引用的约束条件。关系数据库中通常都包含多个存在相互联系的关系，关系与关系之间的联系是通过公共属性来实现的。所谓公共属性，它是一个关系 R (称为被参照关系或目标关系)的主关键字，同时又是另一关系 K (称为参照关系)的外部关键字。如果参照关系 K 中外部关键字的取值，要么与被参照关系 R 中某元组主关键字的值相同，要么取空值，那么，在这两个关系间建立关联的主关键字和外部关键字引用，符合参照完整性规则要求。如果参照关系 K 的外部关键字也是其主关键字，根据实体完整性要求，主关键字不得取空值，因此，参照关系 K 外部关键字的取值实际上只能取相应被参照关系 R 中已经存在的主关键字值。 用户定义完整性 实体完整性和参照完整性适用于任何关系型数据库系统，它主要是针对关系的主关键字和外部关键字取值必须有效而做出的约束。用户定义完整性则是根据应用环境的要求和实际的需要，对某一具体应用所涉及的数据提出约束性条件。这一约束机制一般不应由应用程序提供，而应有由关系模型提供定义并检验，用户定义完整性主要包括字段有效性约束和记录有效性。 数据库事务 数据库事务(Database Transaction) ，是指作为单个逻辑工作单元执行的一系列操作，要么完全地执行，要么完全地不执行。 事务处理可以确保除非事务性单元内的所有操作都成功完成，否则不会永久更新面向数据的资源。通过将一组相关操作组合为一个要么全部成功要么全部失败的单元，可以简化错误恢复并使应用程序更加可靠。一个逻辑工作单元要成为事务，必须满足所谓的ACID（原子性、一致性、隔离性和持久性）属性。 事务的 ACID Atomicity 原子性是指事务包含的所有操作要么全部成功，要么全部失败回滚。事务的操作如果成功就必须要完全应用到数据库，如果操作失败则不能对数据库有任何影响。 Consistency 一致性是指事务必须使数据库从一个一致性状态变换到另一个一致性状态，也就是说一个事务执行之前和执行之后都必须处于一致性状态。拿转账来说，假设用户A和用户B两者的钱加起来一共是5000，那么不管A和B之间如何转账，转几次账，事务结束后两个用户的钱相加起来应该还得是5000，这就是事务的一致性。换句话说就是：事务开始和结束之间的中间状态不会被其他事务看到。 Isolation 隔离性是当多个用户并发访问数据库时，比如操作同一张表时，数据库为每一个用户开启的事务，不能被其他事务的操作所干扰，多个并发事务之间要相互隔离。即要达到这么一种效果：对于任意两个并发的事务T1和T2，在事务T1看来，T2要么在T1开始之前就已经结束，要么在T1结束之后才开始，这样每个事务都感觉不到有其他事务在并发地执行。 隔离性主要涉及到事务的并发控制，根据不同的并发控制策略，可能出现脏读、不可重复读、幻读。 脏读 脏读是指在一个事务处理过程里读取了另一个未提交的事务中的数据。当一个事务正在多次修改某个数据，而在这个事务中这多次的修改都还未提交，这时一个并发的事务来访问该数据，就会造成两个事务得到的数据不一致。例如：用户 A 向用户 B 转账 $100$ 元，对应 SQL 命令如下: update account set money=money+100 where name=’B’; (此时A通知B) update account set money=money-100 where name=’A’; 当只执行第一条 SQL 时，A 通知 B 查看账户，B 发现确实钱已到账（此时即发生了脏读），而之后无论第二条 SQL 是否执行，只要该事务不提交，则所有操作都将回滚，那么当 B 以后再次查看账户时就会发现钱其实并没有转。 不可重复读 不可重复读是指在对于数据库中的某个数据，一个事务范围内多次查询却返回了不同的数据值，这是由于在查询间隔，被另一个事务修改并提交了。不可重复读就是一个事务范围内多次查询结果不同。例如事务 T1 读取了某一数据，而事务 T2 立马修改了这个数据并且提交事务给数据库，事务 T1 再次读取该数据就得到了不同的结果，发送了不可重复读。 不可重复读和脏读的区别是，脏读是某一事务读取了另一个事务未提交的脏数据，而不可重复读则是读取了前一事务提交的数据。 虚读(幻读) 幻读是事务非独立执行时发生的一种现象。例如事务 T1 对一个表中所有的行的某个数据项做了从 $1$ 修改为 $2$ 的操作，这时事务 T2 又对这个表中插入了一行数据项，而这个数据项的数值还是为 $1$ 并且提交给数据库。而操作事务 T1 的用户如果再查看刚刚修改的数据，会发现还有一行没有修改，其实这行是从事务 T2 中添加的，就好像产生幻觉一样，这就是发生了幻读。 幻读和不可重复读都是读取了另一条已经提交的事务（这点就脏读不同），所不同的是不可重复读查询的都是同一个数据项，而幻读针对的是一批数据整体（比如数据的个数）。 Durability 持久性是指一个事务一旦被提交了，那么对数据库中的数据的改变就是永久性的，即便是在数据库系统遇到故障的情况下也不会丢失提交事务的操作。 事务的 4 种隔离级别 隔离级别 脏读 不可重复读 幻读 Read uncommitted × × × Read committed ✓ × × Repetable read ✓ ✓ × Serializable ✓ ✓ ✓ 四种隔离级别，重高到低有： Serializable 串行化 Repeatable read 可重复读 Read committed 读已提交 Read uncommitted 读未提交 Serializable 采用的是范围锁 RangeS、RangeS_S 模式，锁定检索范围为只读，这样就避免了幻影读问题。Repeatable read 读取数据时加共享锁，写数据时加排他锁，都是事务提交才释放锁。读取时候不允许其他事物修改该数据，不管数据在事务过程中读取多少次，数据都是一致的，避免了不可重复读问题。Read committed 修改时加排他锁，直到事务提交后才释放，读取时加共享锁，读取完释放。事务1读取数据时加上共享锁后（这样在事务1读取数据的过程中，其他事务就不会修改该数据），不允许任何事物操作该数据，只能读取，之后1如果有更新操作，那么会转换为排他锁，其他事务更无权参与进来读写，这样就防止了脏读问题。Read uncommitted 相当于不加锁。 在 MySQL 数据库中默认的隔离级别为 Repeatable read (可重复读)。 事务的提交和回滚 在数据库的插入、删除和修改操作时，只有当事务在提交到数据库时才算完成。在事务提交前，只有操作数据库的这个人才能有权看到所做的事情，别人只有在最后提交完成后才可以看到。 提交数据有三种类型：显式提交、隐式提交及自动提交。下面分别说明这三种类型。 显式提交 用 COMMIT 命令直接完成的提交为显式提交。其格式为： SQL&gt; COMMIT; 隐式提交 用 SQL 命令间接完成的提交为隐式提交。这些命令是： ALTER，AUDIT，COMMENT，CONNECT，CREATE，DISCONNECT，DROP，EXIT，GRANT，NOAUDIT，QUIT，REVOKE，RENAME 自动提交 若把 AUTOCOMMIT 设置为 ON ，则在插入、修改、删除语句执行后，系统将自动进行提交，这就是自动提交。其格式为： SQL&gt; SET AUTOCOMMIT ON; 有时执行 SQL 语句会出现异常，又或提交事务失败，总之事务没有成功完成。这种情况下，需要把事务前面执行了的语句回滚，才能保证事务的 ACID。 如果出现了异常导致数据库没有执行到 COMMIT，用户需要手动执行 ROLLBACK 回滚刚才的操作。 undo、redo 与检查点 数据库刚提交的事务通常存放在缓冲区中，等到缓冲区满或者其他需要写入硬盘的时候，才写入硬盘。数据库通常用日志文件记录操作，undo 日志记录某数据被修改前的值，可以用来在事务失败时进行 rollback；redo 日志记录某数据块被修改后的值，可以用来恢复未写入。 数据库先将操作写入日志文件，然后把数据写入缓冲区。等到时机合适时才将数据持久化到硬盘上。这种顺序保证了数据库故障时恢复最后修改的操作，也可以用于 rollback。当进行恢复操作时，对未提交的操作执行 undo，对提交了的执行 redo。 在持久化时，会记录 checkpoint 发生的”时刻“。在故障回复时候，只需要 redo/undo最近的一次 checkpoint 之后的操作。 References 关于spring手动进行事务提交以及回滚的问题 对mysql事务提交、回滚的错误理解 理解数据库中的undo日志、redo日志、检查点 数据库索引 数据库索引是对数据库中一个或多个值进行排序的结构，用于加速数据查询等。数据库索引类似与书籍附录的名词索引，在不用扫描整个数据库表的情况下，允许程序快速找到表中的数据。 索引加快了数据查找速度，提高系统性能。而维护索引需要使用额外的物理空间，同时插入、更新、删除时也需要对索引进行维护。 从底层的视角来看，索引通常以 B+ 树为数据结构。B+ 树是多路搜索树，所以能保证索引的查找速度。对于高纬度如 GIS 数据索引，可以考虑使用 R 树作为数据结构。 从物理空间的角度来看，索引通常分为聚簇索引和非聚簇索引。聚簇索引是指表中的数据存储顺序和索引的顺序一致；非聚簇索引正好相反。因此，聚簇索引一张表只能有一个。非聚簇索引又通常被成为辅助索引。 在实际的程序逻辑中，有主键索引、唯一索引和普通索引。主键索引要求内容不能为空值，唯一索引要求数据不能重复。自然的，主键索引是唯一索引的特殊情况，其要求能唯一确定具体表项。一般情况下，DBMS 会在主键上建立聚簇索引，比如 Mysql 的 Innodb。如果索引不止建立在一列上，就称之为联合索引（与之对应的成为单列索引），一般情况下，联合索引使用时通常按照最左前缀原则匹配。 References Mysql 索引背后的数据结构和算法原理 Mysql 之辅助索引 最左前缀原理与相关优化 MySQL索引原理及慢查询优化 Mysql 索引优化 索引效率优化 慢查询 mysql的最佳索引攻略 Mysql 性能调优三部曲（慢查询、Explain 和 Profile） 锁与并发控制 锁 从功能角度来看： 共享锁：允许多个读，不允许写； 排他锁：只允许一个读写； 意向锁 共享锁、排他锁通常有具体作用范围：表、页、行。有时需要给整个表加锁，加锁前需要检查有无事务对某一行加了锁，如果一行一行检测，效率是不可接受的。这种情况下，DBMS 要求事务在某子节点加上读、写锁时，要持有父节点的意向锁；后面加锁的事务只需要检查父节点的意向锁就能得知。 从范围角度来看： 行级锁：表示只针对当前操作的行进行加锁 表级锁：表示对当前操作的整张表加锁 页级锁：介于行级锁和表级锁之间 下面看看 Mysql 中的行级锁、表级锁及页级锁。 类别 开销 速度 冲突率 粒度 并发度 行级锁 最大 最慢 低 最小 最高 表级锁 小 快 最高 最大 最低 页级锁 一般 一般 一般 一般 一般 References Mysql 共享锁、排他锁和意向锁 MySQL中的行级锁,表级锁,页级锁 两阶段锁协议 整个事务分为两个阶段，前一个阶段为加锁，后一个阶段为解锁。在加锁阶段，事务只能加锁，也可以操作数据，但不能解锁，直到事务释放第一个锁，就进入解锁阶段，此过程中事务只能解锁，也可以操作数据，不能再加锁。两阶段锁协议使得事务具有较高的并发度，因为解锁不必发生在事务结尾。它的不足是没有解决死锁的问题，因为它在加锁阶段没有顺序要求。如两个事务分别申请了A, B锁，接着又申请对方的锁，此时进入死锁状态。 并发控制 数据库管理系统（DBMS）中的并发控制的任务是： 确保在多个事务同时存取数据库中同一数据时不破坏事务的隔离性； 统一性以及数据库的统一性； 乐观并发控制(乐观锁)和悲观并发控制（悲观锁）是并发控制主要采用的技术手段： 悲观锁：假定会发生并发冲突，屏蔽一切可能违反数据完整性的操作； 乐观锁：假设不会发生并发冲突，只在提交操作时检查是否违反数据完整性； 无论是悲观锁还是乐观锁，都是人们定义出来的概念，可以认为是一种思想。所以，不要把乐观并发控制和悲观并发控制狭义的理解为 DBMS 中的概念，更不要把他们和数据中提供的锁机制（行锁、表锁、排他锁、共享锁）混为一谈。其实，在 DBMS 中，悲观锁正是利用数据库本身提供的锁机制来实现的。 在 Mysql 中，悲观锁通过 select for update 实现，乐观锁则在表中加上 version 字段实现。 具体关于加锁时机可以参考深入详解乐观锁和悲观锁、乐观锁、悲观锁。 事务隔离级别和乐观锁、悲观锁的关系：事务隔离级别是并发控制的整体解决方案，其实际上是综合利用各种类型的锁和行版本控制，来解决并发问题。锁是数据库并发控制的内部机制，是基础。对用户来说，只有当事务隔离级别无法解决一些并发问题和需求时，才有必要在语句中手动设置锁。 数据库扩展 随着业务规模的不断扩大，需要选择合适的方案去应对数据规模的增长，以应对逐渐增长的访问压力和数据量。 关于数据库的扩展主要包括：主从复制、读写分离、数据库分库与分表。 References MySQL 读写分离 高性能 Mysql 主从架构的复制原理及配置详解 Mysql 主从复制原理和配置 Mysql 主从复制(Binary log) 数据库分库分表策略的具体实现方案 大众点评订单系统分库分表实践 唯品会订单分库分表的实践总结已经关键步骤 分库分表的几种常见形式以及可能遇到的难 Mysql References MySQL数据库的各种存储引擎详解 MySQL中的存储引擎讲解（InnoDB,MyISAM,Memory等各存储引擎对比） Redis &amp; Memcached]]></summary></entry></feed>
+<p>说到代理，常见有 VPN、HTTP Proxy ，代理模式用于控制对对象的访问。比如实现一个 RPC 功能，在客户端定义一个接口，由代理服务生成接口对应的实例。客户在调用接口时，代理服务监测并将请求转发给服务器，等到服务端计算完成并返回时，代理服务把结果返回给客户端。从客户端的角度上，这个过程和调用一个耗时的函数没有区别。</p>]]></content><author><name></name></author><category term="总结" /><summary type="html"><![CDATA[面对对象原则 单一职责：不要存在多于一个导致类变更的原因；通俗的说，即一个类只负责一项职责； 里氏替换：所有引用基类的地方必须能透明地使用其子类的对象；通俗的来讲就是：子类可以扩展父类的功能，但不能改变父类原有的功能； 依赖倒置：高层模块不应该依赖低层模块，二者都应该依赖其抽象；抽象不应该依赖细节；细节应该依赖抽象； 接口隔离：客户端不应该依赖它不需要的接口；一个类对另一个类的依赖应该建立在最小的接口上； 迪米特法则：一个对象应该对其他对象保持最少的了解； 开闭原则：一个软件实体如类、模块和函数应该对扩展开放，对修改关闭； 23种设计模式 References 设计模式大总汇 单例模式：确保整个程序中只有一个实例，并自行实例化以向整个体统提供实例 工厂方法模式：将实例的创建延迟到子类 抽象工厂模式：为创建一组相互依赖的对象提供一个接口，并将创建过程延迟到子类 建造者模式：将一个复杂对象的创建和表示分离开来，使得同一个创建过程可以得到不同的表示 原型模式： 迭代器模式：在不暴露内部实现的情况下，使客户可以遍历容器内部对象 责任联模式：将对象连成一条链，并沿着这条链传递该请求，直到有对象处理该请求位置，解决了发送方和接收方的耦合 桥梁模式：将抽象和实现解耦，使两者可以独立变化 适配器模式：将一个对象的接口转换成另一个对象期待的接口，从而使原本不匹配的对象能在一起工作 中介者模式：将一系列对象的交互封装起来，使其耦合松散，而且可以独立变化 观察者模式：定义一种1-N的关系，使得当一个对象更新时，所有依赖它的对象都能收到通知并响应 命令模式：将客户参数化，使得客户请求可以记录、排队，并能实现撤销，恢复等功能 亨元模式：使用共享对象可以有效的支持大量细粒度的对象 状态模式：当一个对象状态改变时改变其行为，使得对象看起来像是改变了类 解释器模式：定义一组语言及其解释器 访问者模式：定义一组接口，从而是现在不改变数据结构自身的情况下添加职责 装饰器模式：动态的为一个对象添加一些额外的职责，比生成子类要简单 代理模式：提供一种代理以控制对对象的访问 策略模式：定义并封装一组可以互换的算法 模板方法模式：定义一个算法的骨架，将一些具体步骤延迟到子类。使得子类可以不改变算法结构即重定义算法特定步骤 组合模式： 门面模式： 备忘录模式： 单例模式 单例模式重点在两个方面： 系统只有一个实例； 自行实例化并向整个系统提供这个实例； 单例模式的实现上有两个重要的因素： 线程安全； 延迟加载； 延迟加载技术可以解耦依赖链与初始化顺序。如果单例在程序执行前就进行初始化，某一个单例的初始化过程中，又引用到了另一个单例，便出现了加载顺序的决议问题。而使用延迟加载技术将这种依赖过程与初始化顺序进行了自动决议。 void instance() { static Singleston * sing = NULL; if (sing == NULL) { sing = new Singleston; } return sing; } 线程安全方面则根据语言不同而有所差异，以 C++ 为例，C++11 标准规定了局部静态变量初始化的线程安全特性，所以写起来非常方便： void instance() { static Class ins; return ins; } 按照这种写法不仅线程安全，同时还解决了依赖问题。如果不想用这种办法，也可以使用标准库提供的：call_once() 函数。 Java 在方面就要麻烦得多，我个人比较偏爱的是 DCL 这种方式： public class Singleston { private static volatile Singleston instance; public static getInstance() { if (instance == null) synchronized(Singleston.class) { if (instance == null) instance = new Singleston; } return instance; } } Java 版本的 DCL 需要注意使用 volatile 修饰，从 1.5 版本开始这种写法已经不存在问题了。 建造者模式 建造者模式用于将一个复杂对象的建造过程和表示过程分开。这种比较适合一旦创建好后不会怎么更改的对象。在 Android 中的 AlertDialg 就使用这种方式： protected void dialog() { new Builder(this) .setMessage("are you sure?") .setTitle("tips") .setPositiveButtion("yes", new OnClickListener() { @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); Main.this.finish(); } }) .setNegativeButton("No", new OnClickListener() { @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); } }) .create() .show(); } 无独有偶，在 Java 著名网络库 Netty 中，创建 Channel 也是使用建造者模式： Bootstrap b = new Bootstrap(); b.group(group) .channel(NioSocketChannel.class) .option(ChannelOption.TCP_NODELAY, true) .handler(new ChannelInitializer&lt;SocketChannel&gt;() { @Override public void initChannel(SocketChannel ch) throws Exception { // ... } }); ChannelFuture f = b.connect(host, port).sync(); 迭代器模式 容器需要提供用户一个访问机制，而又不暴露内部细节，这种方法就叫迭代器模式。C++ 和 Java 中均有迭代器模式的影子： // C++ vector&lt;int&gt; arrays; // ... auto it = arrays.begin(); // Java ArrayList&lt;Integer&gt; arrays = new ArrayList&lt;Integer&gt;(); // ... Iterator&lt;Integer&gt; it = arrays.iterator(); while (it.hasNext()) { ... } 责任链模式 如其名，整个处理过程就像链一样，一级一级传递下去，从而接触了发送方和接收方的耦合。责任链模式常见于各种事件处理机制，比如 Android 的事件处理机制、Win32 中的消息机制。责任链模式的显著特点是如果一个事件（消息）在当前处理逻辑中不处理，就将其传递给下一级处理逻辑。 void slove(Message msg, Handler handle) { switch (msg) { case xxx: ...; break; default: handle.slove(msg); } } 桥梁模式 将抽象和实现解耦的就是桥梁模式。通常在设计时，不要传播设计，而桥梁模式正好可以处理。比如一开始只有一台实验仪器，所以用单例模式来表示，某一天实验室又购进了一台新的仪器，那么之前所有引用单例的代码都要修改。而设计时如果将获取设备接口和单例分开，就没有这么多麻烦了： public class Device { private class SingleDevice { // singleston } public static Device getByRandom() { return SingleDevice.getInstance(); } } 桥梁模式的另一个常见用途在 C++ 中，常用于实现减少 C++ 头文件编译负担： // a.h 中 class A { class AImpl; public: void do(); private: std::shared_ptr&lt;AImpl&gt; impl; }; // A.cpp 中 class A::AImpl { public: void do() { ... } }; void A::do() { impl-&gt;do(); } 适配器模式 适配器模式可以使两个不兼容的接口一起工作，有 Andoird 开发经验的一定对 Adaptor 非常熟悉，这里不细讲。 中介者模式 中介者模式把两个独立对象的一系列操作封装起来，把这两个对象之间的联系解耦，这样两个对象不依赖对方，可以独立变化。 观察者模式 解耦操作最好的还属观察者模式。观察者模式重新定义了对象之间的依赖关系，将原有的监听操作转变为通知操作。 关于使用观察者模式，比较典型的例子是控件事件的监听–在指定控件上绑定一个回调函数，事件发生的时候，控件负责调用该函数通知用户。在 Java 中大名鼎鼎的响应式库 RxJava 就是以观察者模式为基础，还解决了长期以来困扰的 Callback hell 问题。Vue.js 中实现数据绑定也是以观察者模式为基础的。 命令模式 命令模式最重要的一点就是将客户端的请求参数化，从而实现请求排队、记录回滚等。在游戏中，命令模式可以将用户对角色控制的输入进行参数化，实现死亡回放等。在服务器开发中，将客户端的请求参数化，并放入请求队列，实现流量控制。 状态模式 说到命令模式不得不提状态模式，以任务操纵为例，人在地面上可以进行跳跃，而在跳跃的过程中则不可以。那么对于相同的命令，在不同的状态下有不同的响应，这就是状态模式。状态模式可以在改变对象状态的同时改变对象的行为。 享元模式 游戏中地图大量元素存在重复的情况，大量创建相同的对象非常浪费内存，此时可以创建几个单例，让地图引用具体的单例，这就是享元模式。 解释器模式 现在很多游戏的基本框架由 C/C++ 来写，具体业务逻辑则交给 lua 之类的脚本处理。如果是自己设计的脚本，那么就需要写出对应的解释器： class Expr { public: Value execute(); private: char c; Expr * left, * right; }; // 解释器模式 访问者模式 一开始我们只提供了游戏脚本解释器的解释功能，某次调试的时候希望将具体的抽象语法书打印出来，所以在每个元素类中添加了打印支持： class Expr { public: Value execute(); Value dump() { left-&gt;dump(); cout &lt;&lt; c ; right-&gt;dump(); } private: char c; Expr * left, * right; }; 每当出现一个新的需求时，都要对原有的数据结构进行修改。而访问者模式为我们提供了遍历，可以在不修改数据结构的同时增加数据结构上的操作。 class Visitor { public: virtual void visit(Expr *ptr); virtual void visit(Value *ptr); }; class Visitable { public: virtual void accept(Visitor *visitor); }; //... class Expr : public Visitable { public: void accept(Visitor *visitor) { visitor-&gt;visit(this); } }; class Dump : public Visitor { public: void visit(Value * v); void visit(Expr * e) { e-&gt;left-&gt;accept(this); cout &lt;&lt; e-&gt;c; e-&gt;right-&gt;accept(this); } }; 装饰器模式 装饰器模式可以在不继承对象的同时给对象增加操作。Python 中有一个装饰器的概念，比如我们要给原来的函数添加上调用记录到日志的功能： def log(func): def wrapper(*args, **kw): print('call %s():' % func.__name__) return func(*args, **kw) return wrapper @log def do(): pass 与之类似的还有 Java 提供的注解功能，这里不展开。 代理模式 说到代理，常见有 VPN、HTTP Proxy ，代理模式用于控制对对象的访问。比如实现一个 RPC 功能，在客户端定义一个接口，由代理服务生成接口对应的实例。客户在调用接口时，代理服务监测并将请求转发给服务器，等到服务端计算完成并返回时，代理服务把结果返回给客户端。从客户端的角度上，这个过程和调用一个耗时的函数没有区别。]]></summary></entry></feed>
