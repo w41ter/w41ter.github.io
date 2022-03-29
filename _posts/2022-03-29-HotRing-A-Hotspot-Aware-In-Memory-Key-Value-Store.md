@@ -1,6 +1,6 @@
 ---
 layout: post
-title: HotRing: A Hotspot Aware In-Memory Key-Value Store
+title: HotRing - A Hotspot Aware In-Memory Key-Value Store
 tags: concurrent
 categories: papers
 ---
