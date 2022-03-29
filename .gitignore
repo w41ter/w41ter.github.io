@@ -7,5 +7,12 @@ node_modules/
 public/
 .deploy*/
 
+_site
+.sass-cache
+.jekyll-cache
+.jekyll-metadata
+vendor
+.bundle
+
 themes/next/
 themes/landscape/
