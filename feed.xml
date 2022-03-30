@@ -1,4 +1,82 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.2.2">Jekyll</generator><link href="/feed.xml" rel="self" type="application/atom+xml" /><link href="/" rel="alternate" type="text/html" /><updated>2022-03-29T19:24:53+08:00</updated><id>/feed.xml</id><title type="html">W41ter’s Bistro</title><subtitle>Focus on distributed storage system, compiler.</subtitle><entry><title type="html">HotRing - A Hotspot Aware In-Memory Key-Value Store</title><link href="/papers/2022/03/29/HotRing-A-Hotspot-Aware-In-Memory-Key-Value-Store.html" rel="alternate" type="text/html" title="HotRing - A Hotspot Aware In-Memory Key-Value Store" /><published>2022-03-29T00:00:00+08:00</published><updated>2022-03-29T00:00:00+08:00</updated><id>/papers/2022/03/29/HotRing-A-Hotspot-Aware-In-Memory-Key-Value-Store</id><content type="html" xml:base="/papers/2022/03/29/HotRing-A-Hotspot-Aware-In-Memory-Key-Value-Store.html"><![CDATA[<p>在 Alibaba 的生产环境中，KVS 的请求里有 50%-90% 只访问了 1% 的数据。如下图：</p>
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.2.2">Jekyll</generator><link href="/feed.xml" rel="self" type="application/atom+xml" /><link href="/" rel="alternate" type="text/html" /><updated>2022-03-30T18:06:42+08:00</updated><id>/feed.xml</id><title type="html">W41ter’s Bistro</title><subtitle>Focus on distributed storage system, compiler.</subtitle><entry><title type="html">Achieving High Throughput and Elasticity in a Large-than-Memory Store</title><link href="/papers/2022/03/30/Achieving-High-Throughput-and-Elasticity-in-a-Large-than-Memory-Store.html" rel="alternate" type="text/html" title="Achieving High Throughput and Elasticity in a Large-than-Memory Store" /><published>2022-03-30T00:00:00+08:00</published><updated>2022-03-30T00:00:00+08:00</updated><id>/papers/2022/03/30/Achieving-High-Throughput-and-Elasticity-in-a-Large-than-Memory-Store</id><content type="html" xml:base="/papers/2022/03/30/Achieving-High-Throughput-and-Elasticity-in-a-Large-than-Memory-Store.html"><![CDATA[<h2 id="背景">背景</h2>
+
+<p>如果数据都来自同一台机器，那么可以用导入、索引数据达到 100Mops/s 的单机 multi-core key-value stores 处理。而实际上现在有数十亿的数据需要处理，所以数据必须经过网络传输，并通过云的弹性能力创建足够的实例进行服务。为了满足这个需求，Shadowfax 在 FASTER 的基础上，构建了一个具有快速数据迁移能力的高性能分布式 key-value store。</p>
+
+<h2 id="基本设计">基本设计</h2>
+
+<p><img src="/uploads/images/2022/shadowfox-1.png" alt="Figure 1: shadowfox design" /></p>
+
+<h3 id="per-core-per-thread-but-shared-everthing">Per core per thread but Shared Everthing</h3>
+
+<p>Shadowfox 的设计目标是能够充分利用 CPU 资源，提高系统吞吐。减少核间通信、竞争是提高 CPU 资源的关键。</p>
+
+<p>一种可行的方式是 shared nothing，每个 thread 有一个单独的 FASTER 实例，实例间互不影响。这需要路由请求到与之对应的 FASTER 线程上去，仍然不能避免跨线程协调。一个改进的方式是每个 client 和每个 server thread 都建立连接，将路由的工作交给 client 完成。但是这也要求 client 做跨线程协调，同时让连接数量暴涨。</p>
+
+<p>Shadowfox 采用的则是 shared everthing 的方式，每个线程共享一个 FASTER 实例。FASTER 提供了一种延迟通信的机制，使得它在多核下仍能取得非常高的并发。每个 client 和一个指定的 server thread 建立 session，这个 thread 负责处理该 client 的所有请求。</p>
+
+<p>另外一个需要考虑的是网络部分。网络收发包需要消耗大量的 CPU 资源。Shadowfox 通过将网络请求 offload 到智能卡处理，节省出来的 CPU 资源用于提升吞吐。</p>
+
+<p>这样设计的好处是：</p>
+
+<ul>
+  <li>避免竞争。同一个 client 的请求（来自相同 session）由同一个 thread 处理，不需要跨线程协调。</li>
+  <li>充分 batch，提高 pipeline。同一个 session 的请求可以充分 batch，以减少 per-packet 的开销。</li>
+  <li>client 异步提交请求，避免 head-of-line blocking。因为 Shadowfox 随时会发生 reconfiguration，而 session 中的请求是有序的，发生 reconfiguration 时 client 能够知道哪些 request 一定失败。</li>
+</ul>
+
+<h3 id="hash-partition-and-view-number">Hash partition and View number</h3>
+
+<p>Shadowfox 将数据通过 hash range 划分的方式分布到不同的 server 中。每个 server 负责服务一个 hash range。为了识别出 reconfiguration，每个 server 为当前的 hash range 计数（view number），每次 reconfiguration 发生时递增。</p>
+
+<p>view number 需要和 reconfiguration 一起持久化到 meta server 中。</p>
+
+<p>view number 的好处：</p>
+<ul>
+  <li>检查请求范围时只需要比较 view number 即可，不需要依次对比请求。</li>
+  <li>允许进行异步、延迟执行的 record ownership change。</li>
+</ul>
+
+<p>第二项时通过 asynchronous global cut 实现的。所谓 asynchronous global cut，其实只是通过 epoch based protection 异步地更新 view number，并将这个变化通过 session 异步地传播给 client。这个方式非常简单，无需多说，但是要取得论文中提到的保证同一时间没有任何两个 server 服务相同区间，还需要 migration 机制参与。</p>
+
+<blockquote>
+  <p>This cut unambiguously ensures no two servers concurrently serve operations on an overlapping hash range. This approach is free of synchronous coordination, helping maintain high throughput.</p>
+</blockquote>
+
+<h3 id="migration">Migration</h3>
+
+<p>Migration 机制可以看作两阶段提交，首先 source 发送 PrepForTransfer RPC 给 target，通知 target block 所有更大 view number 的请求。等这阶段完成后，source 就提升自己的 view number，并等待所有线程同步变更（一旦线程知道 view number 提升了，就会拒绝 staled request，交由 client 重试）。所有线程的 view number 一致后，就进入下一阶段，source 发送 TransferedOwnership RPC 给 target，这个时候 target 就开始服务请求了。</p>
+
+<p>Shadowfox 的 migration 可以分为两个阶段，正如上文所述，需要先通过提升 view number 完成 record ownership transfer，此后再异步地传输数据给 target。</p>
+
+<p>异步传输期间，尽管 target 已经拿到 ownership，在 source 同步这部分 record 给 target 前，它都不能服务这部分数据。</p>
+
+<blockquote>
+  <p>这中间显然有一个 gap，怎么看都不是异步的。。。</p>
+</blockquote>
+
+<p>当然，Shadowfox 为了减小这个 gap，会在开始 migration 前，对请求做一个 sampling，并将涉及到的 hot records 附带在 TransferedOwnership RPC 中一并发送给 target。这样 target 就能尽快的为 hot records 提供服务。</p>
+
+<p>等到所有 record 都同步完成，migration 就算结束。整个过程可以组成一个状态机，如下图：</p>
+
+<p><img src="/uploads/images/2022/shadowfox-2.png" alt="Figure 2: Migration states" /></p>
+
+<p>一部分 record 可能没有在内存中，在 SSD 里，Shadowfox 可以将这部分 record 写到共享存储上，这样 target 就可以直接读取这部分 record 而不是等 source 复制给它。</p>
+
+<h4 id="fault-tolerance">Fault tolerance</h4>
+
+<p>为了保证容错，source 和 target 在标记 complete 前，需要创建一份 checkpoint，如果之后任何一台机器故障，都可以通过 checkpoint 恢复数据。如果时在迁移过程中发生了故障，则 shadowfox 会取消迁移操作，并将迁移涉及到的 hash range 迁移回 source。</p>
+
+<p>如果某个机器不可用，shadowfox 需要从这条机器撤销其 record 的所有权，这是通过 lease 完成的。</p>
+
+<h2 id="评估">评估</h2>
+
+<p><img src="/uploads/images/2022/shadowfox-3.png" alt="Figure 3: throughput during migrate" /></p>
+
+<p>看起来 migrate 和 scale up 仍然对 throughput 有较大影响。</p>
+
+<p><img src="/uploads/images/2022/shadowfox-4.png" alt="Figure 4: Number of pending operations during scale up" /></p>
+
+<p>同时看起来在迁移过程中，被 block 的请求数量也不少。</p>]]></content><author><name></name></author><category term="papers" /><category term="live-migration," /><category term="shared-everything," /><category term="epoch-based-protection" /><summary type="html"><![CDATA[背景 如果数据都来自同一台机器，那么可以用导入、索引数据达到 100Mops/s 的单机 multi-core key-value stores 处理。而实际上现在有数十亿的数据需要处理，所以数据必须经过网络传输，并通过云的弹性能力创建足够的实例进行服务。为了满足这个需求，Shadowfax 在 FASTER 的基础上，构建了一个具有快速数据迁移能力的高性能分布式 key-value store。 基本设计 Per core per thread but Shared Everthing Shadowfox 的设计目标是能够充分利用 CPU 资源，提高系统吞吐。减少核间通信、竞争是提高 CPU 资源的关键。 一种可行的方式是 shared nothing，每个 thread 有一个单独的 FASTER 实例，实例间互不影响。这需要路由请求到与之对应的 FASTER 线程上去，仍然不能避免跨线程协调。一个改进的方式是每个 client 和每个 server thread 都建立连接，将路由的工作交给 client 完成。但是这也要求 client 做跨线程协调，同时让连接数量暴涨。 Shadowfox 采用的则是 shared everthing 的方式，每个线程共享一个 FASTER 实例。FASTER 提供了一种延迟通信的机制，使得它在多核下仍能取得非常高的并发。每个 client 和一个指定的 server thread 建立 session，这个 thread 负责处理该 client 的所有请求。 另外一个需要考虑的是网络部分。网络收发包需要消耗大量的 CPU 资源。Shadowfox 通过将网络请求 offload 到智能卡处理，节省出来的 CPU 资源用于提升吞吐。 这样设计的好处是： 避免竞争。同一个 client 的请求（来自相同 session）由同一个 thread 处理，不需要跨线程协调。 充分 batch，提高 pipeline。同一个 session 的请求可以充分 batch，以减少 per-packet 的开销。 client 异步提交请求，避免 head-of-line blocking。因为 Shadowfox 随时会发生 reconfiguration，而 session 中的请求是有序的，发生 reconfiguration 时 client 能够知道哪些 request 一定失败。 Hash partition and View number Shadowfox 将数据通过 hash range 划分的方式分布到不同的 server 中。每个 server 负责服务一个 hash range。为了识别出 reconfiguration，每个 server 为当前的 hash range 计数（view number），每次 reconfiguration 发生时递增。 view number 需要和 reconfiguration 一起持久化到 meta server 中。 view number 的好处： 检查请求范围时只需要比较 view number 即可，不需要依次对比请求。 允许进行异步、延迟执行的 record ownership change。 第二项时通过 asynchronous global cut 实现的。所谓 asynchronous global cut，其实只是通过 epoch based protection 异步地更新 view number，并将这个变化通过 session 异步地传播给 client。这个方式非常简单，无需多说，但是要取得论文中提到的保证同一时间没有任何两个 server 服务相同区间，还需要 migration 机制参与。 This cut unambiguously ensures no two servers concurrently serve operations on an overlapping hash range. This approach is free of synchronous coordination, helping maintain high throughput. Migration Migration 机制可以看作两阶段提交，首先 source 发送 PrepForTransfer RPC 给 target，通知 target block 所有更大 view number 的请求。等这阶段完成后，source 就提升自己的 view number，并等待所有线程同步变更（一旦线程知道 view number 提升了，就会拒绝 staled request，交由 client 重试）。所有线程的 view number 一致后，就进入下一阶段，source 发送 TransferedOwnership RPC 给 target，这个时候 target 就开始服务请求了。 Shadowfox 的 migration 可以分为两个阶段，正如上文所述，需要先通过提升 view number 完成 record ownership transfer，此后再异步地传输数据给 target。 异步传输期间，尽管 target 已经拿到 ownership，在 source 同步这部分 record 给 target 前，它都不能服务这部分数据。 这中间显然有一个 gap，怎么看都不是异步的。。。 当然，Shadowfox 为了减小这个 gap，会在开始 migration 前，对请求做一个 sampling，并将涉及到的 hot records 附带在 TransferedOwnership RPC 中一并发送给 target。这样 target 就能尽快的为 hot records 提供服务。 等到所有 record 都同步完成，migration 就算结束。整个过程可以组成一个状态机，如下图： 一部分 record 可能没有在内存中，在 SSD 里，Shadowfox 可以将这部分 record 写到共享存储上，这样 target 就可以直接读取这部分 record 而不是等 source 复制给它。 Fault tolerance 为了保证容错，source 和 target 在标记 complete 前，需要创建一份 checkpoint，如果之后任何一台机器故障，都可以通过 checkpoint 恢复数据。如果时在迁移过程中发生了故障，则 shadowfox 会取消迁移操作，并将迁移涉及到的 hash range 迁移回 source。 如果某个机器不可用，shadowfox 需要从这条机器撤销其 record 的所有权，这是通过 lease 完成的。 评估 看起来 migrate 和 scale up 仍然对 throughput 有较大影响。 同时看起来在迁移过程中，被 block 的请求数量也不少。]]></summary></entry><entry><title type="html">HotRing - A Hotspot Aware In-Memory Key-Value Store</title><link href="/papers/2022/03/29/HotRing-A-Hotspot-Aware-In-Memory-Key-Value-Store.html" rel="alternate" type="text/html" title="HotRing - A Hotspot Aware In-Memory Key-Value Store" /><published>2022-03-29T00:00:00+08:00</published><updated>2022-03-29T00:00:00+08:00</updated><id>/papers/2022/03/29/HotRing-A-Hotspot-Aware-In-Memory-Key-Value-Store</id><content type="html" xml:base="/papers/2022/03/29/HotRing-A-Hotspot-Aware-In-Memory-Key-Value-Store.html"><![CDATA[<p>在 Alibaba 的生产环境中，KVS 的请求里有 50%-90% 只访问了 1% 的数据。如下图：</p>
 
 <p><img src="/uploads/images/2022/hotring-1.png" alt="Figure 1: Access ratio of different keys." /></p>
 
@@ -1375,327 +1453,4 @@ table_open_cache 2000
   <li><a href="http://www.cnblogs.com/yum777/p/6554901.html">解决 Mysql 内存占用巨大问题</a></li>
   <li><a href="http://blog.csdn.net/wulantian/article/details/41119755">MySQL 5.6内存占用过高解决方案</a></li>
   <li><a href="http://bbs.csdn.net/topics/390724779">linux 下mysql内存占用过高</a></li>
-</ul>]]></content><author><name></name></author><category term="Linux" /><category term="服务器" /><category term="Mysql" /><summary type="html"><![CDATA[前两天刚把服务器部署上，今天就出现了异常。在 App 上看是服务器直接宕机。原本以为仅仅是服务端挂了，在服务器上使用 ps aux | grep java 发现进程还在，只是不服务了。打开 log 发现 Java run out of memory，导致无法创建新的线程。 使用 top -o %MEM 查看，java 占用近 200M，mysql 占用近 500 M。因为是个人用的小服务器，只有 1G 内存，吃紧得很。既然 mysql 占用了最多的内存，就让它吐出一点好了。 一开始猜测是 InnoDB 缓冲区过大，不过在 /etc/mysql/my.cnf 中发现配置的缓存已经非常小了。后来在网上发现是因为 Mysql 5.6 版本默认 GA 配置过大，导致初始需要近 400M 空间。通过下面配置，直接讲内存降到 100M 以下： performance_schema_max_table_instances=400 table_definition_cache=400 table_open_cache=256 参数意义： performance_schema_max_table_instances The maximum number of instrumented table objects 检测的表对象的最大数目。 table_definition_cache The number of table definitions (from .frm files) that can be stored in the definition cache. If you use a large number of tables, you can create a large table definition cache to speed up opening of tables. The table definition cache takes less space and does not use file descriptors, unlike the normal table cache. The minimum and default values are both 400. 缓存 frm 文件 table_open_cache The number of open tables for all threads. Increasing this value increases the number of file descriptors that mysqld requires. table_open_cache 指的是缓存数据文件的描述符(Linux/Unix)相关信息 在 5.6 中的默认配置： performance_schema_max_table_instances 12500 table_definition_cache 1400 table_open_cache 2000 References: 解决 Mysql 内存占用巨大问题 MySQL 5.6内存占用过高解决方案 linux 下mysql内存占用过高]]></summary></entry><entry><title type="html">CSKS-(三)、设计模式</title><link href="/%E6%80%BB%E7%BB%93/2017/08/26/CSKS-%E4%B8%89-%E8%AE%BE%E8%AE%A1%E6%A8%A1%E5%BC%8F.html" rel="alternate" type="text/html" title="CSKS-(三)、设计模式" /><published>2017-08-26T18:00:49+08:00</published><updated>2017-08-26T18:00:49+08:00</updated><id>/%E6%80%BB%E7%BB%93/2017/08/26/CSKS-%E4%B8%89-%E3%80%81%E8%AE%BE%E8%AE%A1%E6%A8%A1%E5%BC%8F</id><content type="html" xml:base="/%E6%80%BB%E7%BB%93/2017/08/26/CSKS-%E4%B8%89-%E8%AE%BE%E8%AE%A1%E6%A8%A1%E5%BC%8F.html"><![CDATA[<h1 id="面对对象原则">面对对象原则</h1>
-
-<ul>
-  <li>单一职责：不要存在多于一个导致类变更的原因；通俗的说，即一个类只负责一项职责；</li>
-  <li>里氏替换：所有引用基类的地方必须能透明地使用其子类的对象；通俗的来讲就是：子类可以扩展父类的功能，但不能改变父类原有的功能；</li>
-  <li>依赖倒置：高层模块不应该依赖低层模块，二者都应该依赖其抽象；抽象不应该依赖细节；细节应该依赖抽象；</li>
-  <li>接口隔离：客户端不应该依赖它不需要的接口；一个类对另一个类的依赖应该建立在最小的接口上；</li>
-  <li>迪米特法则：一个对象应该对其他对象保持最少的了解；</li>
-  <li>开闭原则：一个软件实体如类、模块和函数应该对扩展开放，对修改关闭；</li>
-</ul>
-
-<h1 id="23种设计模式">23种设计模式</h1>
-
-<p><em>References</em></p>
-
-<ul>
-  <li>
-    <p><a href="http://www.jianshu.com/p/dbc8a279165d">设计模式大总汇</a></p>
-  </li>
-  <li>单例模式：确保整个程序中只有一个实例，并自行实例化以向整个体统提供实例</li>
-  <li>工厂方法模式：将实例的创建延迟到子类</li>
-  <li>抽象工厂模式：为创建一组相互依赖的对象提供一个接口，并将创建过程延迟到子类</li>
-  <li>建造者模式：将一个复杂对象的创建和表示分离开来，使得同一个创建过程可以得到不同的表示</li>
-  <li>原型模式：</li>
-  <li>迭代器模式：在不暴露内部实现的情况下，使客户可以遍历容器内部对象</li>
-  <li>责任联模式：将对象连成一条链，并沿着这条链传递该请求，直到有对象处理该请求位置，解决了发送方和接收方的耦合</li>
-  <li>桥梁模式：将抽象和实现解耦，使两者可以独立变化</li>
-  <li>适配器模式：将一个对象的接口转换成另一个对象期待的接口，从而使原本不匹配的对象能在一起工作</li>
-  <li>中介者模式：将一系列对象的交互封装起来，使其耦合松散，而且可以独立变化</li>
-  <li>观察者模式：定义一种1-N的关系，使得当一个对象更新时，所有依赖它的对象都能收到通知并响应</li>
-  <li>命令模式：将客户参数化，使得客户请求可以记录、排队，并能实现撤销，恢复等功能</li>
-  <li>亨元模式：使用共享对象可以有效的支持大量细粒度的对象</li>
-  <li>状态模式：当一个对象状态改变时改变其行为，使得对象看起来像是改变了类</li>
-  <li>解释器模式：定义一组语言及其解释器</li>
-  <li>访问者模式：定义一组接口，从而是现在不改变数据结构自身的情况下添加职责</li>
-  <li>装饰器模式：动态的为一个对象添加一些额外的职责，比生成子类要简单</li>
-  <li>代理模式：提供一种代理以控制对对象的访问</li>
-  <li>策略模式：定义并封装一组可以互换的算法</li>
-  <li>模板方法模式：定义一个算法的骨架，将一些具体步骤延迟到子类。使得子类可以不改变算法结构即重定义算法特定步骤</li>
-  <li>组合模式：</li>
-  <li>门面模式：</li>
-  <li>备忘录模式：</li>
-</ul>
-
-<h2 id="单例模式">单例模式</h2>
-
-<p>单例模式重点在两个方面：</p>
-
-<ul>
-  <li>系统只有一个实例；</li>
-  <li>自行实例化并向整个系统提供这个实例；</li>
-</ul>
-
-<p>单例模式的实现上有两个重要的因素：</p>
-
-<ul>
-  <li>线程安全；</li>
-  <li>延迟加载；</li>
-</ul>
-
-<p>延迟加载技术可以解耦依赖链与初始化顺序。如果单例在程序执行前就进行初始化，某一个单例的初始化过程中，又引用到了另一个单例，便出现了加载顺序的决议问题。而使用延迟加载技术将这种依赖过程与初始化顺序进行了自动决议。</p>
-
-<div class="language-java highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">void</span> <span class="nf">instance</span><span class="o">()</span> <span class="o">{</span>
-  <span class="kd">static</span> <span class="nc">Singleston</span> <span class="o">*</span> <span class="n">sing</span> <span class="o">=</span> <span class="no">NULL</span><span class="o">;</span>
-  <span class="k">if</span> <span class="o">(</span><span class="n">sing</span> <span class="o">==</span> <span class="no">NULL</span><span class="o">)</span> <span class="o">{</span>
-    <span class="n">sing</span> <span class="o">=</span> <span class="k">new</span> <span class="nc">Singleston</span><span class="o">;</span>
-  <span class="o">}</span>
-  <span class="k">return</span> <span class="n">sing</span><span class="o">;</span>
-<span class="o">}</span>
-</code></pre></div></div>
-
-<p>线程安全方面则根据语言不同而有所差异，以 C++ 为例，C++11 标准规定了局部静态变量初始化的线程安全特性，所以写起来非常方便：</p>
-
-<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">void</span> <span class="nf">instance</span><span class="p">()</span> <span class="p">{</span>
-  <span class="k">static</span> <span class="n">Class</span> <span class="n">ins</span><span class="p">;</span>
-  <span class="k">return</span> <span class="n">ins</span><span class="p">;</span>
-<span class="p">}</span>
-</code></pre></div></div>
-
-<p>按照这种写法不仅线程安全，同时还解决了依赖问题。如果不想用这种办法，也可以使用标准库提供的：<code class="language-plaintext highlighter-rouge">call_once()</code> 函数。</p>
-
-<p>Java 在方面就要麻烦得多，我个人比较偏爱的是 DCL 这种方式：</p>
-
-<div class="language-java highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kd">public</span> <span class="kd">class</span> <span class="nc">Singleston</span> <span class="o">{</span>
-  <span class="kd">private</span> <span class="kd">static</span> <span class="kd">volatile</span> <span class="nc">Singleston</span> <span class="n">instance</span><span class="o">;</span>
-
-  <span class="kd">public</span> <span class="kd">static</span> <span class="nf">getInstance</span><span class="o">()</span> <span class="o">{</span>
-    <span class="k">if</span> <span class="o">(</span><span class="n">instance</span> <span class="o">==</span> <span class="kc">null</span><span class="o">)</span> <span class="kd">synchronized</span><span class="o">(</span><span class="nc">Singleston</span><span class="o">.</span><span class="na">class</span><span class="o">)</span> <span class="o">{</span>
-      <span class="k">if</span> <span class="o">(</span><span class="n">instance</span> <span class="o">==</span> <span class="kc">null</span><span class="o">)</span> 
-        <span class="n">instance</span> <span class="o">=</span> <span class="k">new</span> <span class="nc">Singleston</span><span class="o">;</span>
-    <span class="o">}</span>
-    <span class="k">return</span> <span class="n">instance</span><span class="o">;</span>
-  <span class="o">}</span> 
-<span class="o">}</span>
-</code></pre></div></div>
-
-<p>Java 版本的 DCL 需要注意使用 <code class="language-plaintext highlighter-rouge">volatile</code> 修饰，从 1.5 版本开始这种写法已经不存在问题了。</p>
-
-<h2 id="建造者模式">建造者模式</h2>
-
-<p>建造者模式用于将一个复杂对象的建造过程和表示过程分开。这种比较适合一旦创建好后不会怎么更改的对象。在 Android 中的 <code class="language-plaintext highlighter-rouge">AlertDialg</code> 就使用这种方式：</p>
-
-<div class="language-java highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kd">protected</span> <span class="kt">void</span> <span class="nf">dialog</span><span class="o">()</span> <span class="o">{</span>
-  <span class="k">new</span> <span class="nf">Builder</span><span class="o">(</span><span class="k">this</span><span class="o">)</span>
-      <span class="o">.</span><span class="na">setMessage</span><span class="o">(</span><span class="s">"are you sure?"</span><span class="o">)</span>
-      <span class="o">.</span><span class="na">setTitle</span><span class="o">(</span><span class="s">"tips"</span><span class="o">)</span>
-      <span class="o">.</span><span class="na">setPositiveButtion</span><span class="o">(</span><span class="s">"yes"</span><span class="o">,</span> <span class="k">new</span> <span class="nc">OnClickListener</span><span class="o">()</span> <span class="o">{</span>
-        <span class="nd">@Override</span>
-        <span class="kd">public</span> <span class="kt">void</span> <span class="nf">onClick</span><span class="o">(</span><span class="nc">DialogInterface</span> <span class="n">dialog</span><span class="o">,</span> <span class="kt">int</span> <span class="n">which</span><span class="o">)</span> <span class="o">{</span>
-          <span class="n">dialog</span><span class="o">.</span><span class="na">dismiss</span><span class="o">();</span>
-          <span class="nc">Main</span><span class="o">.</span><span class="na">this</span><span class="o">.</span><span class="na">finish</span><span class="o">();</span>
-        <span class="o">}</span>
-      <span class="o">})</span>
-      <span class="o">.</span><span class="na">setNegativeButton</span><span class="o">(</span><span class="s">"No"</span><span class="o">,</span> <span class="k">new</span> <span class="nc">OnClickListener</span><span class="o">()</span> <span class="o">{</span>
-        <span class="nd">@Override</span>
-        <span class="kd">public</span> <span class="kt">void</span> <span class="nf">onClick</span><span class="o">(</span><span class="nc">DialogInterface</span> <span class="n">dialog</span><span class="o">,</span> <span class="kt">int</span> <span class="n">which</span><span class="o">)</span> <span class="o">{</span>
-          <span class="n">dialog</span><span class="o">.</span><span class="na">dismiss</span><span class="o">();</span>
-        <span class="o">}</span>
-      <span class="o">})</span>
-      <span class="o">.</span><span class="na">create</span><span class="o">()</span>
-      <span class="o">.</span><span class="na">show</span><span class="o">();</span>
-<span class="o">}</span>
-</code></pre></div></div>
-
-<p>无独有偶，在 Java 著名网络库 Netty 中，创建 <code class="language-plaintext highlighter-rouge">Channel</code> 也是使用建造者模式：</p>
-
-<div class="language-java highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nc">Bootstrap</span> <span class="n">b</span> <span class="o">=</span> <span class="k">new</span> <span class="nc">Bootstrap</span><span class="o">();</span>  
-<span class="n">b</span><span class="o">.</span><span class="na">group</span><span class="o">(</span><span class="n">group</span><span class="o">)</span>  
-    <span class="o">.</span><span class="na">channel</span><span class="o">(</span><span class="nc">NioSocketChannel</span><span class="o">.</span><span class="na">class</span><span class="o">)</span>  
-    <span class="o">.</span><span class="na">option</span><span class="o">(</span><span class="nc">ChannelOption</span><span class="o">.</span><span class="na">TCP_NODELAY</span><span class="o">,</span> <span class="kc">true</span><span class="o">)</span>  
-    <span class="o">.</span><span class="na">handler</span><span class="o">(</span><span class="k">new</span> <span class="nc">ChannelInitializer</span><span class="o">&lt;</span><span class="nc">SocketChannel</span><span class="o">&gt;()</span> <span class="o">{</span>  
-        <span class="nd">@Override</span>  
-        <span class="kd">public</span> <span class="kt">void</span> <span class="nf">initChannel</span><span class="o">(</span><span class="nc">SocketChannel</span> <span class="n">ch</span><span class="o">)</span> <span class="kd">throws</span> <span class="nc">Exception</span> <span class="o">{</span>  
-          <span class="c1">// ...</span>
-        <span class="o">}</span>  
-    <span class="o">});</span>  
-
-<span class="nc">ChannelFuture</span> <span class="n">f</span> <span class="o">=</span> <span class="n">b</span><span class="o">.</span><span class="na">connect</span><span class="o">(</span><span class="n">host</span><span class="o">,</span> <span class="n">port</span><span class="o">).</span><span class="na">sync</span><span class="o">();</span>  
-</code></pre></div></div>
-
-<h2 id="迭代器模式">迭代器模式</h2>
-
-<p>容器需要提供用户一个访问机制，而又不暴露内部细节，这种方法就叫迭代器模式。C++ 和 Java 中均有迭代器模式的影子：</p>
-
-<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1">// C++</span>
-<span class="n">vector</span><span class="o">&lt;</span><span class="kt">int</span><span class="o">&gt;</span> <span class="n">arrays</span><span class="p">;</span>
-<span class="c1">// ...</span>
-<span class="k">auto</span> <span class="n">it</span> <span class="o">=</span> <span class="n">arrays</span><span class="p">.</span><span class="n">begin</span><span class="p">();</span>
-
-<span class="c1">// Java</span>
-<span class="n">ArrayList</span><span class="o">&lt;</span><span class="n">Integer</span><span class="o">&gt;</span> <span class="n">arrays</span> <span class="o">=</span> <span class="k">new</span> <span class="n">ArrayList</span><span class="o">&lt;</span><span class="n">Integer</span><span class="o">&gt;</span><span class="p">();</span>
-<span class="c1">// ...</span>
-<span class="n">Iterator</span><span class="o">&lt;</span><span class="n">Integer</span><span class="o">&gt;</span> <span class="n">it</span> <span class="o">=</span> <span class="n">arrays</span><span class="p">.</span><span class="n">iterator</span><span class="p">();</span>
-<span class="k">while</span> <span class="p">(</span><span class="n">it</span><span class="p">.</span><span class="n">hasNext</span><span class="p">())</span> <span class="p">{</span>
-  <span class="p">...</span>
-<span class="p">}</span>
-</code></pre></div></div>
-
-<h2 id="责任链模式">责任链模式</h2>
-
-<p>如其名，整个处理过程就像链一样，一级一级传递下去，从而接触了发送方和接收方的耦合。责任链模式常见于各种事件处理机制，比如 Android 的事件处理机制、Win32 中的消息机制。责任链模式的显著特点是如果一个事件（消息）在当前处理逻辑中不处理，就将其传递给下一级处理逻辑。</p>
-
-<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">void</span> <span class="nf">slove</span><span class="p">(</span><span class="n">Message</span> <span class="n">msg</span><span class="p">,</span> <span class="n">Handler</span> <span class="n">handle</span><span class="p">)</span> <span class="p">{</span>
-  <span class="k">switch</span> <span class="p">(</span><span class="n">msg</span><span class="p">)</span> <span class="p">{</span>
-    <span class="k">case</span> <span class="n">xxx</span><span class="p">:</span> <span class="p">...;</span> <span class="k">break</span><span class="p">;</span>
-    <span class="nl">default:</span> <span class="n">handle</span><span class="p">.</span><span class="n">slove</span><span class="p">(</span><span class="n">msg</span><span class="p">);</span>
-  <span class="p">}</span>
-<span class="p">}</span>
-</code></pre></div></div>
-
-<h2 id="桥梁模式">桥梁模式</h2>
-
-<p>将抽象和实现解耦的就是桥梁模式。通常在设计时，不要传播设计，而桥梁模式正好可以处理。比如一开始只有一台实验仪器，所以用单例模式来表示，某一天实验室又购进了一台新的仪器，那么之前所有引用单例的代码都要修改。而设计时如果将获取设备接口和单例分开，就没有这么多麻烦了：</p>
-
-<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">public</span> <span class="k">class</span> <span class="nc">Device</span> <span class="p">{</span>
-  
-  <span class="k">private</span> <span class="k">class</span> <span class="nc">SingleDevice</span> <span class="p">{</span>
-    <span class="c1">// singleston </span>
-  <span class="p">}</span>
-
-  <span class="k">public</span> <span class="k">static</span> <span class="n">Device</span> <span class="n">getByRandom</span><span class="p">()</span> <span class="p">{</span>
-    <span class="k">return</span> <span class="n">SingleDevice</span><span class="p">.</span><span class="n">getInstance</span><span class="p">();</span>
-  <span class="p">}</span>
-<span class="p">}</span>
-</code></pre></div></div>
-
-<p>桥梁模式的另一个常见用途在 C++ 中，常用于实现减少 C++ 头文件编译负担：</p>
-
-<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1">// a.h 中</span>
-<span class="k">class</span> <span class="nc">A</span> <span class="p">{</span>
-  <span class="k">class</span> <span class="nc">AImpl</span><span class="p">;</span>
-<span class="nl">public:</span>
-  <span class="kt">void</span> <span class="k">do</span><span class="p">();</span>
-
-<span class="nl">private:</span>
-  <span class="n">std</span><span class="o">::</span><span class="n">shared_ptr</span><span class="o">&lt;</span><span class="n">AImpl</span><span class="o">&gt;</span> <span class="n">impl</span><span class="p">;</span>
-<span class="p">};</span>
-
-<span class="c1">// A.cpp 中</span>
-<span class="k">class</span> <span class="nc">A</span><span class="o">::</span><span class="n">AImpl</span> <span class="p">{</span>
-<span class="nl">public:</span>
-  <span class="kt">void</span> <span class="k">do</span><span class="p">()</span> <span class="p">{</span>
-    <span class="p">...</span>
-  <span class="p">}</span>
-<span class="p">};</span>
-
-<span class="kt">void</span> <span class="n">A</span><span class="o">::</span><span class="k">do</span><span class="p">()</span> <span class="p">{</span>
-  <span class="n">impl</span><span class="o">-&gt;</span><span class="k">do</span><span class="p">();</span>
-<span class="p">}</span>
-</code></pre></div></div>
-
-<h2 id="适配器模式">适配器模式</h2>
-
-<p>适配器模式可以使两个不兼容的接口一起工作，有 Andoird 开发经验的一定对 Adaptor 非常熟悉，这里不细讲。</p>
-
-<h2 id="中介者模式">中介者模式</h2>
-
-<p>中介者模式把两个独立对象的一系列操作封装起来，把这两个对象之间的联系解耦，这样两个对象不依赖对方，可以独立变化。</p>
-
-<h2 id="观察者模式">观察者模式</h2>
-
-<p>解耦操作最好的还属观察者模式。观察者模式重新定义了对象之间的依赖关系，将原有的监听操作转变为通知操作。</p>
-
-<p>关于使用观察者模式，比较典型的例子是控件事件的监听–在指定控件上绑定一个回调函数，事件发生的时候，控件负责调用该函数通知用户。在 Java 中大名鼎鼎的响应式库 RxJava 就是以观察者模式为基础，还解决了长期以来困扰的 Callback hell 问题。Vue.js 中实现数据绑定也是以观察者模式为基础的。</p>
-
-<h2 id="命令模式">命令模式</h2>
-
-<p>命令模式最重要的一点就是将客户端的请求参数化，从而实现请求排队、记录回滚等。在游戏中，命令模式可以将用户对角色控制的输入进行参数化，实现死亡回放等。在服务器开发中，将客户端的请求参数化，并放入请求队列，实现流量控制。</p>
-
-<h2 id="状态模式">状态模式</h2>
-
-<p>说到命令模式不得不提状态模式，以任务操纵为例，人在地面上可以进行跳跃，而在跳跃的过程中则不可以。那么对于相同的命令，在不同的状态下有不同的响应，这就是状态模式。状态模式可以在改变对象状态的同时改变对象的行为。</p>
-
-<h2 id="享元模式">享元模式</h2>
-
-<p>游戏中地图大量元素存在重复的情况，大量创建相同的对象非常浪费内存，此时可以创建几个单例，让地图引用具体的单例，这就是享元模式。</p>
-
-<h2 id="解释器模式">解释器模式</h2>
-
-<p>现在很多游戏的基本框架由 C/C++ 来写，具体业务逻辑则交给 lua 之类的脚本处理。如果是自己设计的脚本，那么就需要写出对应的解释器：</p>
-
-<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">Expr</span> <span class="p">{</span>
-<span class="nl">public:</span>
-  <span class="n">Value</span> <span class="n">execute</span><span class="p">();</span>
-
-<span class="nl">private:</span> 
-  <span class="kt">char</span> <span class="n">c</span><span class="p">;</span>
-  <span class="n">Expr</span> <span class="o">*</span> <span class="n">left</span><span class="p">,</span> <span class="o">*</span> <span class="n">right</span><span class="p">;</span>
-<span class="p">};</span>
-<span class="c1">// 解释器模式</span>
-</code></pre></div></div>
-
-<h2 id="访问者模式">访问者模式</h2>
-
-<p>一开始我们只提供了游戏脚本解释器的解释功能，某次调试的时候希望将具体的抽象语法书打印出来，所以在每个元素类中添加了打印支持：</p>
-
-<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">Expr</span> <span class="p">{</span>
-<span class="nl">public:</span>
-  <span class="n">Value</span> <span class="n">execute</span><span class="p">();</span>
-  <span class="n">Value</span> <span class="n">dump</span><span class="p">()</span> <span class="p">{</span>
-    <span class="n">left</span><span class="o">-&gt;</span><span class="n">dump</span><span class="p">();</span>
-    <span class="n">cout</span> <span class="o">&lt;&lt;</span> <span class="n">c</span> <span class="p">;</span>
-    <span class="n">right</span><span class="o">-&gt;</span><span class="n">dump</span><span class="p">();</span>
-  <span class="p">}</span>
-
-<span class="nl">private:</span> 
-  <span class="kt">char</span> <span class="n">c</span><span class="p">;</span>
-  <span class="n">Expr</span> <span class="o">*</span> <span class="n">left</span><span class="p">,</span> <span class="o">*</span> <span class="n">right</span><span class="p">;</span>
-<span class="p">};</span>
-</code></pre></div></div>
-
-<p>每当出现一个新的需求时，都要对原有的数据结构进行修改。而访问者模式为我们提供了遍历，可以在不修改数据结构的同时增加数据结构上的操作。</p>
-
-<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">Visitor</span> <span class="p">{</span>
-<span class="nl">public:</span>
-  <span class="k">virtual</span> <span class="kt">void</span> <span class="n">visit</span><span class="p">(</span><span class="n">Expr</span> <span class="o">*</span><span class="n">ptr</span><span class="p">);</span>
-  <span class="k">virtual</span> <span class="kt">void</span> <span class="n">visit</span><span class="p">(</span><span class="n">Value</span> <span class="o">*</span><span class="n">ptr</span><span class="p">);</span>
-<span class="p">};</span>
-
-<span class="k">class</span> <span class="nc">Visitable</span> <span class="p">{</span>
-<span class="nl">public:</span>
-  <span class="k">virtual</span> <span class="kt">void</span> <span class="n">accept</span><span class="p">(</span><span class="n">Visitor</span> <span class="o">*</span><span class="n">visitor</span><span class="p">);</span>
-<span class="p">};</span>
-
-<span class="c1">//...</span>
-<span class="k">class</span> <span class="nc">Expr</span> <span class="o">:</span> <span class="k">public</span> <span class="n">Visitable</span> <span class="p">{</span>
-<span class="nl">public:</span>
-  <span class="kt">void</span> <span class="n">accept</span><span class="p">(</span><span class="n">Visitor</span> <span class="o">*</span><span class="n">visitor</span><span class="p">)</span> <span class="p">{</span>
-    <span class="n">visitor</span><span class="o">-&gt;</span><span class="n">visit</span><span class="p">(</span><span class="k">this</span><span class="p">);</span>
-  <span class="p">}</span>
-<span class="p">};</span>
-
-<span class="k">class</span> <span class="nc">Dump</span> <span class="o">:</span> <span class="k">public</span> <span class="n">Visitor</span> <span class="p">{</span>
-<span class="nl">public:</span>
-  <span class="kt">void</span> <span class="n">visit</span><span class="p">(</span><span class="n">Value</span> <span class="o">*</span> <span class="n">v</span><span class="p">);</span>
-
-  <span class="kt">void</span> <span class="n">visit</span><span class="p">(</span><span class="n">Expr</span> <span class="o">*</span> <span class="n">e</span><span class="p">)</span> <span class="p">{</span>
-    <span class="n">e</span><span class="o">-&gt;</span><span class="n">left</span><span class="o">-&gt;</span><span class="n">accept</span><span class="p">(</span><span class="k">this</span><span class="p">);</span>
-    <span class="n">cout</span> <span class="o">&lt;&lt;</span> <span class="n">e</span><span class="o">-&gt;</span><span class="n">c</span><span class="p">;</span>
-    <span class="n">e</span><span class="o">-&gt;</span><span class="n">right</span><span class="o">-&gt;</span><span class="n">accept</span><span class="p">(</span><span class="k">this</span><span class="p">);</span>
-  <span class="p">}</span>
-<span class="p">};</span>
-</code></pre></div></div>
-
-<h2 id="装饰器模式">装饰器模式</h2>
-
-<p>装饰器模式可以在不继承对象的同时给对象增加操作。Python 中有一个装饰器的概念，比如我们要给原来的函数添加上调用记录到日志的功能：</p>
-
-<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">log</span><span class="p">(</span><span class="n">func</span><span class="p">):</span>
-    <span class="k">def</span> <span class="nf">wrapper</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kw</span><span class="p">):</span>
-        <span class="k">print</span><span class="p">(</span><span class="s">'call %s():'</span> <span class="o">%</span> <span class="n">func</span><span class="p">.</span><span class="n">__name__</span><span class="p">)</span>
-        <span class="k">return</span> <span class="n">func</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kw</span><span class="p">)</span>
-    <span class="k">return</span> <span class="n">wrapper</span>
-
-<span class="o">@</span><span class="n">log</span>
-<span class="k">def</span> <span class="nf">do</span><span class="p">():</span>
-  <span class="k">pass</span>
-</code></pre></div></div>
-
-<p>与之类似的还有 Java 提供的注解功能，这里不展开。</p>
-
-<h2 id="代理模式">代理模式</h2>
-
-<p>说到代理，常见有 VPN、HTTP Proxy ，代理模式用于控制对对象的访问。比如实现一个 RPC 功能，在客户端定义一个接口，由代理服务生成接口对应的实例。客户在调用接口时，代理服务监测并将请求转发给服务器，等到服务端计算完成并返回时，代理服务把结果返回给客户端。从客户端的角度上，这个过程和调用一个耗时的函数没有区别。</p>]]></content><author><name></name></author><category term="总结" /><summary type="html"><![CDATA[面对对象原则 单一职责：不要存在多于一个导致类变更的原因；通俗的说，即一个类只负责一项职责； 里氏替换：所有引用基类的地方必须能透明地使用其子类的对象；通俗的来讲就是：子类可以扩展父类的功能，但不能改变父类原有的功能； 依赖倒置：高层模块不应该依赖低层模块，二者都应该依赖其抽象；抽象不应该依赖细节；细节应该依赖抽象； 接口隔离：客户端不应该依赖它不需要的接口；一个类对另一个类的依赖应该建立在最小的接口上； 迪米特法则：一个对象应该对其他对象保持最少的了解； 开闭原则：一个软件实体如类、模块和函数应该对扩展开放，对修改关闭； 23种设计模式 References 设计模式大总汇 单例模式：确保整个程序中只有一个实例，并自行实例化以向整个体统提供实例 工厂方法模式：将实例的创建延迟到子类 抽象工厂模式：为创建一组相互依赖的对象提供一个接口，并将创建过程延迟到子类 建造者模式：将一个复杂对象的创建和表示分离开来，使得同一个创建过程可以得到不同的表示 原型模式： 迭代器模式：在不暴露内部实现的情况下，使客户可以遍历容器内部对象 责任联模式：将对象连成一条链，并沿着这条链传递该请求，直到有对象处理该请求位置，解决了发送方和接收方的耦合 桥梁模式：将抽象和实现解耦，使两者可以独立变化 适配器模式：将一个对象的接口转换成另一个对象期待的接口，从而使原本不匹配的对象能在一起工作 中介者模式：将一系列对象的交互封装起来，使其耦合松散，而且可以独立变化 观察者模式：定义一种1-N的关系，使得当一个对象更新时，所有依赖它的对象都能收到通知并响应 命令模式：将客户参数化，使得客户请求可以记录、排队，并能实现撤销，恢复等功能 亨元模式：使用共享对象可以有效的支持大量细粒度的对象 状态模式：当一个对象状态改变时改变其行为，使得对象看起来像是改变了类 解释器模式：定义一组语言及其解释器 访问者模式：定义一组接口，从而是现在不改变数据结构自身的情况下添加职责 装饰器模式：动态的为一个对象添加一些额外的职责，比生成子类要简单 代理模式：提供一种代理以控制对对象的访问 策略模式：定义并封装一组可以互换的算法 模板方法模式：定义一个算法的骨架，将一些具体步骤延迟到子类。使得子类可以不改变算法结构即重定义算法特定步骤 组合模式： 门面模式： 备忘录模式： 单例模式 单例模式重点在两个方面： 系统只有一个实例； 自行实例化并向整个系统提供这个实例； 单例模式的实现上有两个重要的因素： 线程安全； 延迟加载； 延迟加载技术可以解耦依赖链与初始化顺序。如果单例在程序执行前就进行初始化，某一个单例的初始化过程中，又引用到了另一个单例，便出现了加载顺序的决议问题。而使用延迟加载技术将这种依赖过程与初始化顺序进行了自动决议。 void instance() { static Singleston * sing = NULL; if (sing == NULL) { sing = new Singleston; } return sing; } 线程安全方面则根据语言不同而有所差异，以 C++ 为例，C++11 标准规定了局部静态变量初始化的线程安全特性，所以写起来非常方便： void instance() { static Class ins; return ins; } 按照这种写法不仅线程安全，同时还解决了依赖问题。如果不想用这种办法，也可以使用标准库提供的：call_once() 函数。 Java 在方面就要麻烦得多，我个人比较偏爱的是 DCL 这种方式： public class Singleston { private static volatile Singleston instance; public static getInstance() { if (instance == null) synchronized(Singleston.class) { if (instance == null) instance = new Singleston; } return instance; } } Java 版本的 DCL 需要注意使用 volatile 修饰，从 1.5 版本开始这种写法已经不存在问题了。 建造者模式 建造者模式用于将一个复杂对象的建造过程和表示过程分开。这种比较适合一旦创建好后不会怎么更改的对象。在 Android 中的 AlertDialg 就使用这种方式： protected void dialog() { new Builder(this) .setMessage("are you sure?") .setTitle("tips") .setPositiveButtion("yes", new OnClickListener() { @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); Main.this.finish(); } }) .setNegativeButton("No", new OnClickListener() { @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); } }) .create() .show(); } 无独有偶，在 Java 著名网络库 Netty 中，创建 Channel 也是使用建造者模式： Bootstrap b = new Bootstrap(); b.group(group) .channel(NioSocketChannel.class) .option(ChannelOption.TCP_NODELAY, true) .handler(new ChannelInitializer&lt;SocketChannel&gt;() { @Override public void initChannel(SocketChannel ch) throws Exception { // ... } }); ChannelFuture f = b.connect(host, port).sync(); 迭代器模式 容器需要提供用户一个访问机制，而又不暴露内部细节，这种方法就叫迭代器模式。C++ 和 Java 中均有迭代器模式的影子： // C++ vector&lt;int&gt; arrays; // ... auto it = arrays.begin(); // Java ArrayList&lt;Integer&gt; arrays = new ArrayList&lt;Integer&gt;(); // ... Iterator&lt;Integer&gt; it = arrays.iterator(); while (it.hasNext()) { ... } 责任链模式 如其名，整个处理过程就像链一样，一级一级传递下去，从而接触了发送方和接收方的耦合。责任链模式常见于各种事件处理机制，比如 Android 的事件处理机制、Win32 中的消息机制。责任链模式的显著特点是如果一个事件（消息）在当前处理逻辑中不处理，就将其传递给下一级处理逻辑。 void slove(Message msg, Handler handle) { switch (msg) { case xxx: ...; break; default: handle.slove(msg); } } 桥梁模式 将抽象和实现解耦的就是桥梁模式。通常在设计时，不要传播设计，而桥梁模式正好可以处理。比如一开始只有一台实验仪器，所以用单例模式来表示，某一天实验室又购进了一台新的仪器，那么之前所有引用单例的代码都要修改。而设计时如果将获取设备接口和单例分开，就没有这么多麻烦了： public class Device { private class SingleDevice { // singleston } public static Device getByRandom() { return SingleDevice.getInstance(); } } 桥梁模式的另一个常见用途在 C++ 中，常用于实现减少 C++ 头文件编译负担： // a.h 中 class A { class AImpl; public: void do(); private: std::shared_ptr&lt;AImpl&gt; impl; }; // A.cpp 中 class A::AImpl { public: void do() { ... } }; void A::do() { impl-&gt;do(); } 适配器模式 适配器模式可以使两个不兼容的接口一起工作，有 Andoird 开发经验的一定对 Adaptor 非常熟悉，这里不细讲。 中介者模式 中介者模式把两个独立对象的一系列操作封装起来，把这两个对象之间的联系解耦，这样两个对象不依赖对方，可以独立变化。 观察者模式 解耦操作最好的还属观察者模式。观察者模式重新定义了对象之间的依赖关系，将原有的监听操作转变为通知操作。 关于使用观察者模式，比较典型的例子是控件事件的监听–在指定控件上绑定一个回调函数，事件发生的时候，控件负责调用该函数通知用户。在 Java 中大名鼎鼎的响应式库 RxJava 就是以观察者模式为基础，还解决了长期以来困扰的 Callback hell 问题。Vue.js 中实现数据绑定也是以观察者模式为基础的。 命令模式 命令模式最重要的一点就是将客户端的请求参数化，从而实现请求排队、记录回滚等。在游戏中，命令模式可以将用户对角色控制的输入进行参数化，实现死亡回放等。在服务器开发中，将客户端的请求参数化，并放入请求队列，实现流量控制。 状态模式 说到命令模式不得不提状态模式，以任务操纵为例，人在地面上可以进行跳跃，而在跳跃的过程中则不可以。那么对于相同的命令，在不同的状态下有不同的响应，这就是状态模式。状态模式可以在改变对象状态的同时改变对象的行为。 享元模式 游戏中地图大量元素存在重复的情况，大量创建相同的对象非常浪费内存，此时可以创建几个单例，让地图引用具体的单例，这就是享元模式。 解释器模式 现在很多游戏的基本框架由 C/C++ 来写，具体业务逻辑则交给 lua 之类的脚本处理。如果是自己设计的脚本，那么就需要写出对应的解释器： class Expr { public: Value execute(); private: char c; Expr * left, * right; }; // 解释器模式 访问者模式 一开始我们只提供了游戏脚本解释器的解释功能，某次调试的时候希望将具体的抽象语法书打印出来，所以在每个元素类中添加了打印支持： class Expr { public: Value execute(); Value dump() { left-&gt;dump(); cout &lt;&lt; c ; right-&gt;dump(); } private: char c; Expr * left, * right; }; 每当出现一个新的需求时，都要对原有的数据结构进行修改。而访问者模式为我们提供了遍历，可以在不修改数据结构的同时增加数据结构上的操作。 class Visitor { public: virtual void visit(Expr *ptr); virtual void visit(Value *ptr); }; class Visitable { public: virtual void accept(Visitor *visitor); }; //... class Expr : public Visitable { public: void accept(Visitor *visitor) { visitor-&gt;visit(this); } }; class Dump : public Visitor { public: void visit(Value * v); void visit(Expr * e) { e-&gt;left-&gt;accept(this); cout &lt;&lt; e-&gt;c; e-&gt;right-&gt;accept(this); } }; 装饰器模式 装饰器模式可以在不继承对象的同时给对象增加操作。Python 中有一个装饰器的概念，比如我们要给原来的函数添加上调用记录到日志的功能： def log(func): def wrapper(*args, **kw): print('call %s():' % func.__name__) return func(*args, **kw) return wrapper @log def do(): pass 与之类似的还有 Java 提供的注解功能，这里不展开。 代理模式 说到代理，常见有 VPN、HTTP Proxy ，代理模式用于控制对对象的访问。比如实现一个 RPC 功能，在客户端定义一个接口，由代理服务生成接口对应的实例。客户在调用接口时，代理服务监测并将请求转发给服务器，等到服务端计算完成并返回时，代理服务把结果返回给客户端。从客户端的角度上，这个过程和调用一个耗时的函数没有区别。]]></summary></entry></feed>
+</ul>]]></content><author><name></name></author><category term="Linux" /><category term="服务器" /><category term="Mysql" /><summary type="html"><![CDATA[前两天刚把服务器部署上，今天就出现了异常。在 App 上看是服务器直接宕机。原本以为仅仅是服务端挂了，在服务器上使用 ps aux | grep java 发现进程还在，只是不服务了。打开 log 发现 Java run out of memory，导致无法创建新的线程。 使用 top -o %MEM 查看，java 占用近 200M，mysql 占用近 500 M。因为是个人用的小服务器，只有 1G 内存，吃紧得很。既然 mysql 占用了最多的内存，就让它吐出一点好了。 一开始猜测是 InnoDB 缓冲区过大，不过在 /etc/mysql/my.cnf 中发现配置的缓存已经非常小了。后来在网上发现是因为 Mysql 5.6 版本默认 GA 配置过大，导致初始需要近 400M 空间。通过下面配置，直接讲内存降到 100M 以下： performance_schema_max_table_instances=400 table_definition_cache=400 table_open_cache=256 参数意义： performance_schema_max_table_instances The maximum number of instrumented table objects 检测的表对象的最大数目。 table_definition_cache The number of table definitions (from .frm files) that can be stored in the definition cache. If you use a large number of tables, you can create a large table definition cache to speed up opening of tables. The table definition cache takes less space and does not use file descriptors, unlike the normal table cache. The minimum and default values are both 400. 缓存 frm 文件 table_open_cache The number of open tables for all threads. Increasing this value increases the number of file descriptors that mysqld requires. table_open_cache 指的是缓存数据文件的描述符(Linux/Unix)相关信息 在 5.6 中的默认配置： performance_schema_max_table_instances 12500 table_definition_cache 1400 table_open_cache 2000 References: 解决 Mysql 内存占用巨大问题 MySQL 5.6内存占用过高解决方案 linux 下mysql内存占用过高]]></summary></entry></feed>
