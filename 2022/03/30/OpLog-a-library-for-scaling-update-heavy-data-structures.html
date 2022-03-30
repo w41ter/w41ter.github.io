@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>OpLog - a library for scaling update heavy data structures | W41ter’s Bistro</title>
+<meta name="generator" content="Jekyll v4.2.2" />
+<meta property="og:title" content="OpLog - a library for scaling update heavy data structures" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="背景 在 multi-core scaling read-heavy data structure 上已经有了很多有用的技术，比如 Read-copy-update。但是 update-heavy 的数据结构还鲜有通用的方案。显然，对于 update-heavy 的数据结构来说，只要在读之前，将数据准备好就行。OpLog 针对这部分场景，提出了一种通用的 scaling update-heavy data structures 实现方式。 思路 OpLog 的解决办法是为每个数据结构准备一个 per-core 的日志，写操作只需要将其追加到日志中即可。在读时，按照时间顺序合并日志并应用到数据结构上。这样的设计方式有几个好处： Batching updates：通过延迟执行，很多 update 操作可以直接合并，计数操作，原来的 N 次 +1 操作可以合并为一次 +N Absorbing updates: 比如先执行 put，之后 delete，那么无需执行任何操作 OpLog 作为一种通用的设计思路，还需要考虑到尽管某个实现需要解决 update-heavy 的问题，但是只有少数 update-heavy 的实例才会通过 OpLog 收益，多数情况下 per-core 的日志对这部分实例是一个负担。OpLog 只对最近使用过的对象设置 log，如果一个对象长期未更新，那么 OpLog 可以回收这部分空间。 struct Counter : public Object&lt;CounterLog&gt; { struct IncOp : public Op { void exec(uint64_t* v) { *v = *v + 1; } } struct DecOp : public Op { void exec(uint64_t* v) { *v = *v - 1; } } void inc() { log(IncOp()); } void dec() { log(DecOp()); } uint64_t read() { synchronize(); uint64_t r = val_; unlock(); return r; } uint64_t val_; }; struct CounterLog : public Log { void push(Op* op) { op-&gt;exec(&amp;val_); } static void apply(CounterLog* qs[], Counter* c) { for_each_log(CounterLog* q, qs) c-&gt;val_ += q-&gt;val_; } uint64_t val_; }; 论文中有使用 OpLog 实现 Counter 的例子。inc 和 dec 操作生成一个 OP 并记录到 log 中，读操作需要先加锁，合并 log 并应用到 counter 上，再返回 val_。 评估 一般会认为 OpLog 的实现对 read 不友好。不过论文也做了一个 benchmark。 结果显示，OpLog 对一些 read periodically 的数据结构也有性能改善。" />
+<meta property="og:description" content="背景 在 multi-core scaling read-heavy data structure 上已经有了很多有用的技术，比如 Read-copy-update。但是 update-heavy 的数据结构还鲜有通用的方案。显然，对于 update-heavy 的数据结构来说，只要在读之前，将数据准备好就行。OpLog 针对这部分场景，提出了一种通用的 scaling update-heavy data structures 实现方式。 思路 OpLog 的解决办法是为每个数据结构准备一个 per-core 的日志，写操作只需要将其追加到日志中即可。在读时，按照时间顺序合并日志并应用到数据结构上。这样的设计方式有几个好处： Batching updates：通过延迟执行，很多 update 操作可以直接合并，计数操作，原来的 N 次 +1 操作可以合并为一次 +N Absorbing updates: 比如先执行 put，之后 delete，那么无需执行任何操作 OpLog 作为一种通用的设计思路，还需要考虑到尽管某个实现需要解决 update-heavy 的问题，但是只有少数 update-heavy 的实例才会通过 OpLog 收益，多数情况下 per-core 的日志对这部分实例是一个负担。OpLog 只对最近使用过的对象设置 log，如果一个对象长期未更新，那么 OpLog 可以回收这部分空间。 struct Counter : public Object&lt;CounterLog&gt; { struct IncOp : public Op { void exec(uint64_t* v) { *v = *v + 1; } } struct DecOp : public Op { void exec(uint64_t* v) { *v = *v - 1; } } void inc() { log(IncOp()); } void dec() { log(DecOp()); } uint64_t read() { synchronize(); uint64_t r = val_; unlock(); return r; } uint64_t val_; }; struct CounterLog : public Log { void push(Op* op) { op-&gt;exec(&amp;val_); } static void apply(CounterLog* qs[], Counter* c) { for_each_log(CounterLog* q, qs) c-&gt;val_ += q-&gt;val_; } uint64_t val_; }; 论文中有使用 OpLog 实现 Counter 的例子。inc 和 dec 操作生成一个 OP 并记录到 log 中，读操作需要先加锁，合并 log 并应用到 counter 上，再返回 val_。 评估 一般会认为 OpLog 的实现对 read 不友好。不过论文也做了一个 benchmark。 结果显示，OpLog 对一些 read periodically 的数据结构也有性能改善。" />
+<link rel="canonical" href="/2022/03/30/OpLog-a-library-for-scaling-update-heavy-data-structures.html" />
+<meta property="og:url" content="/2022/03/30/OpLog-a-library-for-scaling-update-heavy-data-structures.html" />
+<meta property="og:site_name" content="W41ter’s Bistro" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2022-03-30T00:00:00+08:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="OpLog - a library for scaling update heavy data structures" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2022-03-30T00:00:00+08:00","datePublished":"2022-03-30T00:00:00+08:00","description":"背景 在 multi-core scaling read-heavy data structure 上已经有了很多有用的技术，比如 Read-copy-update。但是 update-heavy 的数据结构还鲜有通用的方案。显然，对于 update-heavy 的数据结构来说，只要在读之前，将数据准备好就行。OpLog 针对这部分场景，提出了一种通用的 scaling update-heavy data structures 实现方式。 思路 OpLog 的解决办法是为每个数据结构准备一个 per-core 的日志，写操作只需要将其追加到日志中即可。在读时，按照时间顺序合并日志并应用到数据结构上。这样的设计方式有几个好处： Batching updates：通过延迟执行，很多 update 操作可以直接合并，计数操作，原来的 N 次 +1 操作可以合并为一次 +N Absorbing updates: 比如先执行 put，之后 delete，那么无需执行任何操作 OpLog 作为一种通用的设计思路，还需要考虑到尽管某个实现需要解决 update-heavy 的问题，但是只有少数 update-heavy 的实例才会通过 OpLog 收益，多数情况下 per-core 的日志对这部分实例是一个负担。OpLog 只对最近使用过的对象设置 log，如果一个对象长期未更新，那么 OpLog 可以回收这部分空间。 struct Counter : public Object&lt;CounterLog&gt; { struct IncOp : public Op { void exec(uint64_t* v) { *v = *v + 1; } } struct DecOp : public Op { void exec(uint64_t* v) { *v = *v - 1; } } void inc() { log(IncOp()); } void dec() { log(DecOp()); } uint64_t read() { synchronize(); uint64_t r = val_; unlock(); return r; } uint64_t val_; }; struct CounterLog : public Log { void push(Op* op) { op-&gt;exec(&amp;val_); } static void apply(CounterLog* qs[], Counter* c) { for_each_log(CounterLog* q, qs) c-&gt;val_ += q-&gt;val_; } uint64_t val_; }; 论文中有使用 OpLog 实现 Counter 的例子。inc 和 dec 操作生成一个 OP 并记录到 log 中，读操作需要先加锁，合并 log 并应用到 counter 上，再返回 val_。 评估 一般会认为 OpLog 的实现对 read 不友好。不过论文也做了一个 benchmark。 结果显示，OpLog 对一些 read periodically 的数据结构也有性能改善。","headline":"OpLog - a library for scaling update heavy data structures","mainEntityOfPage":{"@type":"WebPage","@id":"/2022/03/30/OpLog-a-library-for-scaling-update-heavy-data-structures.html"},"url":"/2022/03/30/OpLog-a-library-for-scaling-update-heavy-data-structures.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="/feed.xml" title="W41ter's Bistro" /><!-- for mathjax support -->
+  
+</head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">W41ter&#39;s Bistro</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">OpLog - a library for scaling update heavy data structures</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2022-03-30T00:00:00+08:00" itemprop="datePublished">Mar 30, 2022
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <h2 id="背景">背景</h2>
+
+<p>在 multi-core scaling read-heavy data structure 上已经有了很多有用的技术，比如 Read-copy-update。但是 update-heavy 的数据结构还鲜有通用的方案。显然，对于 update-heavy 的数据结构来说，只要在读之前，将数据准备好就行。OpLog 针对这部分场景，提出了一种通用的 scaling update-heavy data structures 实现方式。</p>
+
+<h2 id="思路">思路</h2>
+
+<p>OpLog 的解决办法是为每个数据结构准备一个 per-core 的日志，写操作只需要将其追加到日志中即可。在读时，按照时间顺序合并日志并应用到数据结构上。这样的设计方式有几个好处：</p>
+
+<ul>
+  <li>Batching updates：通过延迟执行，很多 update 操作可以直接合并，计数操作，原来的 N 次 +1 操作可以合并为一次 +N</li>
+  <li>Absorbing updates: 比如先执行 put，之后 delete，那么无需执行任何操作</li>
+</ul>
+
+<p>OpLog 作为一种通用的设计思路，还需要考虑到尽管某个实现需要解决 update-heavy 的问题，但是只有少数 update-heavy 的实例才会通过 OpLog 收益，多数情况下 per-core 的日志对这部分实例是一个负担。OpLog 只对最近使用过的对象设置 log，如果一个对象长期未更新，那么 OpLog 可以回收这部分空间。</p>
+
+<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">struct</span> <span class="nc">Counter</span> <span class="o">:</span> <span class="k">public</span> <span class="n">Object</span><span class="o">&lt;</span><span class="n">CounterLog</span><span class="o">&gt;</span> <span class="p">{</span>
+    <span class="k">struct</span> <span class="nc">IncOp</span> <span class="o">:</span> <span class="k">public</span> <span class="n">Op</span> <span class="p">{</span>
+        <span class="kt">void</span> <span class="n">exec</span><span class="p">(</span><span class="kt">uint64_t</span><span class="o">*</span> <span class="n">v</span><span class="p">)</span> <span class="p">{</span> <span class="o">*</span><span class="n">v</span> <span class="o">=</span> <span class="o">*</span><span class="n">v</span> <span class="o">+</span> <span class="mi">1</span><span class="p">;</span> <span class="p">}</span>
+    <span class="p">}</span>
+    <span class="k">struct</span> <span class="nc">DecOp</span> <span class="o">:</span> <span class="k">public</span> <span class="n">Op</span> <span class="p">{</span>
+        <span class="kt">void</span> <span class="n">exec</span><span class="p">(</span><span class="kt">uint64_t</span><span class="o">*</span> <span class="n">v</span><span class="p">)</span> <span class="p">{</span> <span class="o">*</span><span class="n">v</span> <span class="o">=</span> <span class="o">*</span><span class="n">v</span> <span class="o">-</span> <span class="mi">1</span><span class="p">;</span> <span class="p">}</span>
+    <span class="p">}</span>
+
+    <span class="kt">void</span> <span class="n">inc</span><span class="p">()</span> <span class="p">{</span> <span class="n">log</span><span class="p">(</span><span class="n">IncOp</span><span class="p">());</span> <span class="p">}</span>
+    <span class="kt">void</span> <span class="n">dec</span><span class="p">()</span> <span class="p">{</span> <span class="n">log</span><span class="p">(</span><span class="n">DecOp</span><span class="p">());</span> <span class="p">}</span>
+
+    <span class="kt">uint64_t</span> <span class="n">read</span><span class="p">()</span> <span class="p">{</span>
+        <span class="n">synchronize</span><span class="p">();</span>
+        <span class="kt">uint64_t</span> <span class="n">r</span> <span class="o">=</span> <span class="n">val_</span><span class="p">;</span>
+        <span class="n">unlock</span><span class="p">();</span>
+        <span class="k">return</span> <span class="n">r</span><span class="p">;</span>
+    <span class="p">}</span>
+
+    <span class="kt">uint64_t</span> <span class="n">val_</span><span class="p">;</span>
+<span class="p">};</span>
+
+<span class="k">struct</span> <span class="nc">CounterLog</span> <span class="o">:</span> <span class="k">public</span> <span class="n">Log</span> <span class="p">{</span>
+    <span class="kt">void</span> <span class="n">push</span><span class="p">(</span><span class="n">Op</span><span class="o">*</span> <span class="n">op</span><span class="p">)</span> <span class="p">{</span> <span class="n">op</span><span class="o">-&gt;</span><span class="n">exec</span><span class="p">(</span><span class="o">&amp;</span><span class="n">val_</span><span class="p">);</span> <span class="p">}</span>
+
+    <span class="k">static</span> <span class="kt">void</span> <span class="n">apply</span><span class="p">(</span><span class="n">CounterLog</span><span class="o">*</span> <span class="n">qs</span><span class="p">[],</span> <span class="n">Counter</span><span class="o">*</span> <span class="n">c</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">for_each_log</span><span class="p">(</span><span class="n">CounterLog</span><span class="o">*</span> <span class="n">q</span><span class="p">,</span> <span class="n">qs</span><span class="p">)</span>
+            <span class="n">c</span><span class="o">-&gt;</span><span class="n">val_</span> <span class="o">+=</span> <span class="n">q</span><span class="o">-&gt;</span><span class="n">val_</span><span class="p">;</span>
+    <span class="p">}</span>
+
+    <span class="kt">uint64_t</span> <span class="n">val_</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div></div>
+
+<p>论文中有使用 OpLog 实现 Counter 的例子。<code class="language-plaintext highlighter-rouge">inc</code> 和 <code class="language-plaintext highlighter-rouge">dec</code> 操作生成一个 OP 并记录到 log 中，读操作需要先加锁，合并 log 并应用到 counter 上，再返回 <code class="language-plaintext highlighter-rouge">val_</code>。</p>
+
+<h2 id="评估">评估</h2>
+
+<p>一般会认为 OpLog 的实现对 read 不友好。不过论文也做了一个 benchmark。</p>
+
+<p><img src="/uploads/images/2022/OpLog-update-heavy-data-structures.png" alt="Figure 1 fork-turncate" /></p>
+
+<p>结果显示，OpLog 对一些 read periodically 的数据结构也有性能改善。</p>
+
+  </div><a class="u-url" href="/2022/03/30/OpLog-a-library-for-scaling-update-heavy-data-structures.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">W41ter&#39;s Bistro</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">W41ter&#39;s Bistro</li><li><a class="u-email" href="mailto:w41ter.l@gmail.com">w41ter.l@gmail.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/w41ter"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">w41ter</span></a></li><li><a href="https://www.twitter.com/WalterM56697798"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">WalterM56697798</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Focus on distributed storage system, compiler.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>
