@@ -1,4 +1,18 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.2.2">Jekyll</generator><link href="/feed.xml" rel="self" type="application/atom+xml" /><link href="/" rel="alternate" type="text/html" /><updated>2022-03-30T21:04:01+08:00</updated><id>/feed.xml</id><title type="html">W41ter’s Bistro</title><subtitle>Focus on distributed storage system, compiler.</subtitle><entry><title type="html">Achieving High Throughput and Elasticity in a Large-than-Memory Store</title><link href="/papers/2022/03/30/Achieving-High-Throughput-and-Elasticity-in-a-Large-than-Memory-Store.html" rel="alternate" type="text/html" title="Achieving High Throughput and Elasticity in a Large-than-Memory Store" /><published>2022-03-30T00:00:00+08:00</published><updated>2022-03-30T00:00:00+08:00</updated><id>/papers/2022/03/30/Achieving-High-Throughput-and-Elasticity-in-a-Large-than-Memory-Store</id><content type="html" xml:base="/papers/2022/03/30/Achieving-High-Throughput-and-Elasticity-in-a-Large-than-Memory-Store.html"><![CDATA[<h2 id="背景">背景</h2>
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.2.2">Jekyll</generator><link href="/feed.xml" rel="self" type="application/atom+xml" /><link href="/" rel="alternate" type="text/html" /><updated>2022-03-31T13:48:43+08:00</updated><id>/feed.xml</id><title type="html">W41ter’s Bistro</title><subtitle>Focus on distributed storage system, compiler.</subtitle><entry><title type="html">Shrinking Logs by Safely Discarding Commands</title><link href="/2022/03/31/Shrinking-Logs-by-Safely-Discarding-Commands.html" rel="alternate" type="text/html" title="Shrinking Logs by Safely Discarding Commands" /><published>2022-03-31T00:00:00+08:00</published><updated>2022-03-31T00:00:00+08:00</updated><id>/2022/03/31/Shrinking-Logs-by-Safely-Discarding-Commands</id><content type="html" xml:base="/2022/03/31/Shrinking-Logs-by-Safely-Discarding-Commands.html"><![CDATA[<h2 id="log-based-protocols">Log based protocols</h2>
+
+<p><img src="/uploads/images/2022/shrinking-log-by-discarding-records-1.png" alt="Figure 1: log based protocols" /></p>
+
+<p>Log 主要用于保证日志持久化、按照固定顺序复制以获得 consistent state。一个标准的 log-based protocol 需要按照一定顺序将 record 追加到 log 中，完成持久化后才响应 client。恢复时，从快照中拿到一个 index，从这个点开始回放日志，最终保证状态与恢复前一致。</p>
+
+<h2 id="主要设计">主要设计</h2>
+
+<p><img src="/uploads/images/2022/shrinking-log-by-discarding-records-2.png" alt="Figure 2: stable" /></p>
+
+<p>记录到日志中的 record 之间可能存在 overwrite，比如两个相邻的 write 操作，都更新了某个 key，那么实际上只有后一个操作需要持久化。着这个思路下，每次获取一批需要持久化的 records，将他们的更新先记录到一个 hash table 上。如果存在 overwrite 的情况，只记录下最后一个 key-value。</p>
+
+<p>通过这种方式，能够减小写入到持久化设备的 record 大小，从而增加了吞吐。</p>
+
+<p>这篇论文实际参考价值不大，里面涉及到的设计思路实际上在工业环境中效果不大。比如在支持 MVCC 的 key value 数据库中，更新之间基本上不存在 overwrite。一些可以 merge 的操作，也大都在写 log 前完成。不过论文的 Introduction 和 Releated Work 倒是可以当作综述阅读。</p>]]></content><author><name></name></author><summary type="html"><![CDATA[Log based protocols Log 主要用于保证日志持久化、按照固定顺序复制以获得 consistent state。一个标准的 log-based protocol 需要按照一定顺序将 record 追加到 log 中，完成持久化后才响应 client。恢复时，从快照中拿到一个 index，从这个点开始回放日志，最终保证状态与恢复前一致。 主要设计 记录到日志中的 record 之间可能存在 overwrite，比如两个相邻的 write 操作，都更新了某个 key，那么实际上只有后一个操作需要持久化。着这个思路下，每次获取一批需要持久化的 records，将他们的更新先记录到一个 hash table 上。如果存在 overwrite 的情况，只记录下最后一个 key-value。 通过这种方式，能够减小写入到持久化设备的 record 大小，从而增加了吞吐。 这篇论文实际参考价值不大，里面涉及到的设计思路实际上在工业环境中效果不大。比如在支持 MVCC 的 key value 数据库中，更新之间基本上不存在 overwrite。一些可以 merge 的操作，也大都在写 log 前完成。不过论文的 Introduction 和 Releated Work 倒是可以当作综述阅读。]]></summary></entry><entry><title type="html">Achieving High Throughput and Elasticity in a Large-than-Memory Store</title><link href="/papers/2022/03/30/Achieving-High-Throughput-and-Elasticity-in-a-Large-than-Memory-Store.html" rel="alternate" type="text/html" title="Achieving High Throughput and Elasticity in a Large-than-Memory Store" /><published>2022-03-30T00:00:00+08:00</published><updated>2022-03-30T00:00:00+08:00</updated><id>/papers/2022/03/30/Achieving-High-Throughput-and-Elasticity-in-a-Large-than-Memory-Store</id><content type="html" xml:base="/papers/2022/03/30/Achieving-High-Throughput-and-Elasticity-in-a-Large-than-Memory-Store.html"><![CDATA[<h2 id="背景">背景</h2>
 
 <p>如果数据都来自同一台机器，那么可以用导入、索引数据达到 100Mops/s 的单机 multi-core key-value stores 处理。而实际上现在有数十亿的数据需要处理，所以数据必须经过网络传输，并通过云的弹性能力创建足够的实例进行服务。为了满足这个需求，Shadowfax 在 FASTER 的基础上，构建了一个具有快速数据迁移能力的高性能分布式 key-value store。</p>
 
@@ -1384,80 +1398,4 @@ struct LogHolder {
   <li>The design of a practical system for Fault-Tolerant Virtual Machines</li>
   <li><a href="https://ramcloud.atlassian.net/wiki/download/attachments/6586375/raft.pdf">寻找一种易于理解的一致性算法（扩展版）</a></li>
   <li><a href="http://blog.jobbole.com/20304/">分布式系统编程，你到哪一级了？</a></li>
-</ol>]]></content><author><name></name></author><category term="Destribution" /><category term="Raft" /><category term="Consensus" /><category term="Practice" /><category term="Destribution" /><summary type="html"><![CDATA[Raft 是一种解决分布式共识问题的算法。何为分布式共识问题？在此之前，还得说说分布式系统中的基础模型。基础模型是对分布式算法的一个定性的评估（分类）标准，它说明了算法的作用范围，可解决什么问题。 基础模型 基础模型也可以称为算法的属性，这里主要关心两个部分：定时模型（Timing Model）、失效模式（Failure Model）、失效检测器（Failure Detectors）[1]。 定时模型是研究分布式系统的网络传输时延特性，分布式系统通过消息传递来进行通信，根据消息在网络中传递时间是否有上界，可以将消息系统分类为：同步模型（Synchronous Model）和异步模型（Asynchronous Model）[2]。在同步模型中，消息传递时间是已知的，每个进程的速度也是确定的，即每个进程执行一个算法步骤耗时是确定的。在异步模型中，每个组件自行决定算法步骤的执行顺序，每一步的耗时也没有保证[1]。注意，这里的同步和异步要与编程中出现的同步异步加以区分。 失效模式是对分布式系统中节点失效种类的假设。最基础的是崩溃-结束（crash-stop）失效模式，节点一直正常运行，直至崩溃，节点崩溃后不会恢复。相较于崩溃-结束失效模式，另一种崩溃-恢复（crash-recovery）失效模式更为常见，即节点崩溃后，会被恢复。值得一提的是崩溃-恢复模式中，一个节点恢复时，并不等同于没崩溃的原始节点（比如 Raft 算法动态调整系群组关系，某个节点被另一个新加入节点顶替）。一种更复杂的失效模式叫做拜占庭失效模式或者任意失效模式（Byzantine or arbitrary failures mode）：进程有可能向同伴发送错误的信息；进程可能是冒充的；应答给其他进程的数据是正确的，但是篡改了本地数据库的内容，等等[2]。设计分布式系统时，失效模式必须考虑进去，通常来说，我们并不需要考虑拜占庭失效模式。 上述两种属性能够描述分布式系统所处的问题，另外还有部分属性用于对系统工作方式进行分类，失效检测器便是这样的一种属性。失效检测器是对报告系统状态的抽象，即检测节点是否已经崩溃（或者怀疑是否崩溃）。失效检测器是在异步系统中解决共识问题的关键。在著名的FLP论文中指出，在异步的分布式系统中，如果进程有可能失效，那么就不可能达成共识。要达成共识，就必须为系统引入一个能够规避上述问题的失效检测器[1]。 分布式共识问题 分布式共识问题，简单说，就是在一个或多个进程提议了一个值应当是什么后，使系统中所有进程对这个值达成一致意见。为了达到共识，每个进程都提出自己的提议（propose），最终通过共识算法，所有正确运行的进程决定（decide）相同的值[2]。 在同步、可靠的系统中，想要多个节点达成一致比较容易。实际的分布式场景多为异步模型，FLP不可能性说明：没有任何算法可以在存在任何故障的异步系统中确保达到共识，绕过不可能性结论的办法是考虑部分同步系统，利用故障屏蔽、故障检测器或随机化手段避开异步系统模型[2]。 分布式问题最常见的应用场景是多副本状态机（Replicated state machine）。多副本状态机是指多台机器具有完全相同的状态，并且运行有完全相同的确定性状态机[2]。多副本状态机主要用于解决分布式系统中的容错问题，因为副本冗余了状态机，只要保证大多数副本存活且一致，就能向外部提供服务。多副本状态机的实现思想：状态机的每个副本上都保存有完全相同的操作日志，保证所有副本状态机按照相同的顺序执行操作，这样由于状态机是确定性的，则一定会得到相同的状态[2]。具体的实现方式主要分为两种[3]： 日志复制：由 primary 机接受操作日志，并广播给 backup 机，backup 机需要跟 primary 机的操作日志保持一致； 状态重演：操作日志由多个副本共享，每个副本通过重新执行操作日志从放状态； Raft 算法 有三种非常具有代表性的分布式共识算法：分别是 Viewstamped Replication 、Raft 和大名鼎鼎的 Paxos 算法，前两个工作本身就是基于多副本状态机的场景完成的，而 Paxos 算法是作为独立的分布式共识算法提出，并给出了使用该算法实现多副本状态机的范例[2]。 Raft 是一种为了管理复制日志的一致性算法。它提供了和 Paxos 算法相同的功能和性能，但是它的算法结构和 Paxos 不同，使得 Raft 算法更加容易理解并且更容易构建实际的系统。为了提升可理解性，Raft 将一致性算法分解成了几个关键模块，例如领导人选举、日志复制和安全性。同时它通过实施一个更强的一致性来减少需要考虑的状态的数量。从一个用户研究的结果可以证明，对于学生而言，Raft 算法比 Paxos 算法更加容易学习。Raft 算法还包括一个新的机制来允许集群成员的动态改变，它利用重叠的大多数来保证安全性[4]。 与其他共识算法相比，Raft 算法有三个特点[4]： 强领导者：和其他一致性算法相比，Raft 使用一种更强的领导能力形式。比如，日志条目只从领导者发送给其他的服务器。这种方式简化了对复制日志的管理并且使得 Raft 算法更加易于理解。 领导选举：Raft 算法使用一个随机计时器来选举领导者。这种方式只是在任何一致性算法都必须实现的心跳机制上增加了一点机制。在解决冲突的时候会更加简单快捷。 成员关系调整：Raft 使用一种共同一致的方法来处理集群成员变换的问题，在这种方法下，处于调整过程中的两种不同的配置集群中大多数机器会有重叠，这就使得集群在成员变换的时候依然可以继续工作。 虽然这篇文章标题有“Raft 实现”关键字，但并不会讲 Raft 算法的原理，这只是 Raft 的功能实现介绍，所以我建议在继续阅读之前，先学习一下 Raft 算法：寻找一种易于理解的一致性算法（扩展版）。 挖坑 一个基础的 Raft 功能只需要实现选举和日志复制，但这远远不够。想要应用到实际的工程中，还需要实现日至压缩、成员关系调整，才算完整的 Raft 实现。这里给出个 Raft 功能清单，实际上也是本系列文章希望实现的功能： leader election prevote log replication log compaction &amp; snapshot linearizable read(read index &amp; lease) membership change leadership transfer 拥有上述功能可以算上一个工业级的 Raft 实现，不过在实际应用中，还会有许多工业上的优化技巧比如 Batch 和 Pipeline，具体有哪些可以优化的，放到以后的章节详述。 这是我在学习 Raft 算法，并以之为基础实现分布式系统过程中的学习总结。在接下来的几篇文章中，将按照上述清单依次谈谈对应的实现方法和优化原理。实现方法参考优秀的开源实现：etcd/raft 以及其各语言移植版本。 Reference WHAT WE TALK ABOUT WHEN WE TALK ABOUT DISTRIBUTED SYSTEMS 分布式共识(Consensus)：Viewstamped Replication、Raft以及Paxos The design of a practical system for Fault-Tolerant Virtual Machines 寻找一种易于理解的一致性算法（扩展版） 分布式系统编程，你到哪一级了？]]></summary></entry><entry><title type="html">Mysql 事务隔离级别的使用</title><link href="/%E6%80%BB%E7%BB%93/2017/12/07/Mysql-%E4%BA%8B%E5%8A%A1%E9%9A%94%E7%A6%BB%E7%BA%A7%E5%88%AB%E7%9A%84%E4%BD%BF%E7%94%A8.html" rel="alternate" type="text/html" title="Mysql 事务隔离级别的使用" /><published>2017-12-07T23:00:00+08:00</published><updated>2017-12-07T23:00:00+08:00</updated><id>/%E6%80%BB%E7%BB%93/2017/12/07/Mysql-%E4%BA%8B%E5%8A%A1%E9%9A%94%E7%A6%BB%E7%BA%A7%E5%88%AB%E7%9A%84%E4%BD%BF%E7%94%A8</id><content type="html" xml:base="/%E6%80%BB%E7%BB%93/2017/12/07/Mysql-%E4%BA%8B%E5%8A%A1%E9%9A%94%E7%A6%BB%E7%BA%A7%E5%88%AB%E7%9A%84%E4%BD%BF%E7%94%A8.html"><![CDATA[<p>最近在项目中遇到一个问题，在 Mysql 的 Repeatable Read 隔离级别下，出现了数据丢失更新。一开始怀疑的是事务失效，被排查后否定。最后定位到 Mysql 事务的使用问题上。我们的 Sql 场景类似于：</p>
-
-<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>SELECT number FROM A WHERE ID = 1;
-UPDATE A SET NUMBER = number + 1 WHERE ID = 1;
-</code></pre></div></div>
-
-<h2 id="事务回顾">事务回顾</h2>
-
-<p>事务有四种特性（ACID）：</p>
-
-<ul>
-  <li>原子性</li>
-  <li>隔离性</li>
-  <li>一致性</li>
-  <li>持久性</li>
-</ul>
-
-<p>在执行事务时可能出现以下问题：</p>
-
-<ul>
-  <li>丢失更新：
-    <ol>
-      <li>第一类丢失更新：事务失败回滚时将其他事务已经提交的数据覆盖</li>
-      <li>第二类丢失更新：事务提交时，覆盖了其他事务的提交（类似 += ，是不可重复读的特例）</li>
-    </ol>
-  </li>
-  <li>脏读：事务读取了其他事务还未提交的内容</li>
-  <li>不可重复读：一个事务中多次读取同一个内容，结果不一致</li>
-  <li>幻读：一个事务中两次查询，但第二次查询比第一次查询多了或少了几行或几列数据</li>
-</ul>
-
-<p>为了解决上述问题，数据库系统提供了四种事务隔离级别供用户选择：</p>
-
-<ul>
-  <li>Read Uncommitted 读未提交：不允许第一类更新丢失。允许脏读，不隔离事务。</li>
-  <li>Read Committed 读已提交：不允许脏读，允许不可重复读。</li>
-  <li>Repeatable Read 可重复读：不允许不可重复读。但可能出现幻读。</li>
-  <li>Serializable 串行化：所有的增删改查串行执行。</li>
-</ul>
-
-<p>在传统的事务隔离级别的实现中，可重复读已经能够避免了两类丢失更新，对于绝大多数的事务，只需要将
-隔离级别设置为可重复读。</p>
-
-<h2 id="snapshot-isolation--mvcc">Snapshot isolation &amp; MVCC</h2>
-
-<p>需要明确的是，以上的ACID和隔离级别定义是在SQL规范层面的定义，不同数据库的实现方式和使用方式并不相同。上面的隔离级别标准是SQL92 基于读写锁的实现方式制定的规范。</p>
-
-<p>为了克服并发问题，各个数据库厂商都引入了 MVCC （多版本并发控制）来提高并发度。所以实际上的事务实现与规范定义的出现了细微的差别，而这细微的差别，就是本文出现的原因。（下文主要以 Mysql innoDB 存储引擎的 MVCC 实现为主，InnoDB 中的 MVCC 为表添加了隐藏的列，打上版本号，来提供多版本功能）。</p>
-
-<p>所以在 MVCC 中，SELECT 语句执行时，会执行快照读取（称为快照读，也称为一致性读）。如果数据被锁，直接读取 undo log 来读取其被锁前的副本。在 Read Commit 隔离级别中，快照读总是读取对应行的最新版本；如果该行被锁住，则会读取最近一次的快照。在 Repeatable Read 隔离级别中，快照读总是读取事务开始时的数据版本。</p>
-
-<p>这种方式极大的提升了并发读取的效率，本质也非常类似乐观锁。所以这种方式实现的隔离级别与规范定义存在一定差异，在 Repeatable Read 中，这种差异导致了 innoDB 第二类更新丢失的出现。因此，使用 MVCC 实现的隔离级别也被称为快照隔离级别。</p>
-
-<p>SI 隔离与规范的 RR 隔离级别的区别在于读取 SI 的 SELECT 语句为快照读，而传统的 SELECT 语句则为当前读（加读锁:locking read, LR）。</p>
-
-<p>在 InnoDB 中，update, delete 执行的是加锁读，想要将 SELECT 语句也设置为加锁读，需要在语句后加上 FOR UPDATE, LOCK IN SHARE MODE。具体的加锁方式取决于用户使用的是那种查询计划：</p>
-
-<ul>
-  <li>unique index with a unique search condition</li>
-  <li>a range-type search condition</li>
-</ul>
-
-<p>对于第一种方式，InnoDB 只对其所在的索引进行加锁，不影响其他内容。对于第二种方式，InnoDB 通过使用间隙锁（gap locks)或者 next-key locks 来实现。因为这种加锁落实到区间上，所以也有可能锁住不必要的内容。因此 InnoDB 也号称在 RR 级别上实现了 Serializable 隔离级别。</p>
-
-<p>next-key locks 能排除大多数的幻读现象，只会存在 write skew style 的幻读。</p>
-
-<p>回到题目最开始的问题上，因为这种不规范的事务实现，导致了在高并发情况下会存在第二类丢失更新问题。只需要在 SELECT 后面加上 FOR UPDATE 就能避免出现的问题。</p>
-
-<h2 id="references">References</h2>
-
-<ul>
-  <li><a href="http://www.jianshu.com/p/71a79d838443">事务并发的问题以及其解决方案</a></li>
-  <li><a href="http://www.fanyilun.me/2015/12/29/%E4%BA%8B%E5%8A%A1%E7%9A%84%E9%9A%94%E7%A6%BB%E7%BA%A7%E5%88%AB%E4%BB%A5%E5%8F%8AMysql%E4%BA%8B%E5%8A%A1%E7%9A%84%E4%BD%BF%E7%94%A8/">事务隔离级别与 Mysql 中事务的使用</a></li>
-  <li><a href="https://tech.meituan.com/innodb-lock.html">Innodb中的事务隔离级别和锁的关系</a></li>
-  <li><a href="https://dev.mysql.com/doc/refman/5.6/en/innodb-consistent-read.html">Consistent Nonlocking Reads</a></li>
-  <li><a href="https://dev.mysql.com/doc/refman/5.6/en/innodb-transaction-isolation-levels.html">innodb-transaction-isolation-levels</a></li>
-</ul>]]></content><author><name></name></author><category term="总结" /><category term="Mysql" /><summary type="html"><![CDATA[最近在项目中遇到一个问题，在 Mysql 的 Repeatable Read 隔离级别下，出现了数据丢失更新。一开始怀疑的是事务失效，被排查后否定。最后定位到 Mysql 事务的使用问题上。我们的 Sql 场景类似于： SELECT number FROM A WHERE ID = 1; UPDATE A SET NUMBER = number + 1 WHERE ID = 1; 事务回顾 事务有四种特性（ACID）： 原子性 隔离性 一致性 持久性 在执行事务时可能出现以下问题： 丢失更新： 第一类丢失更新：事务失败回滚时将其他事务已经提交的数据覆盖 第二类丢失更新：事务提交时，覆盖了其他事务的提交（类似 += ，是不可重复读的特例） 脏读：事务读取了其他事务还未提交的内容 不可重复读：一个事务中多次读取同一个内容，结果不一致 幻读：一个事务中两次查询，但第二次查询比第一次查询多了或少了几行或几列数据 为了解决上述问题，数据库系统提供了四种事务隔离级别供用户选择： Read Uncommitted 读未提交：不允许第一类更新丢失。允许脏读，不隔离事务。 Read Committed 读已提交：不允许脏读，允许不可重复读。 Repeatable Read 可重复读：不允许不可重复读。但可能出现幻读。 Serializable 串行化：所有的增删改查串行执行。 在传统的事务隔离级别的实现中，可重复读已经能够避免了两类丢失更新，对于绝大多数的事务，只需要将 隔离级别设置为可重复读。 Snapshot isolation &amp; MVCC 需要明确的是，以上的ACID和隔离级别定义是在SQL规范层面的定义，不同数据库的实现方式和使用方式并不相同。上面的隔离级别标准是SQL92 基于读写锁的实现方式制定的规范。 为了克服并发问题，各个数据库厂商都引入了 MVCC （多版本并发控制）来提高并发度。所以实际上的事务实现与规范定义的出现了细微的差别，而这细微的差别，就是本文出现的原因。（下文主要以 Mysql innoDB 存储引擎的 MVCC 实现为主，InnoDB 中的 MVCC 为表添加了隐藏的列，打上版本号，来提供多版本功能）。 所以在 MVCC 中，SELECT 语句执行时，会执行快照读取（称为快照读，也称为一致性读）。如果数据被锁，直接读取 undo log 来读取其被锁前的副本。在 Read Commit 隔离级别中，快照读总是读取对应行的最新版本；如果该行被锁住，则会读取最近一次的快照。在 Repeatable Read 隔离级别中，快照读总是读取事务开始时的数据版本。 这种方式极大的提升了并发读取的效率，本质也非常类似乐观锁。所以这种方式实现的隔离级别与规范定义存在一定差异，在 Repeatable Read 中，这种差异导致了 innoDB 第二类更新丢失的出现。因此，使用 MVCC 实现的隔离级别也被称为快照隔离级别。 SI 隔离与规范的 RR 隔离级别的区别在于读取 SI 的 SELECT 语句为快照读，而传统的 SELECT 语句则为当前读（加读锁:locking read, LR）。 在 InnoDB 中，update, delete 执行的是加锁读，想要将 SELECT 语句也设置为加锁读，需要在语句后加上 FOR UPDATE, LOCK IN SHARE MODE。具体的加锁方式取决于用户使用的是那种查询计划： unique index with a unique search condition a range-type search condition 对于第一种方式，InnoDB 只对其所在的索引进行加锁，不影响其他内容。对于第二种方式，InnoDB 通过使用间隙锁（gap locks)或者 next-key locks 来实现。因为这种加锁落实到区间上，所以也有可能锁住不必要的内容。因此 InnoDB 也号称在 RR 级别上实现了 Serializable 隔离级别。 next-key locks 能排除大多数的幻读现象，只会存在 write skew style 的幻读。 回到题目最开始的问题上，因为这种不规范的事务实现，导致了在高并发情况下会存在第二类丢失更新问题。只需要在 SELECT 后面加上 FOR UPDATE 就能避免出现的问题。 References 事务并发的问题以及其解决方案 事务隔离级别与 Mysql 中事务的使用 Innodb中的事务隔离级别和锁的关系 Consistent Nonlocking Reads innodb-transaction-isolation-levels]]></summary></entry></feed>
+</ol>]]></content><author><name></name></author><category term="Destribution" /><category term="Raft" /><category term="Consensus" /><category term="Practice" /><category term="Destribution" /><summary type="html"><![CDATA[Raft 是一种解决分布式共识问题的算法。何为分布式共识问题？在此之前，还得说说分布式系统中的基础模型。基础模型是对分布式算法的一个定性的评估（分类）标准，它说明了算法的作用范围，可解决什么问题。 基础模型 基础模型也可以称为算法的属性，这里主要关心两个部分：定时模型（Timing Model）、失效模式（Failure Model）、失效检测器（Failure Detectors）[1]。 定时模型是研究分布式系统的网络传输时延特性，分布式系统通过消息传递来进行通信，根据消息在网络中传递时间是否有上界，可以将消息系统分类为：同步模型（Synchronous Model）和异步模型（Asynchronous Model）[2]。在同步模型中，消息传递时间是已知的，每个进程的速度也是确定的，即每个进程执行一个算法步骤耗时是确定的。在异步模型中，每个组件自行决定算法步骤的执行顺序，每一步的耗时也没有保证[1]。注意，这里的同步和异步要与编程中出现的同步异步加以区分。 失效模式是对分布式系统中节点失效种类的假设。最基础的是崩溃-结束（crash-stop）失效模式，节点一直正常运行，直至崩溃，节点崩溃后不会恢复。相较于崩溃-结束失效模式，另一种崩溃-恢复（crash-recovery）失效模式更为常见，即节点崩溃后，会被恢复。值得一提的是崩溃-恢复模式中，一个节点恢复时，并不等同于没崩溃的原始节点（比如 Raft 算法动态调整系群组关系，某个节点被另一个新加入节点顶替）。一种更复杂的失效模式叫做拜占庭失效模式或者任意失效模式（Byzantine or arbitrary failures mode）：进程有可能向同伴发送错误的信息；进程可能是冒充的；应答给其他进程的数据是正确的，但是篡改了本地数据库的内容，等等[2]。设计分布式系统时，失效模式必须考虑进去，通常来说，我们并不需要考虑拜占庭失效模式。 上述两种属性能够描述分布式系统所处的问题，另外还有部分属性用于对系统工作方式进行分类，失效检测器便是这样的一种属性。失效检测器是对报告系统状态的抽象，即检测节点是否已经崩溃（或者怀疑是否崩溃）。失效检测器是在异步系统中解决共识问题的关键。在著名的FLP论文中指出，在异步的分布式系统中，如果进程有可能失效，那么就不可能达成共识。要达成共识，就必须为系统引入一个能够规避上述问题的失效检测器[1]。 分布式共识问题 分布式共识问题，简单说，就是在一个或多个进程提议了一个值应当是什么后，使系统中所有进程对这个值达成一致意见。为了达到共识，每个进程都提出自己的提议（propose），最终通过共识算法，所有正确运行的进程决定（decide）相同的值[2]。 在同步、可靠的系统中，想要多个节点达成一致比较容易。实际的分布式场景多为异步模型，FLP不可能性说明：没有任何算法可以在存在任何故障的异步系统中确保达到共识，绕过不可能性结论的办法是考虑部分同步系统，利用故障屏蔽、故障检测器或随机化手段避开异步系统模型[2]。 分布式问题最常见的应用场景是多副本状态机（Replicated state machine）。多副本状态机是指多台机器具有完全相同的状态，并且运行有完全相同的确定性状态机[2]。多副本状态机主要用于解决分布式系统中的容错问题，因为副本冗余了状态机，只要保证大多数副本存活且一致，就能向外部提供服务。多副本状态机的实现思想：状态机的每个副本上都保存有完全相同的操作日志，保证所有副本状态机按照相同的顺序执行操作，这样由于状态机是确定性的，则一定会得到相同的状态[2]。具体的实现方式主要分为两种[3]： 日志复制：由 primary 机接受操作日志，并广播给 backup 机，backup 机需要跟 primary 机的操作日志保持一致； 状态重演：操作日志由多个副本共享，每个副本通过重新执行操作日志从放状态； Raft 算法 有三种非常具有代表性的分布式共识算法：分别是 Viewstamped Replication 、Raft 和大名鼎鼎的 Paxos 算法，前两个工作本身就是基于多副本状态机的场景完成的，而 Paxos 算法是作为独立的分布式共识算法提出，并给出了使用该算法实现多副本状态机的范例[2]。 Raft 是一种为了管理复制日志的一致性算法。它提供了和 Paxos 算法相同的功能和性能，但是它的算法结构和 Paxos 不同，使得 Raft 算法更加容易理解并且更容易构建实际的系统。为了提升可理解性，Raft 将一致性算法分解成了几个关键模块，例如领导人选举、日志复制和安全性。同时它通过实施一个更强的一致性来减少需要考虑的状态的数量。从一个用户研究的结果可以证明，对于学生而言，Raft 算法比 Paxos 算法更加容易学习。Raft 算法还包括一个新的机制来允许集群成员的动态改变，它利用重叠的大多数来保证安全性[4]。 与其他共识算法相比，Raft 算法有三个特点[4]： 强领导者：和其他一致性算法相比，Raft 使用一种更强的领导能力形式。比如，日志条目只从领导者发送给其他的服务器。这种方式简化了对复制日志的管理并且使得 Raft 算法更加易于理解。 领导选举：Raft 算法使用一个随机计时器来选举领导者。这种方式只是在任何一致性算法都必须实现的心跳机制上增加了一点机制。在解决冲突的时候会更加简单快捷。 成员关系调整：Raft 使用一种共同一致的方法来处理集群成员变换的问题，在这种方法下，处于调整过程中的两种不同的配置集群中大多数机器会有重叠，这就使得集群在成员变换的时候依然可以继续工作。 虽然这篇文章标题有“Raft 实现”关键字，但并不会讲 Raft 算法的原理，这只是 Raft 的功能实现介绍，所以我建议在继续阅读之前，先学习一下 Raft 算法：寻找一种易于理解的一致性算法（扩展版）。 挖坑 一个基础的 Raft 功能只需要实现选举和日志复制，但这远远不够。想要应用到实际的工程中，还需要实现日至压缩、成员关系调整，才算完整的 Raft 实现。这里给出个 Raft 功能清单，实际上也是本系列文章希望实现的功能： leader election prevote log replication log compaction &amp; snapshot linearizable read(read index &amp; lease) membership change leadership transfer 拥有上述功能可以算上一个工业级的 Raft 实现，不过在实际应用中，还会有许多工业上的优化技巧比如 Batch 和 Pipeline，具体有哪些可以优化的，放到以后的章节详述。 这是我在学习 Raft 算法，并以之为基础实现分布式系统过程中的学习总结。在接下来的几篇文章中，将按照上述清单依次谈谈对应的实现方法和优化原理。实现方法参考优秀的开源实现：etcd/raft 以及其各语言移植版本。 Reference WHAT WE TALK ABOUT WHEN WE TALK ABOUT DISTRIBUTED SYSTEMS 分布式共识(Consensus)：Viewstamped Replication、Raft以及Paxos The design of a practical system for Fault-Tolerant Virtual Machines 寻找一种易于理解的一致性算法（扩展版） 分布式系统编程，你到哪一级了？]]></summary></entry></feed>
