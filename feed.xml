@@ -1,4 +1,364 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.2.2">Jekyll</generator><link href="/feed.xml" rel="self" type="application/atom+xml" /><link href="/" rel="alternate" type="text/html" /><updated>2022-03-31T13:48:43+08:00</updated><id>/feed.xml</id><title type="html">W41ter’s Bistro</title><subtitle>Focus on distributed storage system, compiler.</subtitle><entry><title type="html">Shrinking Logs by Safely Discarding Commands</title><link href="/2022/03/31/Shrinking-Logs-by-Safely-Discarding-Commands.html" rel="alternate" type="text/html" title="Shrinking Logs by Safely Discarding Commands" /><published>2022-03-31T00:00:00+08:00</published><updated>2022-03-31T00:00:00+08:00</updated><id>/2022/03/31/Shrinking-Logs-by-Safely-Discarding-Commands</id><content type="html" xml:base="/2022/03/31/Shrinking-Logs-by-Safely-Discarding-Commands.html"><![CDATA[<h2 id="log-based-protocols">Log based protocols</h2>
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.2.2">Jekyll</generator><link href="/feed.xml" rel="self" type="application/atom+xml" /><link href="/" rel="alternate" type="text/html" /><updated>2022-05-24T16:10:47+08:00</updated><id>/feed.xml</id><title type="html">W41ter’s Bistro</title><subtitle>Focus on distributed storage system, compiler.</subtitle><entry><title type="html">CockroachDB Source Code Reading Notes</title><link href="/2022/05/24/CockroachDB-Source-Code.html" rel="alternate" type="text/html" title="CockroachDB Source Code Reading Notes" /><published>2022-05-24T00:00:00+08:00</published><updated>2022-05-24T00:00:00+08:00</updated><id>/2022/05/24/CockroachDB-Source-Code</id><content type="html" xml:base="/2022/05/24/CockroachDB-Source-Code.html"><![CDATA[<h1 id="cockroachdb">CockroachDB</h1>
+
+<h2 id="entrance">Entrance</h2>
+
+<p>In <code class="language-plaintext highlighter-rouge">pkg/cmd/cockroach.go</code>:</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">func</span> <span class="n">main</span><span class="p">()</span> <span class="p">{</span>
+    <span class="n">cli</span><span class="o">.</span><span class="n">Main</span><span class="p">()</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>In <code class="language-plaintext highlighter-rouge">pkg/cli/cli.go</code>:</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">cockroachCmd</span><span class="o">.</span><span class="n">AddCommand</span><span class="p">(</span>
+    <span class="n">startCmd</span><span class="p">,</span>
+    <span class="n">initCmd</span><span class="p">,</span>
+<span class="p">)</span>
+</code></pre></div></div>
+
+<p>According <a href="http://doc.cockroachchina.baidu.com/#deploy/manual-deployment/on-premises/#step-3">cockroach db manual</a>:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>cockroach start --join xxx
+cockroach init --host &lt;address of any node&gt;
+</code></pre></div></div>
+
+<p>So the setup logic lie in <code class="language-plaintext highlighter-rouge">startCmd</code>, and cluster bootstrap login lie in <code class="language-plaintext highlighter-rouge">initCmd</code>.</p>
+
+<p>In <code class="language-plaintext highlighter-rouge">pkg/cli/start.go</code>, command <code class="language-plaintext highlighter-rouge">startCmd</code> will invoke <code class="language-plaintext highlighter-rouge">runStartJoin</code> -&gt; <code class="language-plaintext highlighter-rouge">runStart</code>:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>func runStart() {
+    var s *server.Server
+    s, err = server.NewServer()
+    s.PreStart()
+    s.InitialStart()
+    s.AcceptClients()
+}
+</code></pre></div></div>
+
+<h3 id="start-node">Start Node</h3>
+
+<p>In <code class="language-plaintext highlighter-rouge">Server::NewServer</code>:</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">clock</span> <span class="o">=</span> <span class="n">hlc</span><span class="o">.</span><span class="n">NewClock</span><span class="p">()</span>
+<span class="n">engines</span> <span class="o">=</span> <span class="n">cfg</span><span class="o">.</span><span class="n">CreateEngines</span><span class="p">()</span>
+    <span class="n">eng</span><span class="p">,</span> <span class="n">err</span> <span class="o">=</span> <span class="n">storage</span><span class="o">.</span><span class="n">NewPebble</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">pebbleConfig</span><span class="p">)</span>
+<span class="n">rpcContext</span> <span class="o">=</span> <span class="n">rpc</span><span class="o">.</span><span class="n">NewContext</span><span class="p">()</span>
+<span class="n">grpcServer</span> <span class="o">=</span> <span class="n">newGRPCServer</span><span class="p">(</span><span class="n">rpcContext</span><span class="p">)</span>
+<span class="n">g</span> <span class="o">=</span> <span class="n">gossip</span><span class="o">.</span><span class="n">New</span><span class="p">()</span>
+<span class="n">distSender</span> <span class="o">=</span> <span class="n">kvcoord</span><span class="o">.</span><span class="n">NewDistSender</span><span class="p">()</span>
+<span class="n">db</span> <span class="o">=</span> <span class="n">kv</span><span class="o">.</span><span class="n">NewDBWithContext</span><span class="p">(</span><span class="n">clock</span><span class="p">,</span> <span class="n">dbCtx</span><span class="p">)</span>
+<span class="n">raftTransport</span> <span class="o">=</span> <span class="n">kvserver</span><span class="o">.</span><span class="n">NewRaftTransport</span><span class="p">()</span>
+<span class="n">stores</span> <span class="o">=</span> <span class="n">kvserver</span><span class="o">.</span><span class="n">NewStores</span><span class="p">()</span>
+<span class="n">tsDB</span> <span class="o">=</span> <span class="n">ts</span><span class="o">.</span><span class="n">NewDB</span><span class="p">(</span><span class="n">db</span><span class="p">)</span>
+<span class="n">node</span> <span class="o">=</span> <span class="n">NewNode</span><span class="p">()</span>
+<span class="n">roachpb</span><span class="o">.</span><span class="n">RegisterInternalServer</span><span class="p">(</span><span class="n">grpcServer</span><span class="o">.</span><span class="n">Server</span><span class="p">,</span> <span class="n">node</span><span class="p">)</span>
+<span class="n">kvserver</span><span class="o">.</span><span class="n">RegisterPerReplicaServer</span><span class="p">(</span><span class="n">grpcServer</span><span class="o">.</span><span class="n">Server</span><span class="p">,</span> <span class="n">node</span><span class="o">.</span><span class="n">perReplicaServer</span><span class="p">)</span>
+<span class="n">kvserver</span><span class="o">.</span><span class="n">RegisterPerStoreServer</span><span class="p">(</span><span class="n">grpcServer</span><span class="o">.</span><span class="n">Server</span><span class="p">,</span> <span class="n">node</span><span class="o">.</span><span class="n">perReplicaServer</span><span class="p">)</span>
+<span class="n">ctpb</span><span class="o">.</span><span class="n">RegisterSideTransportServer</span><span class="p">(</span><span class="n">grpcServer</span><span class="o">.</span><span class="n">Server</span><span class="p">,</span> <span class="n">ctReceiver</span><span class="p">)</span>
+<span class="n">sqlServer</span><span class="p">,</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">newSQLServer</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">sqlServerArgs</span><span class="p">)</span>
+</code></pre></div></div>
+
+<p>In <code class="language-plaintext highlighter-rouge">Server::PreStart</code>:</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">s</span><span class="o">.</span><span class="n">rpcContext</span><span class="o">.</span><span class="n">SetLocalInternalServer</span><span class="p">(</span><span class="n">s</span><span class="o">.</span><span class="n">node</span><span class="p">)</span>
+<span class="n">s</span><span class="o">.</span><span class="n">http</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+<span class="n">s</span><span class="o">.</span><span class="n">externalStorageBuilder</span><span class="o">.</span><span class="n">init</span><span class="p">()</span>
+<span class="n">inspectEngineState</span> <span class="o">=</span> <span class="n">inspectEngines</span><span class="p">()</span>   <span class="c">// go through engines and constructs an initState. In `pkg/server/init.go`</span>
+    <span class="n">storeIdent</span><span class="p">,</span> <span class="n">err</span> <span class="o">=</span> <span class="n">kvserver</span><span class="o">.</span><span class="n">ReadStoreIdent</span><span class="p">()</span>
+<span class="n">serverpb</span><span class="o">.</span><span class="n">RegisterInitServer</span><span class="p">(</span><span class="n">s</span><span class="o">.</span><span class="n">grpc</span><span class="o">.</span><span class="n">Server</span><span class="p">,</span> <span class="n">initServer</span><span class="p">)</span>  <span class="c">// support `service Init` in `pkg/server/serverpb/init.proto`.</span>
+<span class="n">startListenRPCAndSQL</span><span class="p">()</span> <span class="c">// only start rpc server, but initialize sql server.</span>
+<span class="n">configureGRPCGateway</span><span class="p">()</span>
+<span class="n">startRPCServer</span><span class="p">()</span>
+<span class="n">onInitServerReady</span><span class="p">()</span>
+<span class="n">state</span> <span class="o">=</span> <span class="n">initServer</span><span class="o">.</span><span class="n">ServeAndWait</span><span class="p">()</span>
+    <span class="c">// bootstrapAddresses := cfg.FilterGossipBootstrapAddress() in `newInitServerConfig`. from func (cfg *Config) parseGossipBootstrapAddresses</span>
+    <span class="n">s</span><span class="o">.</span><span class="n">startJoinLoop</span><span class="p">()</span> <span class="c">// continuously retries connecting to nodes specified in the join list, in order to determine what the cluster ID, node ID is.</span>
+        <span class="n">s</span><span class="o">.</span><span class="n">attemptJoinIn</span><span class="p">()</span>
+            <span class="n">send</span> <span class="n">JoinNodeRequest</span>
+        <span class="n">s</span><span class="o">.</span><span class="n">initializeFirstStoreAfterJoin</span><span class="p">()</span>
+            <span class="n">kvserver</span><span class="o">.</span><span class="n">InitEngines</span><span class="p">()</span>
+    <span class="n">state</span> <span class="o">:=</span> <span class="o">&lt;-</span> <span class="n">s</span><span class="o">.</span><span class="n">joinCh</span>
+<span class="n">s</span><span class="o">.</span><span class="n">rpcContext</span><span class="o">.</span><span class="n">NodeID</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">NodeID</span><span class="p">)</span>
+<span class="n">runAsyncTask</span><span class="p">(</span><span class="s">"connect-gossip"</span><span class="p">)</span>  <span class="c">// only log</span>
+<span class="n">s</span><span class="o">.</span><span class="n">gossip</span><span class="o">.</span><span class="n">Start</span><span class="p">()</span>
+    <span class="n">g</span><span class="o">.</span><span class="n">setAddresses</span><span class="p">(</span><span class="n">addresses</span><span class="p">)</span>
+    <span class="n">g</span><span class="o">.</span><span class="n">server</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+    <span class="n">g</span><span class="o">.</span><span class="n">bootstrap</span><span class="p">()</span>
+    <span class="n">g</span><span class="o">.</span><span class="n">manage</span><span class="p">()</span>
+<span class="n">s</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>  <span class="c">// In `pkg/server/node.go`</span>
+<span class="n">s</span><span class="o">.</span><span class="n">replicationReporter</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+<span class="n">s</span><span class="o">.</span><span class="n">sqlServer</span><span class="o">.</span><span class="n">preStart</span><span class="p">()</span>
+</code></pre></div></div>
+
+<p>There are some comments in <code class="language-plaintext highlighter-rouge">PreStart</code>:</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c">// "bootstrapping problem": nodes need to connect to Gossip fairly</span>
+<span class="c">// early, but what drives Gossip connectivity are the first range</span>
+<span class="c">// replicas in the kv store. This in turn suggests opening the Gossip</span>
+<span class="c">// server early. However, naively doing so also serves most other</span>
+<span class="c">// services prematurely, which exposes a large surface of potentially</span>
+<span class="c">// underinitialized services. This is avoided with some additional</span>
+<span class="c">// complexity that can be summarized as follows:</span>
+<span class="c">//</span>
+<span class="c">// - before blocking trying to connect to the Gossip network, we already open</span>
+<span class="c">//   the admin UI (so that its diagnostics are available)</span>
+<span class="c">// - we also allow our Gossip and our connection health Ping service</span>
+<span class="c">// - everything else returns Unavailable errors (which are retryable)</span>
+<span class="c">// - once the node has started, unlock all RPCs.</span>
+</code></pre></div></div>
+
+<p>In <code class="language-plaintext highlighter-rouge">Node::start</code>:</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">n</span><span class="o">.</span><span class="n">storeCfg</span><span class="o">.</span><span class="n">Gossip</span><span class="o">.</span><span class="n">NodeID</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">n</span><span class="o">.</span><span class="n">nodeDescriptor</span><span class="o">.</span><span class="n">NodeID</span><span class="p">)</span>
+<span class="n">n</span><span class="o">.</span><span class="n">storeCfg</span><span class="o">.</span><span class="n">Gossip</span><span class="o">.</span><span class="n">SetNodeDescriptor</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">n</span><span class="o">.</span><span class="n">nodeDescriptor</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">_</span><span class="p">,</span> <span class="n">e</span> <span class="o">:=</span> <span class="n">state</span><span class="o">.</span><span class="n">initializedEngines</span> <span class="p">{</span>
+    <span class="n">s</span> <span class="o">:=</span> <span class="n">kvserver</span><span class="o">.</span><span class="n">NewStore</span><span class="p">(</span><span class="n">e</span><span class="p">)</span>  <span class="c">// In `pkg/kv/kvserver/store.go`</span>
+    <span class="n">s</span><span class="o">.</span><span class="n">Start</span><span class="p">()</span>
+        <span class="c">// Iterate over all range descriptor, ignoring uncommitted version.</span>
+        <span class="n">IterateRangeDescriptorFromDisk</span><span class="p">()</span>
+            <span class="n">replica</span> <span class="o">=</span> <span class="n">newReplica</span><span class="p">()</span>  <span class="c">// In `pkg/kv/kvserver/replica_init.go`</span>
+                <span class="n">newUnloadReplica</span><span class="p">()</span>
+                <span class="n">loadRaftMuLockedReplicaMuLocked</span><span class="p">()</span>
+                    <span class="n">lastIndex</span> <span class="o">=</span> <span class="n">r</span><span class="o">.</span><span class="n">stateLoader</span><span class="o">.</span><span class="n">LoadLastIndex</span><span class="p">()</span>
+            <span class="n">s</span><span class="o">.</span><span class="n">addReplicaInternal</span><span class="p">(</span><span class="n">replica</span><span class="p">)</span>
+        <span class="n">s</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">Transport</span><span class="o">.</span><span class="n">Listen</span><span class="p">(</span><span class="n">s</span><span class="o">.</span><span class="n">StoreID</span><span class="p">(),</span> <span class="n">s</span><span class="p">)</span>
+        <span class="n">s</span><span class="o">.</span><span class="n">processRaft</span><span class="p">()</span>
+        <span class="n">s</span><span class="o">.</span><span class="n">storeRebalancer</span><span class="o">.</span><span class="n">Start</span><span class="p">()</span> <span class="c">// rebalance is finished in store?</span>
+        <span class="n">s</span><span class="o">.</span><span class="n">startGossip</span><span class="p">()</span>
+        <span class="n">s</span><span class="o">.</span><span class="n">startLeaseRenewer</span><span class="p">()</span>
+
+    <span class="n">n</span><span class="o">.</span><span class="n">addStore</span><span class="p">(</span><span class="n">s</span><span class="p">)</span>
+<span class="p">}</span>
+<span class="n">n</span><span class="o">.</span><span class="n">storeCfg</span><span class="o">.</span><span class="n">Gossip</span><span class="o">.</span><span class="n">SetStorage</span><span class="p">(</span><span class="n">n</span><span class="o">.</span><span class="n">stores</span><span class="p">)</span>
+<span class="n">n</span><span class="o">.</span><span class="n">startGossiping</span><span class="p">(</span><span class="n">n</span><span class="o">.</span><span class="n">stopper</span><span class="p">)</span>  <span class="c">// loops on a periodic ticker to gossip node-related information.</span>
+    <span class="n">s</span><span class="o">.</span><span class="n">GossipStore</span><span class="p">()</span> <span class="c">// GossipStore broadcasts the store on the gossip network.</span>
+</code></pre></div></div>
+
+<p>In <code class="language-plaintext highlighter-rouge">Server::AcceptClients</code>:</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">s</span><span class="o">.</span><span class="n">sqlServer</span><span class="o">.</span><span class="n">startServerSQL</span><span class="p">()</span>
+</code></pre></div></div>
+
+<h2 id="bootstrap">Bootstrap</h2>
+
+<p>In <code class="language-plaintext highlighter-rouge">pkg/cli/init.go</code>:</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">func</span> <span class="n">runInit</span><span class="p">()</span> <span class="p">{</span>
+    <span class="n">c</span><span class="p">,</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">NewInitClient</span><span class="p">()</span>
+    <span class="n">c</span><span class="o">.</span><span class="n">Bootstrap</span><span class="p">(</span><span class="n">BootstrapRequest</span> <span class="p">{})</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>In <code class="language-plaintext highlighter-rouge">pkg/server/init.go</code>:</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">func</span> <span class="p">(</span><span class="n">s</span> <span class="o">*</span><span class="n">initServer</span><span class="p">)</span> <span class="n">Bootstrap</span><span class="p">()</span> <span class="p">{</span>
+    <span class="n">state</span><span class="p">,</span> <span class="n">err</span> <span class="o">=</span> <span class="n">s</span><span class="o">.</span><span class="n">tryBootstrap</span><span class="p">()</span>
+<span class="p">}</span>
+
+<span class="k">func</span> <span class="p">(</span><span class="n">s</span> <span class="o">*</span><span class="n">initServer</span><span class="p">)</span> <span class="n">tryBootstrap</span><span class="p">()</span> <span class="p">{</span>
+    <span class="k">return</span> <span class="n">bootstrapCluster</span><span class="p">()</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>In <code class="language-plaintext highlighter-rouge">pkg/server/node.go</code>, function <code class="language-plaintext highlighter-rouge">bootstrapCluster</code>:</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">kvserver</span><span class="o">.</span><span class="n">InitEngine</span><span class="p">(</span><span class="n">engine</span><span class="p">,</span> <span class="n">storeIdent</span><span class="p">)</span>
+<span class="n">kvserver</span><span class="o">.</span><span class="n">WriteInitialClusterData</span><span class="p">()</span> <span class="c">// writes initialization data to an engine. It creates system ranges (filling in meta1 and meta2) and the default zone config.</span>
+</code></pre></div></div>
+
+<p>Question:</p>
+<ul>
+  <li>When the first range was creatiation?
+In <code class="language-plaintext highlighter-rouge">pkg/kv/kvserver/store_init.go</code>:
+    <div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code>              <span class="n">desc</span> <span class="o">:=</span> <span class="o">&amp;</span><span class="n">roachpb</span><span class="o">.</span><span class="n">RangeDescriptor</span><span class="p">{</span>
+                      <span class="n">RangeID</span><span class="o">:</span>       <span class="n">rangeID</span><span class="p">,</span>
+                      <span class="n">StartKey</span><span class="o">:</span>      <span class="n">startKey</span><span class="p">,</span>
+                      <span class="n">EndKey</span><span class="o">:</span>        <span class="n">endKey</span><span class="p">,</span>
+                      <span class="n">NextReplicaID</span><span class="o">:</span> <span class="m">2</span><span class="p">,</span>
+              <span class="p">}</span>
+              <span class="k">const</span> <span class="n">firstReplicaID</span> <span class="o">=</span> <span class="m">1</span>
+              <span class="n">replicas</span> <span class="o">:=</span> <span class="p">[]</span><span class="n">roachpb</span><span class="o">.</span><span class="n">ReplicaDescriptor</span><span class="p">{</span>
+                      <span class="p">{</span>
+                              <span class="n">NodeID</span><span class="o">:</span>    <span class="n">FirstNodeID</span><span class="p">,</span>
+                              <span class="n">StoreID</span><span class="o">:</span>   <span class="n">FirstStoreID</span><span class="p">,</span>
+                              <span class="n">ReplicaID</span><span class="o">:</span> <span class="n">firstReplicaID</span><span class="p">,</span>
+                      <span class="p">},</span>
+              <span class="p">}</span>
+              <span class="n">desc</span><span class="o">.</span><span class="n">SetReplicas</span><span class="p">(</span><span class="n">roachpb</span><span class="o">.</span><span class="n">MakeReplicaSet</span><span class="p">(</span><span class="n">replicas</span><span class="p">))</span>
+</code></pre></div>    </div>
+  </li>
+  <li>How to determine whether a cluster has been bootstrapped when restarting?
+    <ol>
+      <li>In <code class="language-plaintext highlighter-rouge">Server::PreStart</code>, <code class="language-plaintext highlighter-rouge">inspectEngineState := InspectEngines()</code></li>
+      <li>In <code class="language-plaintext highlighter-rouge">InitServer::ServeAndWait</code>, <code class="language-plaintext highlighter-rouge">s.inspectEngineState.bootstrapt()</code></li>
+    </ol>
+  </li>
+  <li>When to start serving ranges?
+See <code class="language-plaintext highlighter-rouge">Node::start</code> for details.</li>
+  <li>What happen if no any join list was specified?
+Report errors</li>
+</ul>
+
+<h3 id="join-node">Join Node</h3>
+
+<p>In <code class="language-plaintext highlighter-rouge">pkg/server/node.go</code>, function <code class="language-plaintext highlighter-rouge">Join()</code>:</p>
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">compareBinaryVersion</span><span class="p">()</span>
+<span class="n">nodeID</span><span class="p">,</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">allocateNodeID</span><span class="p">()</span>
+    <span class="n">val</span><span class="p">,</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">kv</span><span class="o">.</span><span class="n">IncrementValRetryable</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">db</span><span class="p">,</span> <span class="n">keys</span><span class="o">.</span><span class="n">NodeIDGenerator</span><span class="p">,</span> <span class="m">1</span><span class="p">)</span>
+        <span class="n">db</span><span class="o">.</span><span class="n">Inc</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">key</span><span class="p">,</span> <span class="n">inc</span><span class="p">)</span> <span class="c">// pkg/kv/db.go   var db *DB</span>
+            <span class="n">db</span><span class="o">.</span><span class="n">Run</span><span class="p">()</span>
+                <span class="n">db</span><span class="o">.</span><span class="n">SendAndFill</span><span class="p">()</span>
+                    <span class="n">db</span><span class="o">.</span><span class="n">send</span><span class="p">()</span>
+<span class="n">storeID</span><span class="p">,</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">allocateStoreIDs</span><span class="p">()</span>
+    <span class="n">val</span><span class="p">,</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">kv</span><span class="o">.</span><span class="n">IncrementValRetryable</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">db</span><span class="p">,</span> <span class="n">keys</span><span class="o">.</span><span class="n">StoreIDGenerator</span><span class="p">,</span> <span class="n">count</span><span class="p">)</span>
+<span class="c">// create liveness record, so what is the purpose of liveness record?</span>
+<span class="n">n</span><span class="o">.</span><span class="n">storeCfg</span><span class="o">.</span><span class="n">NodeLiveness</span><span class="o">.</span><span class="n">CreateLivenessRecord</span><span class="p">()</span>
+</code></pre></div></div>
+
+<p>Questions:</p>
+<ul>
+  <li>What happen if receives <code class="language-plaintext highlighter-rouge">Join</code> requests?
+Only check version and allocate NodeID. If a node has already bootstrapted, it won’t allocate new node id again (See PreStart() for details).</li>
+  <li>What should to do for adding new table?
+TODO</li>
+  <li>Where is the master role for cockroachdb?
+TODO</li>
+</ul>
+
+<h2 id="add-replica-on-store">Add Replica on Store</h2>
+
+<p>In <code class="language-plaintext highlighter-rouge">pkg/kv/kvserver/store_create_replica.go</code>, function <code class="language-plaintext highlighter-rouge">getOrCreateReplica</code>:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>getOrCreateReplica -&gt; tryGetOrCreateReplica
+    // 1. current replica is removed, go back around
+    // 2. drop messages from replica we known to be too old
+    // 3. the current replica need to be removed, remove it and go back around
+    // 4. drop staled msg silently
+    // 5. check tombstone
+    newUnloadedReplica
+    Store::addReplicaToRangeMapLocked
+    StateLoader::SetRangeReplicaID
+    Replica::loadRaftMuLockedReplicaMuLocked
+</code></pre></div></div>
+
+<p>Questions:</p>
+<ul>
+  <li>When the new replica are created?
+See above.</li>
+</ul>
+
+<h2 id="raft">Raft</h2>
+
+<ol>
+  <li>Initialize
+    <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Node::start
+ Store::processRaft
+     raftScheduler::Start
+         async raftScheduler::worker
+     async raftScheduler::Wait
+     async raftTickLoop
+     async coalescedHeartbeatsLoop
+</code></pre></div>    </div>
+  </li>
+  <li>run worker, in <code class="language-plaintext highlighter-rouge">pkg/kv/kvserver/store_raft.go</code> and <code class="language-plaintext highlighter-rouge">pkg/kv/kvserver/replica_raft.go</code>.
+    <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>raftScheduler::worker
+ raftScheduler::processRequestQueue
+ raftScheduler::processTick
+ raftScheduler::processReady
+     Store::withReplicaForRequest
+         Store::getOrCreateReplica
+         Store::processRaftRequestWithReplica
+             Replica::stepRaftGroup
+                 Replica::withRaftGroup
+                     // if internal raft group is null, try create it
+                     RawNode::Step
+</code></pre></div>    </div>
+  </li>
+  <li>propose
+    <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Node::Batch -&gt; Node::batchInternal
+ Stores::Send(BatchRequest) -&gt; Stores::GetStore -&gt; Store::Send   // `pkg/kv/kvserver/store_send.go`
+     Clock::Update  // Advances the local node's clock  to a high water mark from all nodes with which it has interacted.
+     Store::GetReplica -&gt; Replica::Send -&gt; Replica::sendWithoutRangeID   // `pkg/kv/kvserver/replica_send.go`
+         Replica::maybeInitializeRaftGroup      // If the internal Raft group is not initialized, create it and wake the leader.
+             Replica::withRaftGroupLocked
+                 Replica::maybeCampaignOnWakeLocked -&gt; Replica::campaignLocked
+                     Store::enqueueRaftUpdateCheck -&gt; raftScheduler::EnqueueRaftReady
+         Replica::executeBatchWithConcurrencyRetries
+             Replica::executeReadOnlyBatch
+             Replica::executeReadWriteBatch     // `pkg/kv/kvserver/replica_write.go`
+                 Replica::applyTimestampCache
+                 Replica::evalAndPropose        // `pkg/kv/kvserver/replica_raft.go`
+                     Replica::requestToProposal // `pkg/kv/kvserver/replica_proposal.go`
+                         Replica::evaluateProposal -&gt; Replica::evaluateWriteBatch
+                             Replica::evaluate1PC
+                             Replica::evaluateWriteBatchWithServersideRefreshes -&gt; Replica::evaluateWriteBatchWrapper -&gt; evaluateBatch  // `pkg/kv/kvserver/replica_evaluate.go`
+                                 optimizePuts
+                                 evaluateCommand
+                                     batcheval.LookupCommand
+                                     Command::EvalRO
+                                     Command::EvalRW
+                                         Put     // `pkg/kv/kvserver/batcheval/cmd_put.go`
+                                             storage.MVCCPut
+                                             storage.MVCCConditionalPut  // `pkg/storage/mvcc.go`
+                     Replica::propose -&gt; propBuf::Insert
+         Replica::executeAdminBatch   // No interaction with the spanlatch manager or the timestamp cache.
+         Replica::maybeAddRangeInfoToResponse
+     // if ranges are mismatched, try to suggest a more suitable range from this store.
+</code></pre></div>    </div>
+  </li>
+  <li>apply
+    <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Store::processReady -&gt; Replica::HandleRaftReady -&gt; Replica::HandleRaftReadyRaftMuLocked -&gt; Replica::withRaftGroupLocked
+ propBuf::FlushLockedWithRaftGroup   // Question: will `propBuf::Insert` signal ready queue?
+ RawNode::Ready
+ Replica::applySnapshot
+ Task::AckCommittedEntriesBeforeApplication  // `pkg/kv/kvserver/apply/task.go`
+ Replica::sendRaftMessagesRaftMuLocked       // `pkg/kv/kvserver/replica_raft.go`
+ Replica::append                             // `pkg/kv/kvserver/replica_raftstorage.go`
+     storage.Writer::MVCCPut                 // Writer is `Store::Engine().NewUnindexedBatch`
+     Batch::Commit
+ Replica::sendRaftMessagesRaftMuLocked       // `pkg/kv/kvserver/replica_raft.go`
+ Task::ApplyCommittedEntries -&gt; Task::ApplyOneBatch
+     Batch::Stage(Command) -&gt; replicaAppBatch::Stage   // `pkg/kv/kvserver/replica_application_state_machine.go`
+         Replica::ShouldApplyCommand
+     Batch::ApplyToStateMachine              // StateMachine::NewBatch
+     AppliedCommand::AckOutcomeAndFinish
+ Replica::withRaftGroupLocked
+     RawNode::Advance(Ready)
+     Replica::campaignLocked     // if shouldCampaignAfterConfChange: if raft leader got moved, campaign the first remaning voter.
+     Store::enqueueRaftUpdateCheck  // if RawNode::HasReady
+</code></pre></div>    </div>
+  </li>
+</ol>
+
+<p>Questions:</p>
+<ul>
+  <li>Where the <code class="language-plaintext highlighter-rouge">conditional_put</code> is executed?
+In file <code class="language-plaintext highlighter-rouge">pkg/kv/kvserver/batcheval/cmd_conditional_put.go</code>, it is invoked by <code class="language-plaintext highlighter-rouge">executeCommand</code>.</li>
+  <li>What is the purpose of <code class="language-plaintext highlighter-rouge">CommandID</code>?
+The command ID is equals <code class="language-plaintext highlighter-rouge">makeIDKey() -&gt; rand.Int64()</code>.
+    <div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c">// CmdIDKey is a Raft command id. This will be logged unredacted - keep it random.</span>
+</code></pre></div>    </div>
+  </li>
+</ul>
+
+<h2 id="rebalance">Rebalance</h2>
+
+<p>In <code class="language-plaintext highlighter-rouge">pkg/kv/kvserver/store.go</code>, function <code class="language-plaintext highlighter-rouge">Store::Start</code>:</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">NewStoreRebalancer</span>
+<span class="n">StoreRebalancer</span><span class="o">::</span><span class="n">Start</span>
+    <span class="c">// rebalanceStore iterates through the top K hottest ranges on this store and</span>
+    <span class="c">// for each such range, performs a lease transfer if it determines that that</span>
+    <span class="c">// will improve QPS balance across the stores in the cluster. After it runs out</span>
+    <span class="c">// of leases to transfer away (i.e. because it couldn't find better</span>
+    <span class="c">// replacements), it considers these ranges for replica rebalancing.</span>
+    <span class="n">async</span> <span class="n">StoreRebalancer</span><span class="o">::</span><span class="n">rebalanceStore</span>
+        <span class="n">StoreRebalancer</span><span class="o">::</span><span class="n">chooseLeaseToTransfer</span>
+        <span class="n">replicateQueue</span><span class="o">::</span><span class="n">transferLease</span>
+        <span class="n">StoreRebalancer</span><span class="o">::</span><span class="n">chooseRangeToRebalance</span>
+        <span class="n">DB</span><span class="o">::</span><span class="n">AdminRelocateRange</span>
+</code></pre></div></div>]]></content><author><name></name></author><summary type="html"><![CDATA[CockroachDB Entrance In pkg/cmd/cockroach.go: func main() { cli.Main() } In pkg/cli/cli.go: cockroachCmd.AddCommand( startCmd, initCmd, ) According cockroach db manual: cockroach start --join xxx cockroach init --host &lt;address of any node&gt; So the setup logic lie in startCmd, and cluster bootstrap login lie in initCmd. In pkg/cli/start.go, command startCmd will invoke runStartJoin -&gt; runStart: func runStart() { var s *server.Server s, err = server.NewServer() s.PreStart() s.InitialStart() s.AcceptClients() } Start Node In Server::NewServer: clock = hlc.NewClock() engines = cfg.CreateEngines() eng, err = storage.NewPebble(ctx, pebbleConfig) rpcContext = rpc.NewContext() grpcServer = newGRPCServer(rpcContext) g = gossip.New() distSender = kvcoord.NewDistSender() db = kv.NewDBWithContext(clock, dbCtx) raftTransport = kvserver.NewRaftTransport() stores = kvserver.NewStores() tsDB = ts.NewDB(db) node = NewNode() roachpb.RegisterInternalServer(grpcServer.Server, node) kvserver.RegisterPerReplicaServer(grpcServer.Server, node.perReplicaServer) kvserver.RegisterPerStoreServer(grpcServer.Server, node.perReplicaServer) ctpb.RegisterSideTransportServer(grpcServer.Server, ctReceiver) sqlServer, err := newSQLServer(ctx, sqlServerArgs) In Server::PreStart: s.rpcContext.SetLocalInternalServer(s.node) s.http.start() s.externalStorageBuilder.init() inspectEngineState = inspectEngines() // go through engines and constructs an initState. In `pkg/server/init.go` storeIdent, err = kvserver.ReadStoreIdent() serverpb.RegisterInitServer(s.grpc.Server, initServer) // support `service Init` in `pkg/server/serverpb/init.proto`. startListenRPCAndSQL() // only start rpc server, but initialize sql server. configureGRPCGateway() startRPCServer() onInitServerReady() state = initServer.ServeAndWait() // bootstrapAddresses := cfg.FilterGossipBootstrapAddress() in `newInitServerConfig`. from func (cfg *Config) parseGossipBootstrapAddresses s.startJoinLoop() // continuously retries connecting to nodes specified in the join list, in order to determine what the cluster ID, node ID is. s.attemptJoinIn() send JoinNodeRequest s.initializeFirstStoreAfterJoin() kvserver.InitEngines() state := &lt;- s.joinCh s.rpcContext.NodeID.set(state.NodeID) runAsyncTask("connect-gossip") // only log s.gossip.Start() g.setAddresses(addresses) g.server.start() g.bootstrap() g.manage() s.node.start() // In `pkg/server/node.go` s.replicationReporter.start() s.sqlServer.preStart() There are some comments in PreStart: // "bootstrapping problem": nodes need to connect to Gossip fairly // early, but what drives Gossip connectivity are the first range // replicas in the kv store. This in turn suggests opening the Gossip // server early. However, naively doing so also serves most other // services prematurely, which exposes a large surface of potentially // underinitialized services. This is avoided with some additional // complexity that can be summarized as follows: // // - before blocking trying to connect to the Gossip network, we already open // the admin UI (so that its diagnostics are available) // - we also allow our Gossip and our connection health Ping service // - everything else returns Unavailable errors (which are retryable) // - once the node has started, unlock all RPCs. In Node::start: n.storeCfg.Gossip.NodeID.set(n.nodeDescriptor.NodeID) n.storeCfg.Gossip.SetNodeDescriptor.set(n.nodeDescriptor) for _, e := state.initializedEngines { s := kvserver.NewStore(e) // In `pkg/kv/kvserver/store.go` s.Start() // Iterate over all range descriptor, ignoring uncommitted version. IterateRangeDescriptorFromDisk() replica = newReplica() // In `pkg/kv/kvserver/replica_init.go` newUnloadReplica() loadRaftMuLockedReplicaMuLocked() lastIndex = r.stateLoader.LoadLastIndex() s.addReplicaInternal(replica) s.cfg.Transport.Listen(s.StoreID(), s) s.processRaft() s.storeRebalancer.Start() // rebalance is finished in store? s.startGossip() s.startLeaseRenewer() n.addStore(s) } n.storeCfg.Gossip.SetStorage(n.stores) n.startGossiping(n.stopper) // loops on a periodic ticker to gossip node-related information. s.GossipStore() // GossipStore broadcasts the store on the gossip network. In Server::AcceptClients: s.sqlServer.startServerSQL() Bootstrap In pkg/cli/init.go: func runInit() { c, err := NewInitClient() c.Bootstrap(BootstrapRequest {}) } In pkg/server/init.go: func (s *initServer) Bootstrap() { state, err = s.tryBootstrap() } func (s *initServer) tryBootstrap() { return bootstrapCluster() } In pkg/server/node.go, function bootstrapCluster: kvserver.InitEngine(engine, storeIdent) kvserver.WriteInitialClusterData() // writes initialization data to an engine. It creates system ranges (filling in meta1 and meta2) and the default zone config. Question: When the first range was creatiation? In pkg/kv/kvserver/store_init.go: desc := &amp;roachpb.RangeDescriptor{ RangeID: rangeID, StartKey: startKey, EndKey: endKey, NextReplicaID: 2, } const firstReplicaID = 1 replicas := []roachpb.ReplicaDescriptor{ { NodeID: FirstNodeID, StoreID: FirstStoreID, ReplicaID: firstReplicaID, }, } desc.SetReplicas(roachpb.MakeReplicaSet(replicas)) How to determine whether a cluster has been bootstrapped when restarting? In Server::PreStart, inspectEngineState := InspectEngines() In InitServer::ServeAndWait, s.inspectEngineState.bootstrapt() When to start serving ranges? See Node::start for details. What happen if no any join list was specified? Report errors Join Node In pkg/server/node.go, function Join(): compareBinaryVersion() nodeID, err := allocateNodeID() val, err := kv.IncrementValRetryable(ctx, db, keys.NodeIDGenerator, 1) db.Inc(ctx, key, inc) // pkg/kv/db.go var db *DB db.Run() db.SendAndFill() db.send() storeID, err := allocateStoreIDs() val, err := kv.IncrementValRetryable(ctx, db, keys.StoreIDGenerator, count) // create liveness record, so what is the purpose of liveness record? n.storeCfg.NodeLiveness.CreateLivenessRecord() Questions: What happen if receives Join requests? Only check version and allocate NodeID. If a node has already bootstrapted, it won’t allocate new node id again (See PreStart() for details). What should to do for adding new table? TODO Where is the master role for cockroachdb? TODO Add Replica on Store In pkg/kv/kvserver/store_create_replica.go, function getOrCreateReplica: getOrCreateReplica -&gt; tryGetOrCreateReplica // 1. current replica is removed, go back around // 2. drop messages from replica we known to be too old // 3. the current replica need to be removed, remove it and go back around // 4. drop staled msg silently // 5. check tombstone newUnloadedReplica Store::addReplicaToRangeMapLocked StateLoader::SetRangeReplicaID Replica::loadRaftMuLockedReplicaMuLocked Questions: When the new replica are created? See above. Raft Initialize Node::start Store::processRaft raftScheduler::Start async raftScheduler::worker async raftScheduler::Wait async raftTickLoop async coalescedHeartbeatsLoop run worker, in pkg/kv/kvserver/store_raft.go and pkg/kv/kvserver/replica_raft.go. raftScheduler::worker raftScheduler::processRequestQueue raftScheduler::processTick raftScheduler::processReady Store::withReplicaForRequest Store::getOrCreateReplica Store::processRaftRequestWithReplica Replica::stepRaftGroup Replica::withRaftGroup // if internal raft group is null, try create it RawNode::Step propose Node::Batch -&gt; Node::batchInternal Stores::Send(BatchRequest) -&gt; Stores::GetStore -&gt; Store::Send // `pkg/kv/kvserver/store_send.go` Clock::Update // Advances the local node's clock to a high water mark from all nodes with which it has interacted. Store::GetReplica -&gt; Replica::Send -&gt; Replica::sendWithoutRangeID // `pkg/kv/kvserver/replica_send.go` Replica::maybeInitializeRaftGroup // If the internal Raft group is not initialized, create it and wake the leader. Replica::withRaftGroupLocked Replica::maybeCampaignOnWakeLocked -&gt; Replica::campaignLocked Store::enqueueRaftUpdateCheck -&gt; raftScheduler::EnqueueRaftReady Replica::executeBatchWithConcurrencyRetries Replica::executeReadOnlyBatch Replica::executeReadWriteBatch // `pkg/kv/kvserver/replica_write.go` Replica::applyTimestampCache Replica::evalAndPropose // `pkg/kv/kvserver/replica_raft.go` Replica::requestToProposal // `pkg/kv/kvserver/replica_proposal.go` Replica::evaluateProposal -&gt; Replica::evaluateWriteBatch Replica::evaluate1PC Replica::evaluateWriteBatchWithServersideRefreshes -&gt; Replica::evaluateWriteBatchWrapper -&gt; evaluateBatch // `pkg/kv/kvserver/replica_evaluate.go` optimizePuts evaluateCommand batcheval.LookupCommand Command::EvalRO Command::EvalRW Put // `pkg/kv/kvserver/batcheval/cmd_put.go` storage.MVCCPut storage.MVCCConditionalPut // `pkg/storage/mvcc.go` Replica::propose -&gt; propBuf::Insert Replica::executeAdminBatch // No interaction with the spanlatch manager or the timestamp cache. Replica::maybeAddRangeInfoToResponse // if ranges are mismatched, try to suggest a more suitable range from this store. apply Store::processReady -&gt; Replica::HandleRaftReady -&gt; Replica::HandleRaftReadyRaftMuLocked -&gt; Replica::withRaftGroupLocked propBuf::FlushLockedWithRaftGroup // Question: will `propBuf::Insert` signal ready queue? RawNode::Ready Replica::applySnapshot Task::AckCommittedEntriesBeforeApplication // `pkg/kv/kvserver/apply/task.go` Replica::sendRaftMessagesRaftMuLocked // `pkg/kv/kvserver/replica_raft.go` Replica::append // `pkg/kv/kvserver/replica_raftstorage.go` storage.Writer::MVCCPut // Writer is `Store::Engine().NewUnindexedBatch` Batch::Commit Replica::sendRaftMessagesRaftMuLocked // `pkg/kv/kvserver/replica_raft.go` Task::ApplyCommittedEntries -&gt; Task::ApplyOneBatch Batch::Stage(Command) -&gt; replicaAppBatch::Stage // `pkg/kv/kvserver/replica_application_state_machine.go` Replica::ShouldApplyCommand Batch::ApplyToStateMachine // StateMachine::NewBatch AppliedCommand::AckOutcomeAndFinish Replica::withRaftGroupLocked RawNode::Advance(Ready) Replica::campaignLocked // if shouldCampaignAfterConfChange: if raft leader got moved, campaign the first remaning voter. Store::enqueueRaftUpdateCheck // if RawNode::HasReady Questions: Where the conditional_put is executed? In file pkg/kv/kvserver/batcheval/cmd_conditional_put.go, it is invoked by executeCommand. What is the purpose of CommandID? The command ID is equals makeIDKey() -&gt; rand.Int64(). // CmdIDKey is a Raft command id. This will be logged unredacted - keep it random. Rebalance In pkg/kv/kvserver/store.go, function Store::Start: NewStoreRebalancer StoreRebalancer::Start // rebalanceStore iterates through the top K hottest ranges on this store and // for each such range, performs a lease transfer if it determines that that // will improve QPS balance across the stores in the cluster. After it runs out // of leases to transfer away (i.e. because it couldn't find better // replacements), it considers these ranges for replica rebalancing. async StoreRebalancer::rebalanceStore StoreRebalancer::chooseLeaseToTransfer replicateQueue::transferLease StoreRebalancer::chooseRangeToRebalance DB::AdminRelocateRange]]></summary></entry><entry><title type="html">Shrinking Logs by Safely Discarding Commands</title><link href="/2022/03/31/Shrinking-Logs-by-Safely-Discarding-Commands.html" rel="alternate" type="text/html" title="Shrinking Logs by Safely Discarding Commands" /><published>2022-03-31T00:00:00+08:00</published><updated>2022-03-31T00:00:00+08:00</updated><id>/2022/03/31/Shrinking-Logs-by-Safely-Discarding-Commands</id><content type="html" xml:base="/2022/03/31/Shrinking-Logs-by-Safely-Discarding-Commands.html"><![CDATA[<h2 id="log-based-protocols">Log based protocols</h2>
 
 <p><img src="/uploads/images/2022/shrinking-log-by-discarding-records-1.png" alt="Figure 1: log based protocols" /></p>
 
@@ -1332,70 +1692,4 @@ struct LogHolder {
   <li><a href="https://zh.wikipedia.org/wiki/%E9%A2%84%E5%86%99%E5%BC%8F%E6%97%A5%E5%BF%97">预写式日志</a></li>
   <li><a href="https://ramcloud.atlassian.net/wiki/download/attachments/6586375/raft.pdf">寻找一种易于理解的一致性算法（扩展版）</a></li>
   <li><a href="http://blog.jobbole.com/20304/">分布式系统编程，你到哪一级了？</a></li>
-</ol>]]></content><author><name></name></author><category term="Destribution" /><category term="Raft" /><category term="Consensus" /><category term="Practice" /><category term="Destribution" /><summary type="html"><![CDATA[在真正开始设计之前，需要考虑好 Raft 框架的搭建。如下图所示，一个服务器由三部分组成：共识算法、状态机以及日志系统。共识算法控制多副本之间日志的同步、广播。Raft 算法主要的工作是管理日志复制，所以在 Raft 应该有一个可操作的日志模块。 Write Ahead Log 在设计日志模块之前，需要先说说预写式日志（Write Ahead Log, WAL）。预写式日志通常出现在存储系统中，以保证数据的持久性[1]。WAL 的中心思想是对数据文件进行修改前，需要保证操作日志已经同步到稳定存储介质中。如果在进行操作时出现了错误导致程序崩溃，重启的程序可以通过读取日志重建原有状态。 Raft 算法中也需要 WAL 配合工作，比如领导人得知某条日志已经有超过半数的人响应，便将其应用到状态机并将其应用结果返回给客户端。状态机将数据保存在内存中，等待系统写入磁盘。此时如果发生错误，客户端的操作日志丢失，而它又接收到了应用成功的消息，便出现了不一致。 日志模块 struct LogHolder { vector&lt;Entry&gt; entries; } 日志的存储结构可以简单如上设计，Entry 表示一套操作日志记录。所有已经通过 WAL 持久化的操作日志保存在 Raft 的 LogHolder 中做缓存。IO 操作非常耗时，在实际的项目中每次操作先进行 IO 操作，效率不高。通常考虑 Batch 操作，将结构修改为： struct LogHolder { vector&lt;Entry&gt; entries; size_t stabled_to; } 这样操作日志和已经持久化的日志保存在一起，并通过 stable_to 区分开。这样将多个日志 Entry 一起写入 WAL，Batch 的方法可以提升系统整体的吞吐量，不过对于单条数据，会有部分延迟，与提升比起来是非常值得的。 当某条日志被成功复制到集群中过半数的节点中时，Raft 变认为这条日志可以被应用到状态机中，并标记这部分日志为提交状态。提交的日志采用追加的方式，那么原有数据将一直占用存储空间，而对于系统而言，已经被应用了的日志是无用的，所以 Raft 也提出了日志压缩思想。和存储系统中的日志压缩思路一致，都是通过选取某个时间点的日志创建状态机的快照，将时间点之前的日志全部丢弃。[2] 这里将上述的思想也设计到日志系统中： // +--------------+--------------+-------------+-------------+ // | wait compact | wait apply | wait commit | wait stable | // +--------------+--------------+-------------+-------------+ // ^ offset ^ Applied ^ committed ^ stabled ^ last struct LogHolder { vector&lt;Entry&gt; entries; size_t offset; size_t last_applied; size_t last_committed; size_t last_stabled; } offset 表示日志压缩后日志系统里存储的第一条日志在整个日志中的偏移。整个模块需要保证 $0 \le offset \le last\_applied \lt last\_committed \lt entreis.size()$。需要注意，last_stabled 和 last_committed 之前不一定存在着先后顺序，比如一个出现了网络隔离的节点在一段时间后上线，领导者将将其日志复制给该节点并告知其已经全部提交了，那么就会出现日志属于已经提交的状态，但是还未持久化。 在 Raft 论文中提到，在生成日志快照时，需要保存快照最后一条日志的 index 和 term 作为元信息。也有很多访问该元信息的需求，因此可以在 entries 中保留一个空白（dummy）日志作为快照元信息，那么 offset 完全可以被该日志项替代。 整个 LogHolder 只负责维护日志在内存中的缓存，提供日志追加、应用、提交、持久化以及压缩的基本功能，至于具体的操作实际由使用者负责管理。 API 设计 API 设计是一个模块好用与否的关键，良好的 API 设计可以减少内部设计的暴露，减少模块间的耦合，同时提供最大程度的灵活性。这里希望 API 设计简单易用，接口数量少，粒度适中。 type LogHolder interface { compactTo(to, term uint64) commitTo(uint64) applyEntries() []Entry stableEntries() []Entry term(uint64) uint64 isUpToDate(idx, term uint64) bool tryAppend(idx, term, commitIdx uint64, entries []Entry) (uint64, bool) append(entries []Entry) uint64 slice(lo, hi uint64) []Entry } compactTo: 当应用生成了快照后，需要对冗余的日志进行压缩； commitTo: 日志复制到集群中半数节点中或跟随者接收到领导人提交日志的命令时调用，修改 last_commit 属性； stableEntries: 读取待持久化的日志，并将这部分日志标记为已经持久化； applyEntries: 读取待应用到状态机的日志，同时将其日志标记为已经应用； term: 返回某个日志提交到集群中的 term； isUpToDate: 用于判断候选人是否拥有最新的日志； tryAppend: 跟随者添加日志，会将冲突的日志丢弃； append: 领导添加日志，只有追加功能； slice: 分片 compactTo，commitTo 负责修改其只修改日志模块属性信息。compactTo 对日志进行压缩，其可用范围为 $[offset, last\_applied]$，范围内的数据均已经应用到状态机中。实际上在跟随者从网络隔离中恢复或新加入集群时，领导人会选择发送日志来加速跟随者的同步，此时快照并没有落到可用范围内，或者日志与快照的元信息冲突（跟随者在一个少数派的网络中增加了很多日志），因此需要对整个日志系统进行重建。commitTo 只需要对 to 范围进行验证，修改 last_commit 即可。 stableEntries 和 applyEntries 不需要任何参数，根据属性设置对应的 slice，并返回需要持久化、应用的日志队列。 isUpToDate 比较给出的日志项和日志模块谁更新。根据 Raft 论文中给出了谁比较新的定义：如果两份日志最后的条目的任期号不同，那么任期号大的日志更加新；如果两份日志最后的条目任期号相同，那么日志比较长的那个就更加新。 tryAppend 是用于提交领导人复制给候选人的日志，由于网络分化或者节点的加入退出，获选人的日志可能落后、冲突于领导人提供的日志，日志模块需要对待追加的日志进行检查，并找出冲突项目并替换。 实现 compactTo 设计如下： func (holder *LogHolder) CompactTo(to, term uint64) { if holder.Term(to) != term || to &lt;= holder.offset() || to &gt; holder.lastApplied { // log entry conflict with exists, or less than offset, or great than applied // so need to rebuild log entries := make([]raftpd.Entry, 1) entries[0].Index = to entries[0].Term = term holder.entries = entries holder.lastApplied = to holder.commitIndex = to holder.lastStabled = to } else { offset := holder.offset() utils.Assert(offset &lt;= to, "%d compact idx: %d less than first index: %d", holder.id, to, offset) holder.entries = drain(holder.entries, int(to-offset)) } } 首先检查是否存在冲突、或者没有在范围之内，都不存在才对日志队列进行压缩；否则重建日志模块，清空日志队列。因为使用了 dummy 日志项的缘故，这里也要把快照元信息作为一个 dummy log 保存。 和 compactTo 比起来，commitTo 的实现就容易得多。commitTo 需要保证状态机安全性和领导人完全性[2]，不能减少 commit_index；同时也要保证容错，即在服务器宕机恢复后数据具有一致性，每个可提交的日志需要已经持久化到本地。commitTo 需要保证数据范围在 $[commit_index, last\_stabled]$ 之间。 func (holder *LogHolder) CommitTo(to uint64) { if holder.commitIndex &gt;= to { /* never decrease commit */ return } else if holder.lastStabled &lt; to { /* cannot commit unstable log entry */ to = utils.MinUint64(to, holder.lastStabled) } utils.Assert(holder.lastIndex() &gt;= to, "%d toCommit %d is out of range [last index: %d]", holder.id, to, holder.lastIndex()) holder.commitIndex = to } stableEntries 和 applyEntries 需要返回待持久化或待应用的日志，同时会修改属性，将这已返回的日志标记为已持久化或已经应用。term 的实现比较直观，isUpToDate 的实现按照论文给出的定义即可。 func (holder *LogHolder) IsUpToDate(idx, term uint64) bool { return term &gt; holder.lastTerm() || (term == holder.lastTerm() &amp;&amp; idx &gt;= holder.lastIndex()) } append 由领导人负责调用，由领导人只附加原则决定其只追加新日志到模块中。因为 Raft 的日志具有连续性，追加时要保证第一条追加的日志要紧接着日志模块的最后一条日志。tryAppend 由跟随者调用，正常情况下领导人发送的日志可以直接追加到跟随者的日志模块中。跟随者可能是新加入集群，并通过快照已经恢复到了快照所处的状态，此时也可以直接追加到日志模块里。当跟随者出现网络隔离导致日志远低于领导人复制来的第一条日志项（重新选举时），或日志项与领导人提供的存在冲突。如果第一条日志存在冲突，那么需要提醒领导人发送合适的日志；如果仅仅部分日志存在冲突，跟随者需要丢弃冲突日志，然后将领导人提供的日志追加到日志模块中（根据日志匹配原则），此时需要保证不能抛弃任何已经提交的日志（状态机安全性和领导人完全性）。 tryAppend 的第一步是找出第一个与现有日志存在冲突的日志索引，然后根据冲突索引丢弃存在冲突的日志，并返回。tryAppend 的返回值表示是否成功的将日志追加到系统中。Raft 论文 5.3 节提出了一个优化方式，算法可以通过减少被拒绝的附加日志 RPCs 的次数来优化，这里可以使用算法给出的一种优化方式：当附加日志 RPC 的请求被拒绝的时候，跟随者可以包含冲突的条目的任期号和自己存储的那个任期的最早的索引地址。因此在拒绝该追加请求时，还给领导人返回提示索引。 func (holder *LogHolder) getHintIndex(prevIdx, prevTerm uint64) uint64 { utils.Assert(prevIdx != InvalidIndex &amp;&amp; prevTerm != InvalidTerm, "%d get hint index with invalid idx or Term", holder.id) idx := prevIdx term := holder.Term(idx) for idx &gt; InvalidIndex { if holder.Term(idx) != term { return utils.MaxUint64(holder.commitIndex, idx) } idx-- } return holder.commitIndex } // findConflict return the first index which Entries[i].Term is not equal // to holder.Term(Entries[i].Index), if all Term with same index are equals, // return zero. func (holder *LogHolder) findConflict(entries []raftpd.Entry) uint64 { for i := 0; i &lt; len(entries); i++ { entry := &amp;entries[i] if holder.Term(entry.Index) != entry.Term { if entry.Index &lt;= holder.lastIndex() { log.Infof("%d found conflict at index %d, "+ "[existing Term: %d, conflicting Term: %d]", holder.id, entry.Index, holder.Term(entry.Index), entry.Term) } return entry.Index } } return 0 } func (holder *LogHolder) TryAppend(prevIdx, prevTerm, leaderCommittedIdx uint64, entries []raftpd.Entry) (uint64, bool) { lastIdxOfEntries := prevIdx + (uint64)(len(entries)) if holder.Term(prevIdx) == prevTerm { conflictIdx := holder.findConflict(entries) if conflictIdx == 0 { /* success, no conflict */ } else if conflictIdx &lt;= holder.commitIndex { log.Panicf("%d entry %d conflict with committed entry %d", holder.id, conflictIdx, holder.commitIndex) } else { offset := prevIdx + 1 holder.Append(entries[conflictIdx-offset:]) } return lastIdxOfEntries, true } else { utils.Assert(prevIdx &gt; holder.commitIndex, "%d entry %d [Term: %d] conflict with committed entry Term: %d", holder.id, prevIdx, prevTerm, holder.Term(prevIdx)) return holder.getHintIndex(prevIdx, prevTerm), false } } done 至此，日志模块的实现就结束了。日志模块是整个 Raft 算法的基础，这里将日志模块剥离出来，并将提供一些原子方法。每个方法只干一件事，从而使分析方法正确性的分析更容易；每个方法都可以看作是纯函数，所以输入一定，输出则一定。实际上分布式程序的调试是一个非常困难的方式： 你的并发模型往往会成为你代码库中的病毒。你希望有细粒度的并发控制，好吧，你得到了，代码里到处都是。因此是并发导致了不确定性，而不确定性造成了麻烦。因此必须得把并发给踢出去。可是你又不能抛弃并发，你需要它。那么，你一定要禁止把并发和你的分布式状态机结合在一起。换句话说，你的分布式状态机必须成为纯函数式的。没有IO操作，没有并发，什么都没有。[3] 好的办法是将其抽象成纯函数式的，通过消息进行驱动，这样能够对程序拥有控制力，出现问题是可以完美重现，也能够跟踪定位到问题所在。从 Raft 算法的角度看，在上面的实现里，日志模块只是一个黑匣子，每个操作好比一个按钮，如果得到的不是想要的结果，那肯定是输入有问题（前提是黑匣子实现正确）。因此上面的代码很好的解开了算法和日志模块的耦合，隔离了双方的错误干扰。 References 预写式日志 寻找一种易于理解的一致性算法（扩展版） 分布式系统编程，你到哪一级了？]]></summary></entry><entry><title type="html">Raft 实现指北-开篇</title><link href="/destribution/2018/01/01/Raft-%E5%AE%9E%E7%8E%B0%E6%8C%87%E5%8C%97-%E5%BC%80%E7%AF%87.html" rel="alternate" type="text/html" title="Raft 实现指北-开篇" /><published>2018-01-01T17:34:16+08:00</published><updated>2018-01-01T17:34:16+08:00</updated><id>/destribution/2018/01/01/Raft-%E5%AE%9E%E7%8E%B0%E6%8C%87%E5%8C%97-%E5%BC%80%E7%AF%87</id><content type="html" xml:base="/destribution/2018/01/01/Raft-%E5%AE%9E%E7%8E%B0%E6%8C%87%E5%8C%97-%E5%BC%80%E7%AF%87.html"><![CDATA[<p>Raft 是一种解决分布式共识问题的算法。何为分布式共识问题？在此之前，还得说说分布式系统中的基础模型。基础模型是对分布式算法的一个定性的评估（分类）标准，它说明了算法的作用范围，可解决什么问题。</p>
-
-<h1 id="基础模型">基础模型</h1>
-
-<p>基础模型也可以称为算法的属性，这里主要关心两个部分：定时模型（Timing Model）、失效模式（Failure Model）、失效检测器（Failure Detectors）[1]。</p>
-
-<p>定时模型是研究分布式系统的网络传输时延特性，分布式系统通过消息传递来进行通信，根据消息在网络中传递时间是否有上界，可以将消息系统分类为：<strong>同步模型（Synchronous Model）</strong>和<strong>异步模型（Asynchronous Model）</strong>[2]。在同步模型中，消息传递时间是已知的，每个进程的速度也是确定的，即每个进程执行一个算法步骤耗时是确定的。在异步模型中，每个组件自行决定算法步骤的执行顺序，每一步的耗时也没有保证[1]。注意，这里的<em>同步</em>和<em>异步</em>要与编程中出现的同步异步加以区分。</p>
-
-<p>失效模式是对分布式系统中节点失效种类的假设。最基础的是<strong>崩溃-结束（crash-stop）失效模式</strong>，节点一直正常运行，直至崩溃，节点崩溃后不会恢复。相较于崩溃-结束失效模式，另一种<strong>崩溃-恢复（crash-recovery）失效模式</strong>更为常见，即节点崩溃后，会被恢复。值得一提的是崩溃-恢复模式中，一个节点恢复时，并不等同于没崩溃的原始节点（比如 Raft 算法动态调整系群组关系，某个节点被另一个新加入节点顶替）。一种更复杂的失效模式叫做<strong>拜占庭失效模式</strong>或者<strong>任意失效模式（Byzantine or arbitrary failures mode）</strong>：进程有可能向同伴发送错误的信息；进程可能是冒充的；应答给其他进程的数据是正确的，但是篡改了本地数据库的内容，等等[2]。设计分布式系统时，失效模式必须考虑进去，通常来说，我们并不需要考虑拜占庭失效模式。</p>
-
-<p>上述两种属性能够描述分布式系统所处的问题，另外还有部分属性用于对系统工作方式进行分类，失效检测器便是这样的一种属性。<strong>失效检测器</strong>是对<em>报告系统状态</em>的抽象，即检测节点是否已经崩溃（或者怀疑是否崩溃）。失效检测器是在异步系统中解决共识问题的关键。在著名的FLP论文中指出，在异步的分布式系统中，如果进程有可能失效，那么就不可能达成共识。要达成共识，就必须为系统引入一个能够规避上述问题的失效检测器[1]。</p>
-
-<h1 id="分布式共识问题">分布式共识问题</h1>
-
-<p>分布式共识问题，简单说，就是在一个或多个进程提议了一个值应当是什么后，使系统中所有进程对这个值达成一致意见。为了达到共识，每个进程都提出自己的提议（propose），最终通过共识算法，所有正确运行的进程决定（decide）相同的值[2]。</p>
-
-<p>在同步、可靠的系统中，想要多个节点达成一致比较容易。实际的分布式场景多为异步模型，FLP不可能性说明：没有任何算法可以在存在任何故障的异步系统中确保达到共识，绕过不可能性结论的办法是考虑部分同步系统，利用故障屏蔽、故障检测器或随机化手段避开异步系统模型[2]。</p>
-
-<p>分布式问题最常见的应用场景是多副本状态机（Replicated state machine）。<strong>多副本状态机是指多台机器具有完全相同的状态，并且运行有完全相同的确定性状态机</strong>[2]。多副本状态机主要用于解决分布式系统中的容错问题，因为副本冗余了状态机，只要保证大多数副本存活且一致，就能向外部提供服务。多副本状态机的实现思想：状态机的每个副本上都保存有完全相同的操作日志，保证所有副本状态机按照相同的顺序执行操作，这样由于状态机是确定性的，则一定会得到相同的状态[2]。具体的实现方式主要分为两种[3]：</p>
-
-<ul>
-  <li>日志复制：由 primary 机接受操作日志，并广播给 backup 机，backup 机需要跟 primary 机的操作日志保持一致；</li>
-  <li>状态重演：操作日志由多个副本共享，每个副本通过重新执行操作日志从放状态；</li>
-</ul>
-
-<h1 id="raft-算法">Raft 算法</h1>
-
-<p>有三种非常具有代表性的分布式共识算法：分别是 Viewstamped Replication 、Raft 和大名鼎鼎的 Paxos 算法，前两个工作本身就是基于多副本状态机的场景完成的，而 Paxos 算法是作为独立的分布式共识算法提出，并给出了使用该算法实现多副本状态机的范例[2]。</p>
-
-<p>Raft 是一种为了管理复制日志的一致性算法。它提供了和 Paxos 算法相同的功能和性能，但是它的算法结构和 Paxos 不同，使得 Raft 算法更加容易理解并且更容易构建实际的系统。为了提升可理解性，Raft 将一致性算法分解成了几个关键模块，例如领导人选举、日志复制和安全性。同时它通过实施一个更强的一致性来减少需要考虑的状态的数量。从一个用户研究的结果可以证明，对于学生而言，Raft 算法比 Paxos 算法更加容易学习。Raft 算法还包括一个新的机制来允许集群成员的动态改变，它利用重叠的大多数来保证安全性[4]。</p>
-
-<p>与其他共识算法相比，Raft 算法有三个特点[4]：</p>
-
-<ul>
-  <li>强领导者：和其他一致性算法相比，Raft 使用一种更强的领导能力形式。比如，日志条目只从领导者发送给其他的服务器。这种方式简化了对复制日志的管理并且使得 Raft 算法更加易于理解。</li>
-  <li>领导选举：Raft 算法使用一个随机计时器来选举领导者。这种方式只是在任何一致性算法都必须实现的心跳机制上增加了一点机制。在解决冲突的时候会更加简单快捷。</li>
-  <li>成员关系调整：Raft 使用一种共同一致的方法来处理集群成员变换的问题，在这种方法下，处于调整过程中的两种不同的配置集群中大多数机器会有重叠，这就使得集群在成员变换的时候依然可以继续工作。</li>
-</ul>
-
-<p>虽然这篇文章标题有“Raft 实现”关键字，但并不会讲 Raft 算法的原理，这只是 Raft 的功能实现介绍，所以我建议在继续阅读之前，先学习一下 Raft 算法：<a href="https://github.com/maemual/raft-zh_cn/blob/master/raft-zh_cn.md">寻找一种易于理解的一致性算法（扩展版）</a>。</p>
-<h1 id="挖坑">挖坑</h1>
-
-<p>一个基础的 Raft 功能只需要实现选举和日志复制，但这远远不够。想要应用到实际的工程中，还需要实现日至压缩、成员关系调整，才算完整的 Raft 实现。这里给出个 Raft 功能清单，实际上也是本系列文章希望实现的功能：</p>
-
-<ul>
-  <li>leader election</li>
-  <li>prevote</li>
-  <li>log replication</li>
-  <li>log compaction &amp; snapshot</li>
-  <li>linearizable read(read index &amp; lease)</li>
-  <li>membership change</li>
-  <li>leadership transfer</li>
-</ul>
-
-<p>拥有上述功能可以算上一个工业级的 Raft 实现，不过在实际应用中，还会有许多工业上的优化技巧比如 Batch 和 Pipeline，具体有哪些可以优化的，放到以后的章节详述。</p>
-
-<p>这是我在学习 Raft 算法，并以之为基础实现分布式系统过程中的学习总结。在接下来的几篇文章中，将按照上述清单依次谈谈对应的实现方法和优化原理。实现方法参考优秀的开源实现：etcd/raft 以及其各语言移植版本。</p>
-
-<h1 id="reference">Reference</h1>
-
-<ol>
-  <li><a href="http://alvaro-videla.com/2015/12/learning-about-distributed-systems.html">WHAT WE TALK ABOUT WHEN WE TALK ABOUT DISTRIBUTED SYSTEMS</a></li>
-  <li><a href="http://blog.kongfy.com/2016/05/%E5%88%86%E5%B8%83%E5%BC%8F%E5%85%B1%E8%AF%86consensus%EF%BC%9Aviewstamped%E3%80%81raft%E5%8F%8Apaxos/">分布式共识(Consensus)：Viewstamped Replication、Raft以及Paxos</a></li>
-  <li>The design of a practical system for Fault-Tolerant Virtual Machines</li>
-  <li><a href="https://ramcloud.atlassian.net/wiki/download/attachments/6586375/raft.pdf">寻找一种易于理解的一致性算法（扩展版）</a></li>
-  <li><a href="http://blog.jobbole.com/20304/">分布式系统编程，你到哪一级了？</a></li>
-</ol>]]></content><author><name></name></author><category term="Destribution" /><category term="Raft" /><category term="Consensus" /><category term="Practice" /><category term="Destribution" /><summary type="html"><![CDATA[Raft 是一种解决分布式共识问题的算法。何为分布式共识问题？在此之前，还得说说分布式系统中的基础模型。基础模型是对分布式算法的一个定性的评估（分类）标准，它说明了算法的作用范围，可解决什么问题。 基础模型 基础模型也可以称为算法的属性，这里主要关心两个部分：定时模型（Timing Model）、失效模式（Failure Model）、失效检测器（Failure Detectors）[1]。 定时模型是研究分布式系统的网络传输时延特性，分布式系统通过消息传递来进行通信，根据消息在网络中传递时间是否有上界，可以将消息系统分类为：同步模型（Synchronous Model）和异步模型（Asynchronous Model）[2]。在同步模型中，消息传递时间是已知的，每个进程的速度也是确定的，即每个进程执行一个算法步骤耗时是确定的。在异步模型中，每个组件自行决定算法步骤的执行顺序，每一步的耗时也没有保证[1]。注意，这里的同步和异步要与编程中出现的同步异步加以区分。 失效模式是对分布式系统中节点失效种类的假设。最基础的是崩溃-结束（crash-stop）失效模式，节点一直正常运行，直至崩溃，节点崩溃后不会恢复。相较于崩溃-结束失效模式，另一种崩溃-恢复（crash-recovery）失效模式更为常见，即节点崩溃后，会被恢复。值得一提的是崩溃-恢复模式中，一个节点恢复时，并不等同于没崩溃的原始节点（比如 Raft 算法动态调整系群组关系，某个节点被另一个新加入节点顶替）。一种更复杂的失效模式叫做拜占庭失效模式或者任意失效模式（Byzantine or arbitrary failures mode）：进程有可能向同伴发送错误的信息；进程可能是冒充的；应答给其他进程的数据是正确的，但是篡改了本地数据库的内容，等等[2]。设计分布式系统时，失效模式必须考虑进去，通常来说，我们并不需要考虑拜占庭失效模式。 上述两种属性能够描述分布式系统所处的问题，另外还有部分属性用于对系统工作方式进行分类，失效检测器便是这样的一种属性。失效检测器是对报告系统状态的抽象，即检测节点是否已经崩溃（或者怀疑是否崩溃）。失效检测器是在异步系统中解决共识问题的关键。在著名的FLP论文中指出，在异步的分布式系统中，如果进程有可能失效，那么就不可能达成共识。要达成共识，就必须为系统引入一个能够规避上述问题的失效检测器[1]。 分布式共识问题 分布式共识问题，简单说，就是在一个或多个进程提议了一个值应当是什么后，使系统中所有进程对这个值达成一致意见。为了达到共识，每个进程都提出自己的提议（propose），最终通过共识算法，所有正确运行的进程决定（decide）相同的值[2]。 在同步、可靠的系统中，想要多个节点达成一致比较容易。实际的分布式场景多为异步模型，FLP不可能性说明：没有任何算法可以在存在任何故障的异步系统中确保达到共识，绕过不可能性结论的办法是考虑部分同步系统，利用故障屏蔽、故障检测器或随机化手段避开异步系统模型[2]。 分布式问题最常见的应用场景是多副本状态机（Replicated state machine）。多副本状态机是指多台机器具有完全相同的状态，并且运行有完全相同的确定性状态机[2]。多副本状态机主要用于解决分布式系统中的容错问题，因为副本冗余了状态机，只要保证大多数副本存活且一致，就能向外部提供服务。多副本状态机的实现思想：状态机的每个副本上都保存有完全相同的操作日志，保证所有副本状态机按照相同的顺序执行操作，这样由于状态机是确定性的，则一定会得到相同的状态[2]。具体的实现方式主要分为两种[3]： 日志复制：由 primary 机接受操作日志，并广播给 backup 机，backup 机需要跟 primary 机的操作日志保持一致； 状态重演：操作日志由多个副本共享，每个副本通过重新执行操作日志从放状态； Raft 算法 有三种非常具有代表性的分布式共识算法：分别是 Viewstamped Replication 、Raft 和大名鼎鼎的 Paxos 算法，前两个工作本身就是基于多副本状态机的场景完成的，而 Paxos 算法是作为独立的分布式共识算法提出，并给出了使用该算法实现多副本状态机的范例[2]。 Raft 是一种为了管理复制日志的一致性算法。它提供了和 Paxos 算法相同的功能和性能，但是它的算法结构和 Paxos 不同，使得 Raft 算法更加容易理解并且更容易构建实际的系统。为了提升可理解性，Raft 将一致性算法分解成了几个关键模块，例如领导人选举、日志复制和安全性。同时它通过实施一个更强的一致性来减少需要考虑的状态的数量。从一个用户研究的结果可以证明，对于学生而言，Raft 算法比 Paxos 算法更加容易学习。Raft 算法还包括一个新的机制来允许集群成员的动态改变，它利用重叠的大多数来保证安全性[4]。 与其他共识算法相比，Raft 算法有三个特点[4]： 强领导者：和其他一致性算法相比，Raft 使用一种更强的领导能力形式。比如，日志条目只从领导者发送给其他的服务器。这种方式简化了对复制日志的管理并且使得 Raft 算法更加易于理解。 领导选举：Raft 算法使用一个随机计时器来选举领导者。这种方式只是在任何一致性算法都必须实现的心跳机制上增加了一点机制。在解决冲突的时候会更加简单快捷。 成员关系调整：Raft 使用一种共同一致的方法来处理集群成员变换的问题，在这种方法下，处于调整过程中的两种不同的配置集群中大多数机器会有重叠，这就使得集群在成员变换的时候依然可以继续工作。 虽然这篇文章标题有“Raft 实现”关键字，但并不会讲 Raft 算法的原理，这只是 Raft 的功能实现介绍，所以我建议在继续阅读之前，先学习一下 Raft 算法：寻找一种易于理解的一致性算法（扩展版）。 挖坑 一个基础的 Raft 功能只需要实现选举和日志复制，但这远远不够。想要应用到实际的工程中，还需要实现日至压缩、成员关系调整，才算完整的 Raft 实现。这里给出个 Raft 功能清单，实际上也是本系列文章希望实现的功能： leader election prevote log replication log compaction &amp; snapshot linearizable read(read index &amp; lease) membership change leadership transfer 拥有上述功能可以算上一个工业级的 Raft 实现，不过在实际应用中，还会有许多工业上的优化技巧比如 Batch 和 Pipeline，具体有哪些可以优化的，放到以后的章节详述。 这是我在学习 Raft 算法，并以之为基础实现分布式系统过程中的学习总结。在接下来的几篇文章中，将按照上述清单依次谈谈对应的实现方法和优化原理。实现方法参考优秀的开源实现：etcd/raft 以及其各语言移植版本。 Reference WHAT WE TALK ABOUT WHEN WE TALK ABOUT DISTRIBUTED SYSTEMS 分布式共识(Consensus)：Viewstamped Replication、Raft以及Paxos The design of a practical system for Fault-Tolerant Virtual Machines 寻找一种易于理解的一致性算法（扩展版） 分布式系统编程，你到哪一级了？]]></summary></entry></feed>
+</ol>]]></content><author><name></name></author><category term="Destribution" /><category term="Raft" /><category term="Consensus" /><category term="Practice" /><category term="Destribution" /><summary type="html"><![CDATA[在真正开始设计之前，需要考虑好 Raft 框架的搭建。如下图所示，一个服务器由三部分组成：共识算法、状态机以及日志系统。共识算法控制多副本之间日志的同步、广播。Raft 算法主要的工作是管理日志复制，所以在 Raft 应该有一个可操作的日志模块。 Write Ahead Log 在设计日志模块之前，需要先说说预写式日志（Write Ahead Log, WAL）。预写式日志通常出现在存储系统中，以保证数据的持久性[1]。WAL 的中心思想是对数据文件进行修改前，需要保证操作日志已经同步到稳定存储介质中。如果在进行操作时出现了错误导致程序崩溃，重启的程序可以通过读取日志重建原有状态。 Raft 算法中也需要 WAL 配合工作，比如领导人得知某条日志已经有超过半数的人响应，便将其应用到状态机并将其应用结果返回给客户端。状态机将数据保存在内存中，等待系统写入磁盘。此时如果发生错误，客户端的操作日志丢失，而它又接收到了应用成功的消息，便出现了不一致。 日志模块 struct LogHolder { vector&lt;Entry&gt; entries; } 日志的存储结构可以简单如上设计，Entry 表示一套操作日志记录。所有已经通过 WAL 持久化的操作日志保存在 Raft 的 LogHolder 中做缓存。IO 操作非常耗时，在实际的项目中每次操作先进行 IO 操作，效率不高。通常考虑 Batch 操作，将结构修改为： struct LogHolder { vector&lt;Entry&gt; entries; size_t stabled_to; } 这样操作日志和已经持久化的日志保存在一起，并通过 stable_to 区分开。这样将多个日志 Entry 一起写入 WAL，Batch 的方法可以提升系统整体的吞吐量，不过对于单条数据，会有部分延迟，与提升比起来是非常值得的。 当某条日志被成功复制到集群中过半数的节点中时，Raft 变认为这条日志可以被应用到状态机中，并标记这部分日志为提交状态。提交的日志采用追加的方式，那么原有数据将一直占用存储空间，而对于系统而言，已经被应用了的日志是无用的，所以 Raft 也提出了日志压缩思想。和存储系统中的日志压缩思路一致，都是通过选取某个时间点的日志创建状态机的快照，将时间点之前的日志全部丢弃。[2] 这里将上述的思想也设计到日志系统中： // +--------------+--------------+-------------+-------------+ // | wait compact | wait apply | wait commit | wait stable | // +--------------+--------------+-------------+-------------+ // ^ offset ^ Applied ^ committed ^ stabled ^ last struct LogHolder { vector&lt;Entry&gt; entries; size_t offset; size_t last_applied; size_t last_committed; size_t last_stabled; } offset 表示日志压缩后日志系统里存储的第一条日志在整个日志中的偏移。整个模块需要保证 $0 \le offset \le last\_applied \lt last\_committed \lt entreis.size()$。需要注意，last_stabled 和 last_committed 之前不一定存在着先后顺序，比如一个出现了网络隔离的节点在一段时间后上线，领导者将将其日志复制给该节点并告知其已经全部提交了，那么就会出现日志属于已经提交的状态，但是还未持久化。 在 Raft 论文中提到，在生成日志快照时，需要保存快照最后一条日志的 index 和 term 作为元信息。也有很多访问该元信息的需求，因此可以在 entries 中保留一个空白（dummy）日志作为快照元信息，那么 offset 完全可以被该日志项替代。 整个 LogHolder 只负责维护日志在内存中的缓存，提供日志追加、应用、提交、持久化以及压缩的基本功能，至于具体的操作实际由使用者负责管理。 API 设计 API 设计是一个模块好用与否的关键，良好的 API 设计可以减少内部设计的暴露，减少模块间的耦合，同时提供最大程度的灵活性。这里希望 API 设计简单易用，接口数量少，粒度适中。 type LogHolder interface { compactTo(to, term uint64) commitTo(uint64) applyEntries() []Entry stableEntries() []Entry term(uint64) uint64 isUpToDate(idx, term uint64) bool tryAppend(idx, term, commitIdx uint64, entries []Entry) (uint64, bool) append(entries []Entry) uint64 slice(lo, hi uint64) []Entry } compactTo: 当应用生成了快照后，需要对冗余的日志进行压缩； commitTo: 日志复制到集群中半数节点中或跟随者接收到领导人提交日志的命令时调用，修改 last_commit 属性； stableEntries: 读取待持久化的日志，并将这部分日志标记为已经持久化； applyEntries: 读取待应用到状态机的日志，同时将其日志标记为已经应用； term: 返回某个日志提交到集群中的 term； isUpToDate: 用于判断候选人是否拥有最新的日志； tryAppend: 跟随者添加日志，会将冲突的日志丢弃； append: 领导添加日志，只有追加功能； slice: 分片 compactTo，commitTo 负责修改其只修改日志模块属性信息。compactTo 对日志进行压缩，其可用范围为 $[offset, last\_applied]$，范围内的数据均已经应用到状态机中。实际上在跟随者从网络隔离中恢复或新加入集群时，领导人会选择发送日志来加速跟随者的同步，此时快照并没有落到可用范围内，或者日志与快照的元信息冲突（跟随者在一个少数派的网络中增加了很多日志），因此需要对整个日志系统进行重建。commitTo 只需要对 to 范围进行验证，修改 last_commit 即可。 stableEntries 和 applyEntries 不需要任何参数，根据属性设置对应的 slice，并返回需要持久化、应用的日志队列。 isUpToDate 比较给出的日志项和日志模块谁更新。根据 Raft 论文中给出了谁比较新的定义：如果两份日志最后的条目的任期号不同，那么任期号大的日志更加新；如果两份日志最后的条目任期号相同，那么日志比较长的那个就更加新。 tryAppend 是用于提交领导人复制给候选人的日志，由于网络分化或者节点的加入退出，获选人的日志可能落后、冲突于领导人提供的日志，日志模块需要对待追加的日志进行检查，并找出冲突项目并替换。 实现 compactTo 设计如下： func (holder *LogHolder) CompactTo(to, term uint64) { if holder.Term(to) != term || to &lt;= holder.offset() || to &gt; holder.lastApplied { // log entry conflict with exists, or less than offset, or great than applied // so need to rebuild log entries := make([]raftpd.Entry, 1) entries[0].Index = to entries[0].Term = term holder.entries = entries holder.lastApplied = to holder.commitIndex = to holder.lastStabled = to } else { offset := holder.offset() utils.Assert(offset &lt;= to, "%d compact idx: %d less than first index: %d", holder.id, to, offset) holder.entries = drain(holder.entries, int(to-offset)) } } 首先检查是否存在冲突、或者没有在范围之内，都不存在才对日志队列进行压缩；否则重建日志模块，清空日志队列。因为使用了 dummy 日志项的缘故，这里也要把快照元信息作为一个 dummy log 保存。 和 compactTo 比起来，commitTo 的实现就容易得多。commitTo 需要保证状态机安全性和领导人完全性[2]，不能减少 commit_index；同时也要保证容错，即在服务器宕机恢复后数据具有一致性，每个可提交的日志需要已经持久化到本地。commitTo 需要保证数据范围在 $[commit_index, last\_stabled]$ 之间。 func (holder *LogHolder) CommitTo(to uint64) { if holder.commitIndex &gt;= to { /* never decrease commit */ return } else if holder.lastStabled &lt; to { /* cannot commit unstable log entry */ to = utils.MinUint64(to, holder.lastStabled) } utils.Assert(holder.lastIndex() &gt;= to, "%d toCommit %d is out of range [last index: %d]", holder.id, to, holder.lastIndex()) holder.commitIndex = to } stableEntries 和 applyEntries 需要返回待持久化或待应用的日志，同时会修改属性，将这已返回的日志标记为已持久化或已经应用。term 的实现比较直观，isUpToDate 的实现按照论文给出的定义即可。 func (holder *LogHolder) IsUpToDate(idx, term uint64) bool { return term &gt; holder.lastTerm() || (term == holder.lastTerm() &amp;&amp; idx &gt;= holder.lastIndex()) } append 由领导人负责调用，由领导人只附加原则决定其只追加新日志到模块中。因为 Raft 的日志具有连续性，追加时要保证第一条追加的日志要紧接着日志模块的最后一条日志。tryAppend 由跟随者调用，正常情况下领导人发送的日志可以直接追加到跟随者的日志模块中。跟随者可能是新加入集群，并通过快照已经恢复到了快照所处的状态，此时也可以直接追加到日志模块里。当跟随者出现网络隔离导致日志远低于领导人复制来的第一条日志项（重新选举时），或日志项与领导人提供的存在冲突。如果第一条日志存在冲突，那么需要提醒领导人发送合适的日志；如果仅仅部分日志存在冲突，跟随者需要丢弃冲突日志，然后将领导人提供的日志追加到日志模块中（根据日志匹配原则），此时需要保证不能抛弃任何已经提交的日志（状态机安全性和领导人完全性）。 tryAppend 的第一步是找出第一个与现有日志存在冲突的日志索引，然后根据冲突索引丢弃存在冲突的日志，并返回。tryAppend 的返回值表示是否成功的将日志追加到系统中。Raft 论文 5.3 节提出了一个优化方式，算法可以通过减少被拒绝的附加日志 RPCs 的次数来优化，这里可以使用算法给出的一种优化方式：当附加日志 RPC 的请求被拒绝的时候，跟随者可以包含冲突的条目的任期号和自己存储的那个任期的最早的索引地址。因此在拒绝该追加请求时，还给领导人返回提示索引。 func (holder *LogHolder) getHintIndex(prevIdx, prevTerm uint64) uint64 { utils.Assert(prevIdx != InvalidIndex &amp;&amp; prevTerm != InvalidTerm, "%d get hint index with invalid idx or Term", holder.id) idx := prevIdx term := holder.Term(idx) for idx &gt; InvalidIndex { if holder.Term(idx) != term { return utils.MaxUint64(holder.commitIndex, idx) } idx-- } return holder.commitIndex } // findConflict return the first index which Entries[i].Term is not equal // to holder.Term(Entries[i].Index), if all Term with same index are equals, // return zero. func (holder *LogHolder) findConflict(entries []raftpd.Entry) uint64 { for i := 0; i &lt; len(entries); i++ { entry := &amp;entries[i] if holder.Term(entry.Index) != entry.Term { if entry.Index &lt;= holder.lastIndex() { log.Infof("%d found conflict at index %d, "+ "[existing Term: %d, conflicting Term: %d]", holder.id, entry.Index, holder.Term(entry.Index), entry.Term) } return entry.Index } } return 0 } func (holder *LogHolder) TryAppend(prevIdx, prevTerm, leaderCommittedIdx uint64, entries []raftpd.Entry) (uint64, bool) { lastIdxOfEntries := prevIdx + (uint64)(len(entries)) if holder.Term(prevIdx) == prevTerm { conflictIdx := holder.findConflict(entries) if conflictIdx == 0 { /* success, no conflict */ } else if conflictIdx &lt;= holder.commitIndex { log.Panicf("%d entry %d conflict with committed entry %d", holder.id, conflictIdx, holder.commitIndex) } else { offset := prevIdx + 1 holder.Append(entries[conflictIdx-offset:]) } return lastIdxOfEntries, true } else { utils.Assert(prevIdx &gt; holder.commitIndex, "%d entry %d [Term: %d] conflict with committed entry Term: %d", holder.id, prevIdx, prevTerm, holder.Term(prevIdx)) return holder.getHintIndex(prevIdx, prevTerm), false } } done 至此，日志模块的实现就结束了。日志模块是整个 Raft 算法的基础，这里将日志模块剥离出来，并将提供一些原子方法。每个方法只干一件事，从而使分析方法正确性的分析更容易；每个方法都可以看作是纯函数，所以输入一定，输出则一定。实际上分布式程序的调试是一个非常困难的方式： 你的并发模型往往会成为你代码库中的病毒。你希望有细粒度的并发控制，好吧，你得到了，代码里到处都是。因此是并发导致了不确定性，而不确定性造成了麻烦。因此必须得把并发给踢出去。可是你又不能抛弃并发，你需要它。那么，你一定要禁止把并发和你的分布式状态机结合在一起。换句话说，你的分布式状态机必须成为纯函数式的。没有IO操作，没有并发，什么都没有。[3] 好的办法是将其抽象成纯函数式的，通过消息进行驱动，这样能够对程序拥有控制力，出现问题是可以完美重现，也能够跟踪定位到问题所在。从 Raft 算法的角度看，在上面的实现里，日志模块只是一个黑匣子，每个操作好比一个按钮，如果得到的不是想要的结果，那肯定是输入有问题（前提是黑匣子实现正确）。因此上面的代码很好的解开了算法和日志模块的耦合，隔离了双方的错误干扰。 References 预写式日志 寻找一种易于理解的一致性算法（扩展版） 分布式系统编程，你到哪一级了？]]></summary></entry></feed>
