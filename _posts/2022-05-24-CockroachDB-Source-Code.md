@@ -1,9 +1,9 @@
 ---
 layout: post
-title: CockroachDB Source Code Reading Notes
+title: CockroachDB KV Source Code Reading Notes
 ---
 
-# CockroachDB
+# CockroachDB KV
 
 ## Entrance
 
@@ -45,7 +45,7 @@ func runStart() {
 }
 ```
 
-### Start Node
+## Start Node
 
 In `Server::NewServer`:
 
@@ -56,11 +56,12 @@ engines = cfg.CreateEngines()
 rpcContext = rpc.NewContext()
 grpcServer = newGRPCServer(rpcContext)
 g = gossip.New()
-distSender = kvcoord.NewDistSender()
+distSender = kvcoord.NewDistSender()  // `pkg/kv/kvclient/kvcoord/dist_sender.go`
+tcsFactory = kvcoord.NewTxnCoordSenderFactory(txnCoordSenderFactoryCfg, distSender)  // `pkg/kv/kvclient/kvcoord/txn_coord_sender_factory.go`
 db = kv.NewDBWithContext(clock, dbCtx)
 raftTransport = kvserver.NewRaftTransport()
 stores = kvserver.NewStores()
-tsDB = ts.NewDB(db)
+tsDB = ts.NewDB(db, tcsFactory)
 node = NewNode()
 roachpb.RegisterInternalServer(grpcServer.Server, node)
 kvserver.RegisterPerReplicaServer(grpcServer.Server, node.perReplicaServer)
@@ -154,6 +155,51 @@ In `Server::AcceptClients`:
 s.sqlServer.startServerSQL()
 ```
 
+### Start Store
+
+In `pkg/kv/kvserver/store.go`:
+
+```
+Store::Start
+    ReadStoreIdent
+    idalloc.NewAllocator
+    intentResolver.New
+    makeRaftLogTruncator
+    txnrecovery.NewManager
+    // Iterate over all range descriptor, ignoring uncommitted version.
+    IterateRangeDescriptorFromDisk()
+        replica = newReplica()  // In `pkg/kv/kvserver/replica_init.go`
+            newUnloadReplica()
+            loadRaftMuLockedReplicaMuLocked()
+                lastIndex = r.stateLoader.LoadLastIndex()
+        s.addReplicaInternal(replica)
+    s.cfg.Transport.Listen(s.StoreID(), s)
+	s.cfg.NodeLiveness.RegisterCallback(s.nodeIsLiveCallback)
+    s.processRaft()
+    s.storeRebalancer.Start() // rebalance is finished in store?
+    s.startGossip()
+    s.startLeaseRenewer()
+    s.startRangefeedUpdator()
+    NewStoreRebalancer()
+```
+
+#### ID Allocator
+
+In `pkg/kv/kvserver/store.go`:
+
+```go
+// Create ID allocators.
+idAlloc, err := idalloc.NewAllocator(idalloc.Options{
+    AmbientCtx:  s.cfg.AmbientCtx,
+    Key:         keys.RangeIDGenerator,
+    Incrementer: idalloc.DBIncrementer(s.db),
+    BlockSize:   rangeIDAllocCount,
+    Stopper:     s.stopper,
+}
+```
+
+The `Allocator` will allocate `rangeIDAllocCount` count from `DB` with key `keys.RangeIDGenerator`.
+
 ## Bootstrap
 
 In `pkg/cli/init.go`:
@@ -212,7 +258,7 @@ Question:
 - What happen if no any join list was specified?
   Report errors
 
-### Join Node
+## Join Node
 
 In `pkg/server/node.go`, function `Join()`:
 ```go
@@ -220,9 +266,6 @@ compareBinaryVersion()
 nodeID, err := allocateNodeID()
     val, err := kv.IncrementValRetryable(ctx, db, keys.NodeIDGenerator, 1)
         db.Inc(ctx, key, inc) // pkg/kv/db.go   var db *DB
-            db.Run()
-                db.SendAndFill()
-                    db.send()
 storeID, err := allocateStoreIDs()
     val, err := kv.IncrementValRetryable(ctx, db, keys.StoreIDGenerator, count)
 // create liveness record, so what is the purpose of liveness record?
@@ -273,9 +316,15 @@ Node::start
 2. run worker, in `pkg/kv/kvserver/store_raft.go` and `pkg/kv/kvserver/replica_raft.go`.
 ```
 raftScheduler::worker
-    raftScheduler::processRequestQueue
     raftScheduler::processTick
+        Replica::tick(IsLiveMap)  // `pkg/kv/kvserver/replica_raft.go`
+            RawNode::ReportUnreachable(Replica.unreachablesMu.remotes)
+            Replica::maybeQuiesceRaftMuLockedReplicaMuLocked
+            Replica::maybeTransferRaftLeadershipToLeaseholderLocked
+            RawNode::Tick
     raftScheduler::processReady
+        // See below apply parts.
+    raftScheduler::processRequestQueue
         Store::withReplicaForRequest
             Store::getOrCreateReplica
             Store::processRaftRequestWithReplica
@@ -338,6 +387,29 @@ Store::processReady -> Replica::HandleRaftReady -> Replica::HandleRaftReadyRaftM
         Replica::campaignLocked     // if shouldCampaignAfterConfChange: if raft leader got moved, campaign the first remaning voter.
         Store::enqueueRaftUpdateCheck  // if RawNode::HasReady
 ```
+5. transport
+API defines in `pkg/kv/kvserver/storage_services.proto`:
+```proto
+service MultiRaft {
+    rpc RaftMessageBatch (stream cockroach.kv.kvserver.kvserverpb.RaftMessageRequestBatch) returns (stream cockroach.kv.kvserver.kvserverpb.RaftMessageResponse) {}
+    rpc RaftSnapshot (stream cockroach.kv.kvserver.kvserverpb.SnapshotRequest) returns (stream cockroach.kv.kvserver.kvserverpb.SnapshotResponse) {}
+    rpc DelegateRaftSnapshot(stream cockroach.kv.kvserver.kvserverpb.DelegateSnapshotRequest) returns (stream cockroach.kv.kvserver.kvserverpb.DelegateSnapshotResponse) {}
+}
+```
+
+The implementation lie in `pkg/kv/kvserver/raft_transport.go`, function is `RaftTransport::RaftMessageBatch`:
+```
+RaftMessageBatch
+    stream.Recv
+    RaftTransport::handleRaftRequest
+        RaftTransport::getHandler(StoreID)  // read handler of corresponding store ID
+        Store::HandleRaftRequest            // `pkg/kv/kvserver/store_raft.go`: dispatches a raft message to the appropriate Replica.
+            Store::HandleRaftUncoalescedRequest
+                raftReceiveQueues::LoadOrCreate(RangeID)
+                raftReceiveQueue::Append
+            raftScheduler::EnqueueRaftRequest
+    stream.Send(newRaftMessageResponse)
+```
 
 Questions:
 - Where the `conditional_put` is executed?
@@ -366,3 +438,52 @@ StoreRebalancer::Start
         StoreRebalancer::chooseRangeToRebalance
         DB::AdminRelocateRange
 ```
+
+## DB
+
+DB is a database handle to a single cockroach cluster. A DB is safe for concurrent use by multiple goroutines.
+
+`kv.DB` interfaces:
+- Get
+- GetForUpdate
+- GetProto
+- GetProtoTs
+- Put
+- PutInline
+- CPut
+- Inc
+- Scan
+- AdminSplit
+- AdminMerge
+- AdminRelocateRange
+- AdminChangeReplicas
+- etc ...
+
+Put code path:
+
+```
+DB::Put -> DB::Run(Batch) -> DB::SendAndFail -> DB::send -> DB::sendUsingSender
+    CrossRangeTxnWrapperSender::Send -> DistSender::Send
+        DistSender::initAndVerifyBatch
+        keys.Range
+        DistSender::divideAndSendParallelCommit
+            DistSender::divideAndSendBatchToRanges
+        DistSender::divideAndSendBatchToRanges
+            RangeIterator::Seek
+            DistSender::sendPartialBatch
+                DistSender::sendToReplicas
+                    DistSender::transportFactory
+                    Transport::SendNext
+```
+
+### Error Retry
+
+TODO
+
+### Range Cache
+
+TODO
+
+### Txn
+
+TODO
