@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>The space reclaiming of PhotonDB | W41ter’s Bistro</title>
+<meta name="generator" content="Jekyll v4.2.2" />
+<meta property="og:title" content="The space reclaiming of PhotonDB" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="最近的一段时间我们分析并改进了 PhotonDB 的空间回收机制。 Background PhotonDB 的 page store 可以视作一个 log structured page allocator。 在实现上，它分为持久化和内存中的两部分，其中内存部分由串有序的 write buffer 组成。write buffer 是一段连续的内存空间，新的 delta page 从最后一个 write buffer 中分配。每个 delta page 均有唯一的逻辑地址，该地址按照分配次序递增；其他 page 可以通过这个逻辑地址访问到该 delta page。其中从根节点出发能访问到的 delta page 称为活跃的；当 page 更新后，相关的 delta page 将不再被访问，所以会被归还（dealloc）给 page store。 当 write buffer 的空间分配完后，其中仍活跃的 delta page 会持久化到存储设备上，保存到一个新的 page file 中。除了记录 delta page 外，Page file 还记录了一些元数据，包括 delta page 到 page id 的映射；先前生成的 page files 中已经归还（dealloc）的 delta page 的地址；每个 delta page 的在 write buffer 中的偏移。每个 page file 在内存中维护着一个数据结构：FileMeta，其中记录着 delta page 的逻辑地址到文件偏移的映射关系。 每个 write buffer 有一个唯一且递增的 ID，它是 delta page 的逻辑地址的组成部分：逻辑地址由 buffer id 和 delta page 在 buffer 中的偏移组成（logical address = (buffer id &lt;&lt; 32) | offset）。Write buffer 转储时生成的 page file 拥有相同的 ID，因此对于任意一个逻辑地址，可以直接定位到 write buffer 或者 page file，并找到 delta page （对 page file ，还需要通过查询 FileMeta，找到文件偏移）。 前面提到了 page files 中还记录着已归还的 delta pages 的逻辑地址，虽然这些地址对应的数据将不再会被访问，但它们占用的磁盘空间仍然被保留着。我们称这部分空间为空白页。为了保证有足够的空间容纳新写入的数据，这些具有空白页的 page files 需要被整理，释放出空白页占据的空间。找到合适的 page files 并进行过程称为空间回收。 Framework 空间回收实现时需要回答三个问题，何时进行？最优化目标？处理方法？这三个问题勾勒出空间回收机制实现的基本轮廓： 空间回收触发时机 候选 page file 的选择策略 page file 的处理方法 当某些指标达到触发条件时，使用选择策略选择出候选 page files，并对 page file 按照某种方法进行处理，最终释放出空闲空间。后文将按照顺序，依次介绍 PhotonDB 解决这三个问题的方案。 Trigger 首先讨论的是空间回收的触发机制。PhotonDB 关注两个指标：1、使用空间；2、空间放大。在使用空间超过高水位线或者空间放大超过上限时，PhotonDB 触发空间回收，直到相关指标落到阈值下。为使用空间设置水位线，用于保证在剩余空间的比例；为空间放大设置上线，用于将整体的回收代价均摊到程序的整个运行时间段上。当然，只有存在过期 delta page 时，才能释放出空闲空间；因此只有拥有可回收空间时，使用空间的指标才会生效。 Efficient strategy 空间回收需要占用 IO 资源，它需要重定位候选 page files 中的活跃 delta page。这个过程的开销与过期 delta page 的数量有关系。显然过期的 delta page 越多，重定位的 IO 开销就越小。 候选文件选择策略的目标就是找到最适合回收的 page files，使得总的 IO 开销最小。 Minimize of IO cost 为了找到这样的一个策略，我们不妨假设某个 page file $i$ 在时刻 $t_n$ 被回收的代价为 $C_i$，回收成本的下降速率（decline rate）为 $\frac{dc_i(t_0)}{dt}$；如果某个时间点 $t_0$ 回收成本为 $C_0$，那么对任意未来的时间 $t$，回收该 page file 的成本为： $C_i(t) \approx C_i(t_0) + \frac{dc_i(t_0)}{dt} (t - t_0)$ 假设有 $k$ 个 page file，每次处理一个，那么总的成本为： $Cost = \sum_{i=1}^{k} c_i(t_0) - \sum_{i=1}^{k}-\frac{dc_i(t_0)}{dt}(t_i-t_0)$ 观察发现，上述公式后半部分的值越大，最终的成本越小。显然当 $-\frac{dc_i(t_0)}{dt}$ 按照顺序排列时，后半部分的值越大。因此，优先处理 decline rate 最小的 page files，最后处理 decline rate 最大的 page files，总的代价最小。 我们把上述公式给出的回收策略称为 Min Decline Rate 策略。它显然符合直觉：如果成本能在未来一段时间内大幅下降，那么等待一段时间再处理是值得的。 Decline rate 有了理论指导后，下一步是为每个 page file 计算 decline rate。假设一个 page file 中空白页占比为 $E$，那么回收一个文件的空间，需要回收 $1/E$ 个有空闲页的 page file。其中放大部分为 $1/E(1-E)$。那么，写一个 page file 的 IO 成本为： $Cost = \frac{1}{E} reads + \frac{1}{E} (1-E) writes + 1 = \frac{2}{E}$ 进一步，IO 成本的 decline rate 为： $\frac{d(Cost)}{dt} = (\frac{-2}{E^2})(\frac{dF}{du}) \approx \frac{−2(1 − E)}{E^2}f\Delta E$ 其中 $f$ 是每个 page 的更新频率，$\Delta E$ 是每次更新时 $E$ 的变化率。文件的更新频率为 $f$ 乘上活跃 page 数。 每个 page 的更新频率可以通过如下方式估计： $f = \frac{2}{t_{now}-t_{up2}}$ 其中 $t_{up2}$ 表示倒数第二次更新某个 page 时的逻辑时间。 Min Decline Rate 策略来自于论文：Efficiently Reclaiming Space in a Log Structured Store，如果对推导过程感兴趣，可以参考原论文。PhotonDB 使用 Min Decline Rate 作为候选 page files 选择策略。每次进行空间回收时，使用上面的公式计算每个 page file 的 decline rate 并排序。除了成本的计算外，原论文还指出，回收过程中可以使用更新频率对 delta page 进行分类，进一步降低回收成本。 Reclaim file 处理候选 page file 时，需要保证活跃的 delta page 在处理完成后仍然能够访问。由于不考虑原地更新，那么回收一个 page file 就要求实现将其中仍活跃的 delta page 复制到其他位置。 最直接的办法是将 delta page 复制到一块新开辟的空间里，同时更新对 delta page 的引用，将其指向复制后的位置。这个过程我们称为重定向，它有一个明显的缺陷：更换了 delta page 的逻辑地址。每个活跃的 delta page 均可从根节点访问到，对它的引用可能存在于 page table 中，也可能存在于同一 delta chain 上的前驱节点；对于后者，更换逻辑地址意味着需要遍历整个 delta chain，找到对应的前驱节点进行替换。对于 immutable 的数据结构而言，替换就意味着需要引入一种新的 delta page，它负责将原逻辑地址映射到新的逻辑地址上。 为了避免额外的复杂度，0.2 版本的 PhotonDB 使用了 page rewriting 的机制来避免上述问题。 Problem with page rewriting PhotonDB 使用的 page rewriting 机制类似于 consolidation 操作，因此它们能够复用一些逻辑。consolidation 会将 delta chain 合并，并使用生成的 delta page 替换掉 delta chain。 page rewriting 与 consolidation 略有不同，主要分两个方面： page rewriting 仍然有重定位的作用，即使 delta chain 长度为 1，页需要生成新的 delta page 并替换。 page rewriting 可能会生成一条 delta chain，而不是一个 delta page。比如 split delta 在没有应用到父节点前，不能被合并到新 delta page 中。 Page rewriting 机制的缺点也是明显的，合并 delta chain 的过程中有大量的 IO 扇入扇出。Page rewriting 的另一个问题是没有跟踪这些新 delta page 的更新频率。与论文中的做法不同，出于性能考虑 PhotonDB 只跟踪了 page file 的更新频率，没有跟踪 delta page 的更新频率。这些 rewriting 生成的 delta page 被当作全新的写入，与用户写入的 delta page 混合到一起，导致了更新频率的失真。 Solution 如果我们引入一层全局的转换层，它负责将逻辑地址中的 page file ID 映射到物理地址（文件，偏移）上，那么也可以做到不修改 delta page 的逻辑地址的同时回收 page file。显然这个转换层已经存在了，它就是前面提到的 FileMeta。因此，我们只需要将活跃的 delta page 复制到新的文件中，并修改 FileMeta 中的映射，就完成了 page file 的回收。 不过随着归还的 delta page 越来越多，新文件会越来越小、越来越碎片化，需要付出更大的开销来维护这些小文件的元数据；同时 IO 的预取、批处理等效率也有较低。为此，我们引入了一种新的文件格式：mapping file。Mapping file 将多个 page files 中活跃的 delta page 打包到一个文件中，同时记录下逻辑地址与物理地址的映射关系。 除了减少碎片化、避免 page rewriting 引入的 IO 放大外，mapping file 提供了提到的按照更新频率对 delta page 分类的能力；将更新频率接近的 delta page 放到一起，可以达到冷热分离的效果。从实验数据上看，mapping file 的引入，让 0.3 版本的 PhotonDB 在 zipfan 和 uniform workload 下较前一个版本分别减少了 ~5 倍和 ~2.5 倍的写放大。" />
+<meta property="og:description" content="最近的一段时间我们分析并改进了 PhotonDB 的空间回收机制。 Background PhotonDB 的 page store 可以视作一个 log structured page allocator。 在实现上，它分为持久化和内存中的两部分，其中内存部分由串有序的 write buffer 组成。write buffer 是一段连续的内存空间，新的 delta page 从最后一个 write buffer 中分配。每个 delta page 均有唯一的逻辑地址，该地址按照分配次序递增；其他 page 可以通过这个逻辑地址访问到该 delta page。其中从根节点出发能访问到的 delta page 称为活跃的；当 page 更新后，相关的 delta page 将不再被访问，所以会被归还（dealloc）给 page store。 当 write buffer 的空间分配完后，其中仍活跃的 delta page 会持久化到存储设备上，保存到一个新的 page file 中。除了记录 delta page 外，Page file 还记录了一些元数据，包括 delta page 到 page id 的映射；先前生成的 page files 中已经归还（dealloc）的 delta page 的地址；每个 delta page 的在 write buffer 中的偏移。每个 page file 在内存中维护着一个数据结构：FileMeta，其中记录着 delta page 的逻辑地址到文件偏移的映射关系。 每个 write buffer 有一个唯一且递增的 ID，它是 delta page 的逻辑地址的组成部分：逻辑地址由 buffer id 和 delta page 在 buffer 中的偏移组成（logical address = (buffer id &lt;&lt; 32) | offset）。Write buffer 转储时生成的 page file 拥有相同的 ID，因此对于任意一个逻辑地址，可以直接定位到 write buffer 或者 page file，并找到 delta page （对 page file ，还需要通过查询 FileMeta，找到文件偏移）。 前面提到了 page files 中还记录着已归还的 delta pages 的逻辑地址，虽然这些地址对应的数据将不再会被访问，但它们占用的磁盘空间仍然被保留着。我们称这部分空间为空白页。为了保证有足够的空间容纳新写入的数据，这些具有空白页的 page files 需要被整理，释放出空白页占据的空间。找到合适的 page files 并进行过程称为空间回收。 Framework 空间回收实现时需要回答三个问题，何时进行？最优化目标？处理方法？这三个问题勾勒出空间回收机制实现的基本轮廓： 空间回收触发时机 候选 page file 的选择策略 page file 的处理方法 当某些指标达到触发条件时，使用选择策略选择出候选 page files，并对 page file 按照某种方法进行处理，最终释放出空闲空间。后文将按照顺序，依次介绍 PhotonDB 解决这三个问题的方案。 Trigger 首先讨论的是空间回收的触发机制。PhotonDB 关注两个指标：1、使用空间；2、空间放大。在使用空间超过高水位线或者空间放大超过上限时，PhotonDB 触发空间回收，直到相关指标落到阈值下。为使用空间设置水位线，用于保证在剩余空间的比例；为空间放大设置上线，用于将整体的回收代价均摊到程序的整个运行时间段上。当然，只有存在过期 delta page 时，才能释放出空闲空间；因此只有拥有可回收空间时，使用空间的指标才会生效。 Efficient strategy 空间回收需要占用 IO 资源，它需要重定位候选 page files 中的活跃 delta page。这个过程的开销与过期 delta page 的数量有关系。显然过期的 delta page 越多，重定位的 IO 开销就越小。 候选文件选择策略的目标就是找到最适合回收的 page files，使得总的 IO 开销最小。 Minimize of IO cost 为了找到这样的一个策略，我们不妨假设某个 page file $i$ 在时刻 $t_n$ 被回收的代价为 $C_i$，回收成本的下降速率（decline rate）为 $\frac{dc_i(t_0)}{dt}$；如果某个时间点 $t_0$ 回收成本为 $C_0$，那么对任意未来的时间 $t$，回收该 page file 的成本为： $C_i(t) \approx C_i(t_0) + \frac{dc_i(t_0)}{dt} (t - t_0)$ 假设有 $k$ 个 page file，每次处理一个，那么总的成本为： $Cost = \sum_{i=1}^{k} c_i(t_0) - \sum_{i=1}^{k}-\frac{dc_i(t_0)}{dt}(t_i-t_0)$ 观察发现，上述公式后半部分的值越大，最终的成本越小。显然当 $-\frac{dc_i(t_0)}{dt}$ 按照顺序排列时，后半部分的值越大。因此，优先处理 decline rate 最小的 page files，最后处理 decline rate 最大的 page files，总的代价最小。 我们把上述公式给出的回收策略称为 Min Decline Rate 策略。它显然符合直觉：如果成本能在未来一段时间内大幅下降，那么等待一段时间再处理是值得的。 Decline rate 有了理论指导后，下一步是为每个 page file 计算 decline rate。假设一个 page file 中空白页占比为 $E$，那么回收一个文件的空间，需要回收 $1/E$ 个有空闲页的 page file。其中放大部分为 $1/E(1-E)$。那么，写一个 page file 的 IO 成本为： $Cost = \frac{1}{E} reads + \frac{1}{E} (1-E) writes + 1 = \frac{2}{E}$ 进一步，IO 成本的 decline rate 为： $\frac{d(Cost)}{dt} = (\frac{-2}{E^2})(\frac{dF}{du}) \approx \frac{−2(1 − E)}{E^2}f\Delta E$ 其中 $f$ 是每个 page 的更新频率，$\Delta E$ 是每次更新时 $E$ 的变化率。文件的更新频率为 $f$ 乘上活跃 page 数。 每个 page 的更新频率可以通过如下方式估计： $f = \frac{2}{t_{now}-t_{up2}}$ 其中 $t_{up2}$ 表示倒数第二次更新某个 page 时的逻辑时间。 Min Decline Rate 策略来自于论文：Efficiently Reclaiming Space in a Log Structured Store，如果对推导过程感兴趣，可以参考原论文。PhotonDB 使用 Min Decline Rate 作为候选 page files 选择策略。每次进行空间回收时，使用上面的公式计算每个 page file 的 decline rate 并排序。除了成本的计算外，原论文还指出，回收过程中可以使用更新频率对 delta page 进行分类，进一步降低回收成本。 Reclaim file 处理候选 page file 时，需要保证活跃的 delta page 在处理完成后仍然能够访问。由于不考虑原地更新，那么回收一个 page file 就要求实现将其中仍活跃的 delta page 复制到其他位置。 最直接的办法是将 delta page 复制到一块新开辟的空间里，同时更新对 delta page 的引用，将其指向复制后的位置。这个过程我们称为重定向，它有一个明显的缺陷：更换了 delta page 的逻辑地址。每个活跃的 delta page 均可从根节点访问到，对它的引用可能存在于 page table 中，也可能存在于同一 delta chain 上的前驱节点；对于后者，更换逻辑地址意味着需要遍历整个 delta chain，找到对应的前驱节点进行替换。对于 immutable 的数据结构而言，替换就意味着需要引入一种新的 delta page，它负责将原逻辑地址映射到新的逻辑地址上。 为了避免额外的复杂度，0.2 版本的 PhotonDB 使用了 page rewriting 的机制来避免上述问题。 Problem with page rewriting PhotonDB 使用的 page rewriting 机制类似于 consolidation 操作，因此它们能够复用一些逻辑。consolidation 会将 delta chain 合并，并使用生成的 delta page 替换掉 delta chain。 page rewriting 与 consolidation 略有不同，主要分两个方面： page rewriting 仍然有重定位的作用，即使 delta chain 长度为 1，页需要生成新的 delta page 并替换。 page rewriting 可能会生成一条 delta chain，而不是一个 delta page。比如 split delta 在没有应用到父节点前，不能被合并到新 delta page 中。 Page rewriting 机制的缺点也是明显的，合并 delta chain 的过程中有大量的 IO 扇入扇出。Page rewriting 的另一个问题是没有跟踪这些新 delta page 的更新频率。与论文中的做法不同，出于性能考虑 PhotonDB 只跟踪了 page file 的更新频率，没有跟踪 delta page 的更新频率。这些 rewriting 生成的 delta page 被当作全新的写入，与用户写入的 delta page 混合到一起，导致了更新频率的失真。 Solution 如果我们引入一层全局的转换层，它负责将逻辑地址中的 page file ID 映射到物理地址（文件，偏移）上，那么也可以做到不修改 delta page 的逻辑地址的同时回收 page file。显然这个转换层已经存在了，它就是前面提到的 FileMeta。因此，我们只需要将活跃的 delta page 复制到新的文件中，并修改 FileMeta 中的映射，就完成了 page file 的回收。 不过随着归还的 delta page 越来越多，新文件会越来越小、越来越碎片化，需要付出更大的开销来维护这些小文件的元数据；同时 IO 的预取、批处理等效率也有较低。为此，我们引入了一种新的文件格式：mapping file。Mapping file 将多个 page files 中活跃的 delta page 打包到一个文件中，同时记录下逻辑地址与物理地址的映射关系。 除了减少碎片化、避免 page rewriting 引入的 IO 放大外，mapping file 提供了提到的按照更新频率对 delta page 分类的能力；将更新频率接近的 delta page 放到一起，可以达到冷热分离的效果。从实验数据上看，mapping file 的引入，让 0.3 版本的 PhotonDB 在 zipfan 和 uniform workload 下较前一个版本分别减少了 ~5 倍和 ~2.5 倍的写放大。" />
+<link rel="canonical" href="/2022/12/07/The-space-reclaiming-of-PhotonDB.html" />
+<meta property="og:url" content="/2022/12/07/The-space-reclaiming-of-PhotonDB.html" />
+<meta property="og:site_name" content="W41ter’s Bistro" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2022-12-07T00:00:00+08:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="The space reclaiming of PhotonDB" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2022-12-07T00:00:00+08:00","datePublished":"2022-12-07T00:00:00+08:00","description":"最近的一段时间我们分析并改进了 PhotonDB 的空间回收机制。 Background PhotonDB 的 page store 可以视作一个 log structured page allocator。 在实现上，它分为持久化和内存中的两部分，其中内存部分由串有序的 write buffer 组成。write buffer 是一段连续的内存空间，新的 delta page 从最后一个 write buffer 中分配。每个 delta page 均有唯一的逻辑地址，该地址按照分配次序递增；其他 page 可以通过这个逻辑地址访问到该 delta page。其中从根节点出发能访问到的 delta page 称为活跃的；当 page 更新后，相关的 delta page 将不再被访问，所以会被归还（dealloc）给 page store。 当 write buffer 的空间分配完后，其中仍活跃的 delta page 会持久化到存储设备上，保存到一个新的 page file 中。除了记录 delta page 外，Page file 还记录了一些元数据，包括 delta page 到 page id 的映射；先前生成的 page files 中已经归还（dealloc）的 delta page 的地址；每个 delta page 的在 write buffer 中的偏移。每个 page file 在内存中维护着一个数据结构：FileMeta，其中记录着 delta page 的逻辑地址到文件偏移的映射关系。 每个 write buffer 有一个唯一且递增的 ID，它是 delta page 的逻辑地址的组成部分：逻辑地址由 buffer id 和 delta page 在 buffer 中的偏移组成（logical address = (buffer id &lt;&lt; 32) | offset）。Write buffer 转储时生成的 page file 拥有相同的 ID，因此对于任意一个逻辑地址，可以直接定位到 write buffer 或者 page file，并找到 delta page （对 page file ，还需要通过查询 FileMeta，找到文件偏移）。 前面提到了 page files 中还记录着已归还的 delta pages 的逻辑地址，虽然这些地址对应的数据将不再会被访问，但它们占用的磁盘空间仍然被保留着。我们称这部分空间为空白页。为了保证有足够的空间容纳新写入的数据，这些具有空白页的 page files 需要被整理，释放出空白页占据的空间。找到合适的 page files 并进行过程称为空间回收。 Framework 空间回收实现时需要回答三个问题，何时进行？最优化目标？处理方法？这三个问题勾勒出空间回收机制实现的基本轮廓： 空间回收触发时机 候选 page file 的选择策略 page file 的处理方法 当某些指标达到触发条件时，使用选择策略选择出候选 page files，并对 page file 按照某种方法进行处理，最终释放出空闲空间。后文将按照顺序，依次介绍 PhotonDB 解决这三个问题的方案。 Trigger 首先讨论的是空间回收的触发机制。PhotonDB 关注两个指标：1、使用空间；2、空间放大。在使用空间超过高水位线或者空间放大超过上限时，PhotonDB 触发空间回收，直到相关指标落到阈值下。为使用空间设置水位线，用于保证在剩余空间的比例；为空间放大设置上线，用于将整体的回收代价均摊到程序的整个运行时间段上。当然，只有存在过期 delta page 时，才能释放出空闲空间；因此只有拥有可回收空间时，使用空间的指标才会生效。 Efficient strategy 空间回收需要占用 IO 资源，它需要重定位候选 page files 中的活跃 delta page。这个过程的开销与过期 delta page 的数量有关系。显然过期的 delta page 越多，重定位的 IO 开销就越小。 候选文件选择策略的目标就是找到最适合回收的 page files，使得总的 IO 开销最小。 Minimize of IO cost 为了找到这样的一个策略，我们不妨假设某个 page file $i$ 在时刻 $t_n$ 被回收的代价为 $C_i$，回收成本的下降速率（decline rate）为 $\\frac{dc_i(t_0)}{dt}$；如果某个时间点 $t_0$ 回收成本为 $C_0$，那么对任意未来的时间 $t$，回收该 page file 的成本为： $C_i(t) \\approx C_i(t_0) + \\frac{dc_i(t_0)}{dt} (t - t_0)$ 假设有 $k$ 个 page file，每次处理一个，那么总的成本为： $Cost = \\sum_{i=1}^{k} c_i(t_0) - \\sum_{i=1}^{k}-\\frac{dc_i(t_0)}{dt}(t_i-t_0)$ 观察发现，上述公式后半部分的值越大，最终的成本越小。显然当 $-\\frac{dc_i(t_0)}{dt}$ 按照顺序排列时，后半部分的值越大。因此，优先处理 decline rate 最小的 page files，最后处理 decline rate 最大的 page files，总的代价最小。 我们把上述公式给出的回收策略称为 Min Decline Rate 策略。它显然符合直觉：如果成本能在未来一段时间内大幅下降，那么等待一段时间再处理是值得的。 Decline rate 有了理论指导后，下一步是为每个 page file 计算 decline rate。假设一个 page file 中空白页占比为 $E$，那么回收一个文件的空间，需要回收 $1/E$ 个有空闲页的 page file。其中放大部分为 $1/E(1-E)$。那么，写一个 page file 的 IO 成本为： $Cost = \\frac{1}{E} reads + \\frac{1}{E} (1-E) writes + 1 = \\frac{2}{E}$ 进一步，IO 成本的 decline rate 为： $\\frac{d(Cost)}{dt} = (\\frac{-2}{E^2})(\\frac{dF}{du}) \\approx \\frac{−2(1 − E)}{E^2}f\\Delta E$ 其中 $f$ 是每个 page 的更新频率，$\\Delta E$ 是每次更新时 $E$ 的变化率。文件的更新频率为 $f$ 乘上活跃 page 数。 每个 page 的更新频率可以通过如下方式估计： $f = \\frac{2}{t_{now}-t_{up2}}$ 其中 $t_{up2}$ 表示倒数第二次更新某个 page 时的逻辑时间。 Min Decline Rate 策略来自于论文：Efficiently Reclaiming Space in a Log Structured Store，如果对推导过程感兴趣，可以参考原论文。PhotonDB 使用 Min Decline Rate 作为候选 page files 选择策略。每次进行空间回收时，使用上面的公式计算每个 page file 的 decline rate 并排序。除了成本的计算外，原论文还指出，回收过程中可以使用更新频率对 delta page 进行分类，进一步降低回收成本。 Reclaim file 处理候选 page file 时，需要保证活跃的 delta page 在处理完成后仍然能够访问。由于不考虑原地更新，那么回收一个 page file 就要求实现将其中仍活跃的 delta page 复制到其他位置。 最直接的办法是将 delta page 复制到一块新开辟的空间里，同时更新对 delta page 的引用，将其指向复制后的位置。这个过程我们称为重定向，它有一个明显的缺陷：更换了 delta page 的逻辑地址。每个活跃的 delta page 均可从根节点访问到，对它的引用可能存在于 page table 中，也可能存在于同一 delta chain 上的前驱节点；对于后者，更换逻辑地址意味着需要遍历整个 delta chain，找到对应的前驱节点进行替换。对于 immutable 的数据结构而言，替换就意味着需要引入一种新的 delta page，它负责将原逻辑地址映射到新的逻辑地址上。 为了避免额外的复杂度，0.2 版本的 PhotonDB 使用了 page rewriting 的机制来避免上述问题。 Problem with page rewriting PhotonDB 使用的 page rewriting 机制类似于 consolidation 操作，因此它们能够复用一些逻辑。consolidation 会将 delta chain 合并，并使用生成的 delta page 替换掉 delta chain。 page rewriting 与 consolidation 略有不同，主要分两个方面： page rewriting 仍然有重定位的作用，即使 delta chain 长度为 1，页需要生成新的 delta page 并替换。 page rewriting 可能会生成一条 delta chain，而不是一个 delta page。比如 split delta 在没有应用到父节点前，不能被合并到新 delta page 中。 Page rewriting 机制的缺点也是明显的，合并 delta chain 的过程中有大量的 IO 扇入扇出。Page rewriting 的另一个问题是没有跟踪这些新 delta page 的更新频率。与论文中的做法不同，出于性能考虑 PhotonDB 只跟踪了 page file 的更新频率，没有跟踪 delta page 的更新频率。这些 rewriting 生成的 delta page 被当作全新的写入，与用户写入的 delta page 混合到一起，导致了更新频率的失真。 Solution 如果我们引入一层全局的转换层，它负责将逻辑地址中的 page file ID 映射到物理地址（文件，偏移）上，那么也可以做到不修改 delta page 的逻辑地址的同时回收 page file。显然这个转换层已经存在了，它就是前面提到的 FileMeta。因此，我们只需要将活跃的 delta page 复制到新的文件中，并修改 FileMeta 中的映射，就完成了 page file 的回收。 不过随着归还的 delta page 越来越多，新文件会越来越小、越来越碎片化，需要付出更大的开销来维护这些小文件的元数据；同时 IO 的预取、批处理等效率也有较低。为此，我们引入了一种新的文件格式：mapping file。Mapping file 将多个 page files 中活跃的 delta page 打包到一个文件中，同时记录下逻辑地址与物理地址的映射关系。 除了减少碎片化、避免 page rewriting 引入的 IO 放大外，mapping file 提供了提到的按照更新频率对 delta page 分类的能力；将更新频率接近的 delta page 放到一起，可以达到冷热分离的效果。从实验数据上看，mapping file 的引入，让 0.3 版本的 PhotonDB 在 zipfan 和 uniform workload 下较前一个版本分别减少了 ~5 倍和 ~2.5 倍的写放大。","headline":"The space reclaiming of PhotonDB","mainEntityOfPage":{"@type":"WebPage","@id":"/2022/12/07/The-space-reclaiming-of-PhotonDB.html"},"url":"/2022/12/07/The-space-reclaiming-of-PhotonDB.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="/feed.xml" title="W41ter's Bistro" /><!-- for mathjax support -->
+  
+    <script type="text/x-mathjax-config">
+      MathJax.Hub.Config({
+          extensions: [
+          "tex2jax.js",
+          "MathMenu.js",
+          "MathZoom.js",
+          "AssistiveMML.js",
+          "a11y/accessibility-menu.js"
+        ],
+        tex2jax: {      // AND HERE
+          inlineMath: [['$', '$']],
+          displayMath: [['$$', '$$']]
+        },
+        jax: ["input/TeX", "output/CommonHTML"],
+        TeX: {
+          extensions: [
+            "AMSmath.js",
+            "AMSsymbols.js",
+            "noErrors.js",
+            "noUndefined.js",
+          ],
+          equationNumbers: { autoNumber: "AMS" }
+        }
+      });
+    </script>
+    <script type="text/javascript" async src="http://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+  
+</head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">W41ter&#39;s Bistro</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">The space reclaiming of PhotonDB</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2022-12-07T00:00:00+08:00" itemprop="datePublished">Dec 7, 2022
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p>最近的一段时间我们分析并改进了 PhotonDB 的空间回收机制。</p>
+
+<h1 id="background">Background</h1>
+
+<p>PhotonDB 的 page store 可以视作一个 log structured page allocator。</p>
+
+<p>在实现上，它分为持久化和内存中的两部分，其中内存部分由串有序的 write buffer 组成。write buffer 是一段连续的内存空间，新的 delta page 从最后一个 write buffer 中分配。每个 delta page 均有唯一的逻辑地址，该地址按照分配次序递增；其他 page 可以通过这个逻辑地址访问到该 delta page。其中从根节点出发能访问到的 delta page 称为活跃的；当 page 更新后，相关的 delta page 将不再被访问，所以会被归还（dealloc）给 page store。</p>
+
+<p>当 write buffer 的空间分配完后，其中仍活跃的 delta page 会持久化到存储设备上，保存到一个新的 page file 中。除了记录 delta page 外，Page file 还记录了一些元数据，包括 delta page 到 page id 的映射；先前生成的 page files 中已经归还（dealloc）的 delta page 的地址；每个 delta page 的在 write buffer 中的偏移。每个 page file 在内存中维护着一个数据结构：<code class="language-plaintext highlighter-rouge">FileMeta</code>，其中记录着 delta page 的逻辑地址到文件偏移的映射关系。</p>
+
+<p>每个 write buffer 有一个唯一且递增的 ID，它是 delta page 的逻辑地址的组成部分：逻辑地址由 buffer id 和 delta page 在 buffer 中的偏移组成（<code class="language-plaintext highlighter-rouge">logical address = (buffer id &lt;&lt; 32) | offset</code>）。Write buffer 转储时生成的 page file 拥有相同的 ID，因此对于任意一个逻辑地址，可以直接定位到 write buffer 或者 page file，并找到 delta page （对 page file ，还需要通过查询 <code class="language-plaintext highlighter-rouge">FileMeta</code>，找到文件偏移）。</p>
+
+<p>前面提到了 page files 中还记录着已归还的 delta pages 的逻辑地址，虽然这些地址对应的数据将不再会被访问，但它们占用的磁盘空间仍然被保留着。我们称这部分空间为空白页。为了保证有足够的空间容纳新写入的数据，这些具有空白页的 page files 需要被整理，释放出空白页占据的空间。找到合适的 page files 并进行过程称为空间回收。</p>
+
+<h1 id="framework">Framework</h1>
+
+<p>空间回收实现时需要回答三个问题，何时进行？最优化目标？处理方法？这三个问题勾勒出空间回收机制实现的基本轮廓：</p>
+<ol>
+  <li>空间回收触发时机</li>
+  <li>候选 page file 的选择策略</li>
+  <li>page file 的处理方法</li>
+</ol>
+
+<p>当某些指标达到触发条件时，使用选择策略选择出候选 page files，并对 page file 按照某种方法进行处理，最终释放出空闲空间。后文将按照顺序，依次介绍 PhotonDB 解决这三个问题的方案。</p>
+
+<h2 id="trigger">Trigger</h2>
+
+<p>首先讨论的是空间回收的触发机制。PhotonDB 关注两个指标：1、使用空间；2、空间放大。在使用空间超过高水位线或者空间放大超过上限时，PhotonDB 触发空间回收，直到相关指标落到阈值下。为使用空间设置水位线，用于保证在剩余空间的比例；为空间放大设置上线，用于将整体的回收代价均摊到程序的整个运行时间段上。当然，只有存在过期 delta page 时，才能释放出空闲空间；因此只有拥有可回收空间时，使用空间的指标才会生效。</p>
+
+<h2 id="efficient-strategy">Efficient strategy</h2>
+
+<p>空间回收需要占用 IO 资源，它需要重定位候选 page files 中的活跃 delta page。这个过程的开销与过期 delta page 的数量有关系。显然过期的 delta page 越多，重定位的 IO 开销就越小。</p>
+
+<p>候选文件选择策略的目标就是找到最适合回收的 page files，使得总的 IO 开销最小。</p>
+
+<h3 id="minimize-of-io-cost">Minimize of IO cost</h3>
+
+<p>为了找到这样的一个策略，我们不妨假设某个 page file $i$ 在时刻 $t_n$ 被回收的代价为 $C_i$，回收成本的下降速率（decline rate）为 $\frac{dc_i(t_0)}{dt}$；如果某个时间点 $t_0$ 回收成本为 $C_0$，那么对任意未来的时间 $t$，回收该 page file 的成本为：</p>
+
+<p>$C_i(t) \approx C_i(t_0) + \frac{dc_i(t_0)}{dt} (t - t_0)$</p>
+
+<p>假设有 $k$ 个 page file，每次处理一个，那么总的成本为：</p>
+
+<p>$Cost = \sum_{i=1}^{k} c_i(t_0) - \sum_{i=1}^{k}-\frac{dc_i(t_0)}{dt}(t_i-t_0)$</p>
+
+<p>观察发现，上述公式后半部分的值越大，最终的成本越小。显然当 $-\frac{dc_i(t_0)}{dt}$ 按照顺序排列时，后半部分的值越大。因此，优先处理 decline rate 最小的 page files，最后处理 decline rate 最大的 page files，总的代价最小。</p>
+
+<p>我们把上述公式给出的回收策略称为 Min Decline Rate 策略。它显然符合直觉：如果成本能在未来一段时间内大幅下降，那么等待一段时间再处理是值得的。</p>
+
+<h3 id="decline-rate">Decline rate</h3>
+
+<p>有了理论指导后，下一步是为每个 page file 计算 decline rate。假设一个 page file 中空白页占比为 $E$，那么回收一个文件的空间，需要回收 $1/E$ 个有空闲页的 page file。其中放大部分为 $1/E(1-E)$。那么，写一个 page file 的 IO 成本为：</p>
+
+<p>$Cost = \frac{1}{E} reads + \frac{1}{E} (1-E) writes + 1 = \frac{2}{E}$</p>
+
+<p>进一步，IO 成本的 decline rate 为：</p>
+
+<p>$\frac{d(Cost)}{dt} = (\frac{-2}{E^2})(\frac{dF}{du}) \approx \frac{−2(1 − E)}{E^2}f\Delta E$</p>
+
+<p>其中 $f$ 是每个 page 的更新频率，$\Delta E$ 是每次更新时 $E$ 的变化率。文件的更新频率为 $f$ 乘上活跃 page 数。</p>
+
+<p>每个 page 的更新频率可以通过如下方式估计：</p>
+
+<p>$f = \frac{2}{t_{now}-t_{up2}}$</p>
+
+<p>其中 $t_{up2}$ 表示倒数第二次更新某个 page 时的逻辑时间。</p>
+
+<p>Min Decline Rate 策略来自于论文：<a href="https://arxiv.org/abs/2005.00044">Efficiently Reclaiming Space in a Log Structured Store</a>，如果对推导过程感兴趣，可以参考原论文。PhotonDB 使用 Min Decline Rate 作为候选 page files 选择策略。每次进行空间回收时，使用上面的公式计算每个 page file 的 decline rate 并排序。除了成本的计算外，原论文还指出，回收过程中可以使用更新频率对 delta page 进行分类，进一步降低回收成本。</p>
+
+<h2 id="reclaim-file">Reclaim file</h2>
+
+<p>处理候选 page file 时，需要保证活跃的 delta page 在处理完成后仍然能够访问。由于不考虑原地更新，那么回收一个 page file 就要求实现将其中仍活跃的 delta page 复制到其他位置。</p>
+
+<p>最直接的办法是将 delta page 复制到一块新开辟的空间里，同时更新对 delta page 的引用，将其指向复制后的位置。这个过程我们称为重定向，它有一个明显的缺陷：更换了 delta page 的逻辑地址。每个活跃的 delta page 均可从根节点访问到，对它的引用可能存在于 page table 中，也可能存在于同一 delta chain 上的前驱节点；对于后者，更换逻辑地址意味着需要遍历整个 delta chain，找到对应的前驱节点进行替换。对于 immutable 的数据结构而言，替换就意味着需要引入一种新的 delta page，它负责将原逻辑地址映射到新的逻辑地址上。</p>
+
+<p>为了避免额外的复杂度，0.2 版本的 PhotonDB 使用了 page rewriting 的机制来避免上述问题。</p>
+
+<h3 id="problem-with-page-rewriting">Problem with page rewriting</h3>
+
+<p>PhotonDB 使用的 page rewriting 机制类似于 consolidation 操作，因此它们能够复用一些逻辑。consolidation 会将 delta chain 合并，并使用生成的 delta page 替换掉 delta chain。</p>
+
+<p>page rewriting 与 consolidation 略有不同，主要分两个方面：</p>
+<ol>
+  <li>page rewriting 仍然有重定位的作用，即使 delta chain 长度为 1，页需要生成新的 delta page 并替换。</li>
+  <li>page rewriting 可能会生成一条 delta chain，而不是一个 delta page。比如 split delta 在没有应用到父节点前，不能被合并到新 delta page 中。</li>
+</ol>
+
+<p>Page rewriting 机制的缺点也是明显的，合并 delta chain 的过程中有大量的 IO 扇入扇出。Page rewriting 的另一个问题是没有跟踪这些新 delta page 的更新频率。与论文中的做法不同，出于性能考虑 PhotonDB 只跟踪了 page file 的更新频率，没有跟踪 delta page 的更新频率。这些 rewriting 生成的 delta page 被当作全新的写入，与用户写入的 delta page 混合到一起，导致了更新频率的失真。</p>
+
+<h3 id="solution">Solution</h3>
+
+<p>如果我们引入一层全局的转换层，它负责将逻辑地址中的 page file ID 映射到物理地址（文件，偏移）上，那么也可以做到不修改 delta page 的逻辑地址的同时回收 page file。显然这个转换层已经存在了，它就是前面提到的 FileMeta。因此，我们只需要将活跃的 delta page 复制到新的文件中，并修改 FileMeta 中的映射，就完成了 page file 的回收。</p>
+
+<p>不过随着归还的 delta page 越来越多，新文件会越来越小、越来越碎片化，需要付出更大的开销来维护这些小文件的元数据；同时 IO 的预取、批处理等效率也有较低。为此，我们引入了一种新的文件格式：mapping file。Mapping file 将多个 page files 中活跃的 delta page 打包到一个文件中，同时记录下逻辑地址与物理地址的映射关系。</p>
+
+<p>除了减少碎片化、避免 page rewriting 引入的 IO 放大外，mapping file 提供了提到的按照更新频率对 delta page 分类的能力；将更新频率接近的 delta page 放到一起，可以达到冷热分离的效果。从实验数据上看，mapping file 的引入，让 0.3 版本的 PhotonDB 在 zipfan 和 uniform workload 下较前一个版本分别减少了 ~5 倍和 ~2.5 倍的写放大。</p>
+
+
+  </div><a class="u-url" href="/2022/12/07/The-space-reclaiming-of-PhotonDB.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">W41ter&#39;s Bistro</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">W41ter&#39;s Bistro</li><li><a class="u-email" href="mailto:w41ter.l@gmail.com">w41ter.l@gmail.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/w41ter"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">w41ter</span></a></li><li><a href="https://www.twitter.com/WalterM56697798"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">WalterM56697798</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Focus on distributed storage system, compiler.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>
