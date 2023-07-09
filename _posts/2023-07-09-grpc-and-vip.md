@@ -24,11 +24,11 @@ mathjax: true
 
 改造 rpc 的方案不行后，我将目光放在了修改使用 rpc 的方式上，很快我就发现从这里入手会简单许多。
 
-在目前的代码里，java 服务会建立一个 `ManagedChannel`，并通过该 channel 访问 C++ 服务。其中 `ManagedChannel` 是通过 `NettyChannelBuilder` 创建的，其底层会为每个 `Resolver` 返回的 `EquivalentAddressGroup` 创建一个 `NettyTransport`（也就是 socket）。而阿里云、腾讯云提供的 VIP 只有一个 IP 地址，因此每个 java 服务最终只会创建一条到 C++ 服务的 socket。显然，只需要创建多个 `ManagedChannel`，就能建立多条 socket；再通过模拟 round-robin 算法，每次发起 rpc 前选择一个 channel，就能在很大层度上保证每个 RS 接收到的 rpc 请求时均衡的。
+在目前的代码里，java 服务会建立一个 `ManagedChannel`，并通过该 channel 访问 C++ 服务。其中 `ManagedChannel` 是通过 `NettyChannelBuilder` 创建的，其底层会为每个 `Resolver` 返回的 `EquivalentAddressGroup` 创建一个 `NettyTransport`（也就是 socket）。而阿里云、腾讯云提供的 VIP 只有一个 IP 地址，因此每个 java 服务最终只会创建一条到 C++ 服务的 socket。显然，只需要创建多个 `ManagedChannel`，就能建立多条 socket；再通过模拟 round-robin 算法，每次发起 rpc 前选择一个 channel，就能在很大程度上保证每个 RS 接收到的 rpc 请求是均衡的。
 
 当然这只解决了第一个问题。VIP 机制下没有渠道可以获取到 RS 是否发生变更，因此只能从链接本身入手。一种方式是使用短链接，但它在每次访问时都需要创建一个 `ManagedChannel`，且并发数受限于可用端口数量，因此不是最优选择；另一种方式是为每个链接设置一段时间，超过时间后回收并重建链接，这样就保证在一段时间后就能与新加入的 RS 建立链接。
 
-我选择使用第二种方式，为每个链接设置一段存活时间，超过事件后回收链接。grpc 协议提供了类似的支持：[A9-server-side-conn-mgt](https://github.com/grpc/proposal/blob/master/A9-server-side-conn-mgt.md)，它允许在 server 端配置每个链接的 `MAX_CONNECTION_AGE`，超过时间后 server 端会给 client 发送 `GOAWAY` 通知 client 关闭该链接。当然，这个协议只有 grpc server 才支持，而我们的 C++ 服务使用的 brpc 并没有提供类似的机制，所以我们需要自己提供类似的功能。该功能实现也比较简单，每次建立链接时，会在某个时间范围内随机选择一个值作为 deadline；每次发送 rpc 请求时，先判断 deadline 是否已经到达，如果超过了 deadline，那么会调用 `ManagedChannel.terminate()` 并重建链接。
+我选择使用第二种方式，为每个链接设置一段存活时间，超过时间后回收链接。grpc 协议提供了类似的支持：[A9-server-side-conn-mgt](https://github.com/grpc/proposal/blob/master/A9-server-side-conn-mgt.md)，它允许在 server 端配置每个链接的 `MAX_CONNECTION_AGE`，超过时间后 server 端会给 client 发送 `GOAWAY` 通知 client 关闭该链接。当然，这个协议只有 grpc server 才支持，而我们的 C++ 服务使用的 brpc 并没有提供类似的机制，所以我们需要自己提供类似的功能。该功能实现也比较简单，每次建立链接时，会在某个时间范围内随机选择一个值作为 deadline；每次发送 rpc 请求时，先判断 deadline 是否已经到达，如果超过了 deadline，那么会调用 `ManagedChannel.terminate()` 并重建链接。
 
 ## Connection refused 问题
 
