@@ -1,6 +1,6 @@
 ---
 layout: post
-title: FoundationDB 概述
+title: FoundationDB 架构 - 概述
 mathjax: true
 ---
 
@@ -14,7 +14,7 @@ FoundationDB 是一款分布式强一致、高可扩展的 key value 数据库�
 
 总的来说，FoundationDB 的架构可以分成三部分：控制系统，事务系统以及存储系统。
 
-![FoundationDB Architecture](FDB-overview-imgs/architecture.png)
+![FoundationDB Architecture](FDB-arch-overview-imgs/architecture.png)
 
 控制系统部分提供了类似 zookeeper, etcd 等元数据管理系统的功能。它使用 disk paxos 实现选举、协调与元数据多副本的一致性。
 
@@ -26,7 +26,7 @@ FoundationDB 是一款分布式强一致、高可扩展的 key value 数据库�
 
 ## 元数据
 
-![Metadata](FDB-overview-imgs/metadata.png)
+![Metadata](FDB-arch-overview-imgs/metadata.png)
 
 FoundationDB 的元数据组织也可以按架构分成三部分。每个 FoundationDB 集群有一个唯一的地址，保存在 `fdb.cluster` 文件中；通过这个地址，可以定位到控制系统。
 
@@ -42,7 +42,7 @@ description:ID@IP:PORT,IP:PORT,...
 
 ## 数据组织
 
-![Key space](FDB-overview-imgs/keyspace.png)
+![Key space](FDB-arch-overview-imgs/keyspace.png)
 
 FoundationDB 将 key space 划分成两部分，其中前缀为 `0xFF` 的被保留为系统空间，也就是记录在事务系统中的存储系统的元数据。
 
