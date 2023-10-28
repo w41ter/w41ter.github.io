@@ -1,4 +1,450 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.2.2">Jekyll</generator><link href="/feed.xml" rel="self" type="application/atom+xml" /><link href="/" rel="alternate" type="text/html" /><updated>2023-10-28T12:18:41+08:00</updated><id>/feed.xml</id><title type="html">W41ter’s Bistro</title><subtitle>Focus on distributed storage system, compiler.</subtitle><entry><title type="html">grpc 的一些踩坑经验</title><link href="/2023/07/09/grpc-and-vip.html" rel="alternate" type="text/html" title="grpc 的一些踩坑经验" /><published>2023-07-09T00:00:00+08:00</published><updated>2023-07-09T00:00:00+08:00</updated><id>/2023/07/09/grpc-and-vip</id><content type="html" xml:base="/2023/07/09/grpc-and-vip.html"><![CDATA[<p>最近的工作需要对某个系统的 RPC 部分做优化。这个系统有多个组件，分别使用不同语言编写，此次我需要优化的组件分别由 java 和 c++ 编写，java 使用 grpc 访问使用 brpc 的 c++ 服务。</p>
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.2.2">Jekyll</generator><link href="/feed.xml" rel="self" type="application/atom+xml" /><link href="/" rel="alternate" type="text/html" /><updated>2023-10-28T15:34:17+08:00</updated><id>/feed.xml</id><title type="html">W41ter’s Bistro</title><subtitle>Focus on distributed storage system, compiler.</subtitle><entry><title type="html">FoundationDB 架构 - 只读事务</title><link href="/2023/10/28/FDB-arch-read-txn.html" rel="alternate" type="text/html" title="FoundationDB 架构 - 只读事务" /><published>2023-10-28T00:00:00+08:00</published><updated>2023-10-28T00:00:00+08:00</updated><id>/2023/10/28/FDB-arch-read-txn</id><content type="html" xml:base="/2023/10/28/FDB-arch-read-txn.html"><![CDATA[<p>前一篇文章介绍了 <a href="https://mp.weixin.qq.com/s?__biz=MzU4ODgyOTg5NA==&amp;mid=2247483728&amp;idx=1&amp;sn=87b85f293fe91bc57f589a09be84b7a2&amp;chksm=fdd784f9caa00def578dfacc61ef7ba1ab31f64b87826c9f279bae385bf44022f9923e853dd6&amp;token=1055659193&amp;lang=zh_CN#rd">FoundationDB 架构 - 事务数据的存储</a> FoundationDB 数据是如何存储的。这篇文章将介绍如何从 FoundationDB 中读取已写入的数据。</p>
+
+<p><img src="FDB-arch-read-txn-imgs/read-path.png" alt="读请求路径" /></p>
+
+<h2 id="开启事务">开启事务</h2>
+
+<p>同写事务相同，读事务开启时也需要先通过 GRV proxy 间接地从 master 获取已经提交事务的最大 version。因为写事务只需要将数据持久化到 TLog 就算完成，而 storage 拉取 message 的步骤并不在写事务提交的关键路径上。因此需要 client 在请求中携带上它能观察到的最大的 version，storage 才能通过这个 version 判断本地数据是否完整。</p>
+
+<h2 id="路由">路由</h2>
+
+<p>Client 并不知道数据是如何分布在 storage 中以及每个 storage 的地址，它需要向 FoundationDB 集群查询 key 到 storage server 的路由项（称为 location）。</p>
+
+<p>因为任何对 key 到 server 映射关系的变更操作都需要通过 commit proxy 持久化到 TLog 中（这部分细节将在后续的文章中介绍），所以 commit proxy 知晓整个集群的 location。Client 通过发送 <code class="language-plaintext highlighter-rouge">GetKeyServerLocations</code> 请求给 commit proxy 以查询 locations。</p>
+
+<p>由于 location 变更是个低频操作，缓存 location 能够有效降低查询 commit proxy 的次数。每次发送请求前，client 都会先查询缓存，如果未命中才会向 commit proxy 请求 location；此外，如果 location 过期，那么 storage 会拒绝服务，这种情况下 client 会清理缓存，再次向 commit proxy 获取最新的 location。</p>
+
+<h2 id="读数据">读数据</h2>
+
+<p>拿到 location 后，client 会发送 <code class="language-plaintext highlighter-rouge">getValue</code> 请求给 storage。前一篇文章已经介绍了，storage 中的数据分为两部分，第一部分存在多版本窗口中，第二部分存在磁盘 key value store 中。</p>
+
+<p>Storage 会先在内存中查找 key，如果未命中再从磁盘 key value 中读取。这里需要注意的是磁盘中的数据是没有版本信息的，所以无法判断这部分数据是否能够被指定版本的读请求读取到，因此如果一个请求携带的 version 已经超过了多版本窗口（默认为 5s），那么 storage 将返回 transaction too old，迫使 client 重新尝试。</p>
+
+<p>另一个需要注意的情况是，如果 storage 收到请求时，还没有从 TLog 拉取到对应 version 的数据，那么 storage 会阻塞该请求，直到数据可以被访问。</p>
+
+<p>到此，FoundationDB 事务的读写流程已经介绍完了。在后面的文章中，将介绍 FoundationDB 如何提供高可扩展的能力。</p>]]></content><author><name></name></author><summary type="html"><![CDATA[前一篇文章介绍了 FoundationDB 架构 - 事务数据的存储 FoundationDB 数据是如何存储的。这篇文章将介绍如何从 FoundationDB 中读取已写入的数据。 开启事务 同写事务相同，读事务开启时也需要先通过 GRV proxy 间接地从 master 获取已经提交事务的最大 version。因为写事务只需要将数据持久化到 TLog 就算完成，而 storage 拉取 message 的步骤并不在写事务提交的关键路径上。因此需要 client 在请求中携带上它能观察到的最大的 version，storage 才能通过这个 version 判断本地数据是否完整。 路由 Client 并不知道数据是如何分布在 storage 中以及每个 storage 的地址，它需要向 FoundationDB 集群查询 key 到 storage server 的路由项（称为 location）。 因为任何对 key 到 server 映射关系的变更操作都需要通过 commit proxy 持久化到 TLog 中（这部分细节将在后续的文章中介绍），所以 commit proxy 知晓整个集群的 location。Client 通过发送 GetKeyServerLocations 请求给 commit proxy 以查询 locations。 由于 location 变更是个低频操作，缓存 location 能够有效降低查询 commit proxy 的次数。每次发送请求前，client 都会先查询缓存，如果未命中才会向 commit proxy 请求 location；此外，如果 location 过期，那么 storage 会拒绝服务，这种情况下 client 会清理缓存，再次向 commit proxy 获取最新的 location。 读数据 拿到 location 后，client 会发送 getValue 请求给 storage。前一篇文章已经介绍了，storage 中的数据分为两部分，第一部分存在多版本窗口中，第二部分存在磁盘 key value store 中。 Storage 会先在内存中查找 key，如果未命中再从磁盘 key value 中读取。这里需要注意的是磁盘中的数据是没有版本信息的，所以无法判断这部分数据是否能够被指定版本的读请求读取到，因此如果一个请求携带的 version 已经超过了多版本窗口（默认为 5s），那么 storage 将返回 transaction too old，迫使 client 重新尝试。 另一个需要注意的情况是，如果 storage 收到请求时，还没有从 TLog 拉取到对应 version 的数据，那么 storage 会阻塞该请求，直到数据可以被访问。 到此，FoundationDB 事务的读写流程已经介绍完了。在后面的文章中，将介绍 FoundationDB 如何提供高可扩展的能力。]]></summary></entry><entry><title type="html">FoundationDB 架构 - 数据存储</title><link href="/2023/10/02/FDB-arch-txn-store.html" rel="alternate" type="text/html" title="FoundationDB 架构 - 数据存储" /><published>2023-10-02T00:00:00+08:00</published><updated>2023-10-02T00:00:00+08:00</updated><id>/2023/10/02/FDB-arch-txn-store</id><content type="html" xml:base="/2023/10/02/FDB-arch-txn-store.html"><![CDATA[<p>前一篇文章详细介绍了可序列化快照隔离级别以及 FoundationDB 的实现，这篇文章将介绍在通过事务冲突处理后，FoundationDB 是如何持久化数据的。</p>
+
+<p>在 FoundationDB 中负责持久化数据的主要有两个组件：</p>
+
+<ul>
+  <li>TLog: 类似于 RDMS 中的 WAL（write ahead log），提供日志的持久化能力；</li>
+  <li>Storage: 负责应用日志、存取 key value 数据。</li>
+</ul>
+
+<p>Commit proxy 检查完事务冲突后，将可提交的 mutations 打包到一个 message 中，并通过 <code class="language-plaintext highlighter-rouge">TLogCommitRequest</code> 发送给所有 TLog 。</p>
+
+<h2 id="tlog">TLog</h2>
+
+<p><img src="FDB-arch-txn-store-imgs/TLog.png" alt="TLog 内部结构" /></p>
+
+<p>TLog 首先需要将日志按照事务提交顺序持久化。和 resolver 一样，TLog 收到的 <code class="language-plaintext highlighter-rouge">TLogCommitRequest</code> 请求可能和事务的 commit version 不同，它会在内存中对请求进行排序再进行持久化。</p>
+
+<p>日志持久化由 disk queue 负责，日志在序列化后，写入 disk queue 的内存中；后者按照 4KB 为单位将日志切分成多个 page；一批数据写完后再写入磁盘。Disk queue 磁盘结构也很简单，它是两个文件组成的一个 WAL。每次写入时，将数据追加到后一个文件的末尾；如果前一个文件中的数据已经被消费完（可以清除），那么会交换两个文件顺序，之前的前一个文件会被清空，且新数据将依次追加到文件末尾。</p>
+
+<p>在通常情况下，不同 storage 负责的 key 范围不一样，如果都统一从 disk queue 拉取日志，那么将读取到很多不需要的日志。为了减少 storage 拉取日志时的开销，TLog 会提前准备好每个 storage 所需要的日志。</p>
+
+<p>FoundationDB 会为每个 storage 分配一个 tag，key 到 storage 的映射就等价于 key 到 tag 的映射；将 key 按照 tag 划分，得到的就是某个 storage 负责的 key 范围。Commit proxy 在准备提交请求到 TLog 前，会按照 message 中的 key 为 message 打上不同的 tag；而 TLog 会根据 message 中的 tag，将 message 按照顺序暂存在按 tag 分类的 memory queue 中。这样 storage 拉取日志时，只需要从对应 tag 的内存队列中拉取即可。</p>
+
+<p>内存中的数据始终是有上限的，storage 消费并完成对日志数据的持久化后，TLog 就能释放内存中、磁盘上的数据；如果 storage 消费不及时，当 TLog 内存数据达到上限后会触发反压，拒绝新请求直到 storage 的消费速度跟上写入速度。</p>
+
+<h2 id="storage">Storage</h2>
+
+<p><img src="FDB-arch-txn-store-imgs/Storage.png" alt="Storage 内部结构" /></p>
+
+<p>Storage 会通过 <code class="language-plaintext highlighter-rouge">TLogPeekRequest</code> 从 TLog 拉取最新的日志。这些日志暂存在 storage 的内存中，最终持久化到 key value store 中。</p>
+
+<p>Storage 会在内存中维护一个多版本窗口，每个版本由一棵 partial tree 组成；从 TLog 拉取的日志会按照版本生成 partial tree，并按照版本顺序组成队列。所谓的 partial tree 是 key value pairs 组成的一个 map，它只记录了一个事务版本中更新的数据。</p>
+
+<p>超过窗口的数据（默认为 5s）会从内存队列中移出，并通过专用的线程写入到 key value store 中。FoundationDB 有多种 key value store 的实现，默认情况下使用 sqlite 作为底层存储引擎，此外还有 memory，redwood，rocksdb 可供选择。</p>
+
+<p>Key value store 中的 key value 没有记录版本信息，因此一旦内存中的 partial tree 写入到 key value store 中，那么之前的版本信息就会丢失，而小于该版本的事务读将会被拒绝，即返回错误：<code class="language-plaintext highlighter-rouge">transaction too old</code>。</p>
+
+<p>一旦数据被持久化到 key value store 中，storage 就可以通知 TLog 释放对应 tag 的内存数据；某个日志如果没有任何 tag 引用，那么就能安全地释放它所占用的磁盘空间。</p>]]></content><author><name></name></author><summary type="html"><![CDATA[前一篇文章详细介绍了可序列化快照隔离级别以及 FoundationDB 的实现，这篇文章将介绍在通过事务冲突处理后，FoundationDB 是如何持久化数据的。 在 FoundationDB 中负责持久化数据的主要有两个组件： TLog: 类似于 RDMS 中的 WAL（write ahead log），提供日志的持久化能力； Storage: 负责应用日志、存取 key value 数据。 Commit proxy 检查完事务冲突后，将可提交的 mutations 打包到一个 message 中，并通过 TLogCommitRequest 发送给所有 TLog 。 TLog TLog 首先需要将日志按照事务提交顺序持久化。和 resolver 一样，TLog 收到的 TLogCommitRequest 请求可能和事务的 commit version 不同，它会在内存中对请求进行排序再进行持久化。 日志持久化由 disk queue 负责，日志在序列化后，写入 disk queue 的内存中；后者按照 4KB 为单位将日志切分成多个 page；一批数据写完后再写入磁盘。Disk queue 磁盘结构也很简单，它是两个文件组成的一个 WAL。每次写入时，将数据追加到后一个文件的末尾；如果前一个文件中的数据已经被消费完（可以清除），那么会交换两个文件顺序，之前的前一个文件会被清空，且新数据将依次追加到文件末尾。 在通常情况下，不同 storage 负责的 key 范围不一样，如果都统一从 disk queue 拉取日志，那么将读取到很多不需要的日志。为了减少 storage 拉取日志时的开销，TLog 会提前准备好每个 storage 所需要的日志。 FoundationDB 会为每个 storage 分配一个 tag，key 到 storage 的映射就等价于 key 到 tag 的映射；将 key 按照 tag 划分，得到的就是某个 storage 负责的 key 范围。Commit proxy 在准备提交请求到 TLog 前，会按照 message 中的 key 为 message 打上不同的 tag；而 TLog 会根据 message 中的 tag，将 message 按照顺序暂存在按 tag 分类的 memory queue 中。这样 storage 拉取日志时，只需要从对应 tag 的内存队列中拉取即可。 内存中的数据始终是有上限的，storage 消费并完成对日志数据的持久化后，TLog 就能释放内存中、磁盘上的数据；如果 storage 消费不及时，当 TLog 内存数据达到上限后会触发反压，拒绝新请求直到 storage 的消费速度跟上写入速度。 Storage Storage 会通过 TLogPeekRequest 从 TLog 拉取最新的日志。这些日志暂存在 storage 的内存中，最终持久化到 key value store 中。 Storage 会在内存中维护一个多版本窗口，每个版本由一棵 partial tree 组成；从 TLog 拉取的日志会按照版本生成 partial tree，并按照版本顺序组成队列。所谓的 partial tree 是 key value pairs 组成的一个 map，它只记录了一个事务版本中更新的数据。 超过窗口的数据（默认为 5s）会从内存队列中移出，并通过专用的线程写入到 key value store 中。FoundationDB 有多种 key value store 的实现，默认情况下使用 sqlite 作为底层存储引擎，此外还有 memory，redwood，rocksdb 可供选择。 Key value store 中的 key value 没有记录版本信息，因此一旦内存中的 partial tree 写入到 key value store 中，那么之前的版本信息就会丢失，而小于该版本的事务读将会被拒绝，即返回错误：transaction too old。 一旦数据被持久化到 key value store 中，storage 就可以通知 TLog 释放对应 tag 的内存数据；某个日志如果没有任何 tag 引用，那么就能安全地释放它所占用的磁盘空间。]]></summary></entry><entry><title type="html">FoundationDB 架构 - 事务冲突处理</title><link href="/2023/09/09/FDB-arch-txn-conflicts.html" rel="alternate" type="text/html" title="FoundationDB 架构 - 事务冲突处理" /><published>2023-09-09T00:00:00+08:00</published><updated>2023-09-09T00:00:00+08:00</updated><id>/2023/09/09/FDB-arch-txn-conflicts</id><content type="html" xml:base="/2023/09/09/FDB-arch-txn-conflicts.html"><![CDATA[<p>前一篇文章中提到，FoundationDB 提供了可序列化快照隔离（serializable snapshot isolation, ssi）级别，这篇文章将深入介绍 SSI 以及 FoundationDB 是如何实现的。</p>
+
+<h2 id="快照隔离">快照隔离</h2>
+
+<p>快照隔离是一种事务隔离级别，它属于多版本并发控制（multiversion concurreny control, MVCC），它的每个事务读都只读取该事务开始时已经提交的数据的快照。</p>
+
+<p><img src="FDB-arch-txn-conflicts-imgs/isolation-level-and-their-relationship.png" alt="A diagram of the isolation levels and their relationships. From a critique of ANSI Isolation" /></p>
+
+<p>不同事务访问相同资源时会产生竞争，处理竞争的方式可能会影响事务吞吐，比如加读写锁会让读写请求间相互等待。快照隔离可以避免读写竞争，从而提升事务的吞吐。因为在快照隔离中，任何改动都会生成一份新的快照，而后者对于已经持有数据快照的事务读是不可见的，所以只要能够维护数据快照，事务读请求就不会被阻塞。</p>
+
+<p><img src="FDB-arch-txn-conflicts-imgs/snapshot-read.png" alt="Snapshot Read" /></p>
+
+<p>能避免读写竞争的优点让快照隔离有了非常广泛的应用，但它仍然不完美，离理想的可序列化仍然有差距。在论文 A Critique of ANSI Isolation 中就详细介绍了快照隔离和它存在的幻象（Phantoms）： Write Skew。</p>
+
+<h3 id="write-skew">Write Skew</h3>
+
+<p>Write skew 是这样一种现象：两个事务分别读取不同数据，然后修改另一个事务读取的数据，并提交。在快照隔离中，由于读取的数据都是快照，和写入没有冲突，所以两个事务理论上都能提交；如果这两个数据间存在某种约束，那么这个约束将被打破，产生异常（anomaly）。</p>
+
+<p>Write skew 的执行历史可以形式化定义为：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>A5B: r1[x]...r2[y]...w1[y]...w2[x]...(c1 and c2 occur)
+</code></pre></div></div>
+
+<p>其中 1 和 2 是两个事务，r,w,c 分别是读、写和提交。</p>
+
+<h2 id="write-snapshot-isolation">Write Snapshot Isolation</h2>
+
+<p>仔细观察前面的例子可以发现，约束被打破的原因是其中一个事务提交时，它所读取到的数据已经被其他事务修改并提交了；而快照隔离只处理了写-写冲突（write-write confliction），所以无法观察到这一事实。</p>
+
+<p>针对这个情况，论文 A Critique of Snapshot Isolation，提出了 write snapshot isolation，它的主要改动是：事务提交时，检查事务读所涉及到的数据是否已经被其他事务修改过。Write snapshot isolation 不再处理写-写冲突，它只关心事务间的读-写冲突（read-write confliction），如果一个事务在提交时发现读取的数据已经被其他已提交事务修改过，那么该事务无法提交。</p>
+
+<p>通过检查读-写冲突来避免 write skew 异常，write snapshot isolation 能够在保留快照隔离优点的同时取得可序列化的隔离级别。FoundationDB 也正是基于这个理论来处理事务间的冲突。</p>
+
+<h2 id="in-foundationdb">In FoundationDB</h2>
+
+<p>FoundationDB 的 resolver 负责处理事务间的冲突，它在内存中记录着已经提交的事务修改的数据范围和版本。</p>
+
+<p>每个事务提交前，会将其读取的数据范围与 resolver 中记录的数据范围进行比较，如果存在交集说明则说明存在事务冲突，事务将被拒绝提交。需要注意的是，只有事务读数据的版本小于事务写的版本，才算存在交集；如果事务读的版本大于等于 resolver 中记录的数据的版本，那么它们之间本来就存在着先后关系，一定不存在冲突。</p>
+
+<p>如果事务可提交，它改动的数据范围和版本将会更新在 resolver 中。为了保证上述数据不会超过内存限制，resolver 只会在内存中记录提交时间在 5 秒内的事务的修改范围，超过时间的将被丢弃，所以 FoundationDB client 开启的交互式事务最长生命周期为 5 秒，超过后将收到错误：<code class="language-plaintext highlighter-rouge">transaction too old</code>。</p>
+
+<p>由于事务间存在顺序关系，它由 commit version 决定，而后者又是通过 master 分配给 commit proxy 的，所以 resolver 收到的 commit 请求的顺序可能和 commit version 的顺序不同。Resolver 会在内存中对 commit 请求进行排队，并按照 commit version 顺序进行处理。</p>
+
+<p>下面来看一个处理冲突的具体例子。</p>
+
+<p><img src="FDB-arch-txn-conflicts-imgs/resolve-txn-conflicts.png" alt="处理事务冲突" /></p>
+
+<p>假设有两个事务 1,2 分别在时刻 200, 100 开始，事务 1 读取 <code class="language-plaintext highlighter-rouge">a,b</code> 修改 <code class="language-plaintext highlighter-rouge">c</code>，事务 2 读取 <code class="language-plaintext highlighter-rouge">a,c</code> 修改 <code class="language-plaintext highlighter-rouge">b</code>；它们分别发送给不同的 commit proxy 完成提交，其中事务 1 拿到的提交时间为 300，事务 2 为 400，所以 resolver 先处理事务 1，再处理事务 2。</p>
+
+<p>假设此时 resolver 内存中记录的已提交数据集（write conflict range）为 <code class="language-plaintext highlighter-rouge">50: [d]</code>（50 为版本，<code class="language-plaintext highlighter-rouge">[d]</code> 表示修改数据范围）。事务 1 的 read conflict range: <code class="language-plaintext highlighter-rouge">200: [a, b]</code> 与 resolver 的 write conflict range 不存在冲突，所以事务 1 可以提交。</p>
+
+<p>Resolver 将事务 1 的 write conflict range 合并到内存中，此时 resolver 的 write conflict range 为:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>50: [d]
+300: [c]
+</code></pre></div></div>
+
+<p>事务 2 的 read conflict range 为: <code class="language-plaintext highlighter-rouge">100: [a, c]</code>，它与 resolver 的 <code class="language-plaintext highlighter-rouge">300: [c]</code> 存在冲突，所以事务 2 将被拒绝。</p>]]></content><author><name></name></author><summary type="html"><![CDATA[前一篇文章中提到，FoundationDB 提供了可序列化快照隔离（serializable snapshot isolation, ssi）级别，这篇文章将深入介绍 SSI 以及 FoundationDB 是如何实现的。 快照隔离 快照隔离是一种事务隔离级别，它属于多版本并发控制（multiversion concurreny control, MVCC），它的每个事务读都只读取该事务开始时已经提交的数据的快照。 不同事务访问相同资源时会产生竞争，处理竞争的方式可能会影响事务吞吐，比如加读写锁会让读写请求间相互等待。快照隔离可以避免读写竞争，从而提升事务的吞吐。因为在快照隔离中，任何改动都会生成一份新的快照，而后者对于已经持有数据快照的事务读是不可见的，所以只要能够维护数据快照，事务读请求就不会被阻塞。 能避免读写竞争的优点让快照隔离有了非常广泛的应用，但它仍然不完美，离理想的可序列化仍然有差距。在论文 A Critique of ANSI Isolation 中就详细介绍了快照隔离和它存在的幻象（Phantoms）： Write Skew。 Write Skew Write skew 是这样一种现象：两个事务分别读取不同数据，然后修改另一个事务读取的数据，并提交。在快照隔离中，由于读取的数据都是快照，和写入没有冲突，所以两个事务理论上都能提交；如果这两个数据间存在某种约束，那么这个约束将被打破，产生异常（anomaly）。 Write skew 的执行历史可以形式化定义为： A5B: r1[x]...r2[y]...w1[y]...w2[x]...(c1 and c2 occur) 其中 1 和 2 是两个事务，r,w,c 分别是读、写和提交。 Write Snapshot Isolation 仔细观察前面的例子可以发现，约束被打破的原因是其中一个事务提交时，它所读取到的数据已经被其他事务修改并提交了；而快照隔离只处理了写-写冲突（write-write confliction），所以无法观察到这一事实。 针对这个情况，论文 A Critique of Snapshot Isolation，提出了 write snapshot isolation，它的主要改动是：事务提交时，检查事务读所涉及到的数据是否已经被其他事务修改过。Write snapshot isolation 不再处理写-写冲突，它只关心事务间的读-写冲突（read-write confliction），如果一个事务在提交时发现读取的数据已经被其他已提交事务修改过，那么该事务无法提交。 通过检查读-写冲突来避免 write skew 异常，write snapshot isolation 能够在保留快照隔离优点的同时取得可序列化的隔离级别。FoundationDB 也正是基于这个理论来处理事务间的冲突。 In FoundationDB FoundationDB 的 resolver 负责处理事务间的冲突，它在内存中记录着已经提交的事务修改的数据范围和版本。 每个事务提交前，会将其读取的数据范围与 resolver 中记录的数据范围进行比较，如果存在交集说明则说明存在事务冲突，事务将被拒绝提交。需要注意的是，只有事务读数据的版本小于事务写的版本，才算存在交集；如果事务读的版本大于等于 resolver 中记录的数据的版本，那么它们之间本来就存在着先后关系，一定不存在冲突。 如果事务可提交，它改动的数据范围和版本将会更新在 resolver 中。为了保证上述数据不会超过内存限制，resolver 只会在内存中记录提交时间在 5 秒内的事务的修改范围，超过时间的将被丢弃，所以 FoundationDB client 开启的交互式事务最长生命周期为 5 秒，超过后将收到错误：transaction too old。 由于事务间存在顺序关系，它由 commit version 决定，而后者又是通过 master 分配给 commit proxy 的，所以 resolver 收到的 commit 请求的顺序可能和 commit version 的顺序不同。Resolver 会在内存中对 commit 请求进行排队，并按照 commit version 顺序进行处理。 下面来看一个处理冲突的具体例子。 假设有两个事务 1,2 分别在时刻 200, 100 开始，事务 1 读取 a,b 修改 c，事务 2 读取 a,c 修改 b；它们分别发送给不同的 commit proxy 完成提交，其中事务 1 拿到的提交时间为 300，事务 2 为 400，所以 resolver 先处理事务 1，再处理事务 2。 假设此时 resolver 内存中记录的已提交数据集（write conflict range）为 50: [d]（50 为版本，[d] 表示修改数据范围）。事务 1 的 read conflict range: 200: [a, b] 与 resolver 的 write conflict range 不存在冲突，所以事务 1 可以提交。 Resolver 将事务 1 的 write conflict range 合并到内存中，此时 resolver 的 write conflict range 为: 50: [d] 300: [c] 事务 2 的 read conflict range 为: 100: [a, c]，它与 resolver 的 300: [c] 存在冲突，所以事务 2 将被拒绝。]]></summary></entry><entry><title type="html">FoundationDB 架构 - 写事务处理流程</title><link href="/2023/08/13/FDB-arch-txn.html" rel="alternate" type="text/html" title="FoundationDB 架构 - 写事务处理流程" /><published>2023-08-13T00:00:00+08:00</published><updated>2023-08-13T00:00:00+08:00</updated><id>/2023/08/13/FDB-arch-txn</id><content type="html" xml:base="/2023/08/13/FDB-arch-txn.html"><![CDATA[<p>前一篇文章 <a href="https://mp.weixin.qq.com/s?__biz=MzU4ODgyOTg5NA==&amp;mid=2247483697&amp;idx=1&amp;sn=7ad949ecc5f298b2061d1a4066e2572c&amp;chksm=fdd78498caa00d8e8df55fa70b3b364edd0e8e688efa03dc8d1110d46a16cda455aa50b7eaf3#rd">FoundationDB 架构概述</a> 从全局视角介绍了 FoundationDB 架构的特点，这篇文章将介绍 FoundationDB 写事务的处理流程以及各个组件间是如何沟通协作的。</p>
+
+<h2 id="open-database">Open Database</h2>
+
+<p>在与 FoundationDB 集群交互前，client 需要先执行 open database。</p>
+
+<p><img src="FDB-arch-txn-imgs/open-database.png" alt="Open Database" /></p>
+
+<p>执行 open database 时，client 会从 <code class="language-plaintext highlighter-rouge">fdb.cluster</code> 文件中获取 <code class="language-plaintext highlighter-rouge">connection string</code>，后者指向了集群中的 coordinators；client 发送 <code class="language-plaintext highlighter-rouge">OpenDatabaseCoordRequest</code> 请求给 coordinator 进行验证，并获取 <code class="language-plaintext highlighter-rouge">ClientDBInfo</code>。</p>
+
+<p><code class="language-plaintext highlighter-rouge">ClientDBInfo</code> 中记录了集群中 GRV proxy 和 Commit proxy 的地址，后续的写请求会用到这两个 proxy 的地址。</p>
+
+<h2 id="提交事务">提交事务</h2>
+
+<p>FoundationDB 依赖一个全局单调递增的时间戳来提供多版本并发控制。每个事务提交时，会分配一个新的版本（Version）；事务间按照 version 大小确定唯一的提交顺序。</p>
+
+<p>FoundationDB 支持交互式事务，开启事务时会获取之前已经提交的最大的事务 version，并在一段时间后才会提交，所以事务间可能存在冲突。FoundationDB 通过检测事务间的 read-write confliction 来避免快照隔离（snapshot isolation, si）带来的 write skew，从而取得序列化快照隔离（serializable snapshot isolation, ssi）。</p>
+
+<blockquote>
+  <p>上述实现又称 write snapshot isolation, 出处见论文： A critique of snapshot isolation。</p>
+</blockquote>
+
+<p>最后，可以提交的事务会写入 TLog 中完成持久化，再异步地发送到存储系统中。</p>
+
+<p><img src="FDB-arch-txn-imgs/commit-txn.png" alt="Commit Transaction" /></p>
+
+<p>上图展示了一个写事务提交的完整交互流程，接下来将按照上图详细分析各个流程。</p>
+
+<p>开启新事务时，需要确定新事务的可见范围，也就是当前事务执行时有哪些事务已经提交。为此，Client 会发送 <code class="language-plaintext highlighter-rouge">GetReadVersionRequest</code> 给 GRV proxy 以查询已经提交的最大的事务 version；后者积攒一批请求后，发送 <code class="language-plaintext highlighter-rouge">GetRawCommitVersionRequest</code> 给 Master 节点，查询记录在 Master 内存中的已经提交的最大的事务 version。</p>
+
+<p>之后的任何写入操作会暂存在 client 的内存中，同时记录下读请求的范围供后续检测事务间的冲突。（读事务的处理流程将在后续的文章中介绍。）</p>
+
+<p>暂存在 client 内存中的数据在提交时通过 <code class="language-plaintext highlighter-rouge">CommitTransactionRequest</code> 发送给 Commit proxy，后者将提交过程分成几个步骤：</p>
+
+<ol>
+  <li>获取 commit version</li>
+  <li>解决事务冲突</li>
+  <li>持久化改动</li>
+  <li>响应事务提交结果</li>
+</ol>
+
+<h3 id="获取-commit-version">获取 commit version</h3>
+
+<p>Commit proxy 积攒一批请求后，发送 <code class="language-plaintext highlighter-rouge">GetCommitVersionRequest</code> 给 Master 以获取一个新的提交 version 以及确定事务间的顺序。Master 内存中记录着上一次分配（前一个事务）的 commit version，在上一次的基础上按照时间间隔分配一个新的 version。由于 Master 分配的 version 的大小和时间也有一定关系，所以 <code class="language-plaintext highlighter-rouge">GetCommitVersionReply</code> 中会携带前一个事务的 commit version（prev commit version） 和新分配的 commit version。</p>
+
+<p>拿到新 commit version 后，commit proxy 会按照顺序给这一批事务分配 versionstamp，它由两部分组成 <code class="language-plaintext highlighter-rouge">&lt;commit version, group id&gt;</code>，其中 group id 是事务在本批次队列中的序号。</p>
+
+<blockquote>
+  <p>FoundationDB 的原子操作中支持将 key 或者 value 的某部分替换成 versionstamp，用于在 client 侧确定一个唯一的事务，分配 versionstamp 的意义就在此。</p>
+</blockquote>
+
+<p>分配好 versionstamp 后，Commit proxy 会检查每个事务的改动（mutation），并替换掉其中需要设置 versionstamp 的部分 mutation。</p>
+
+<h3 id="解决事务冲突">解决事务冲突</h3>
+
+<p>Resolver 负责解决事务冲突，Commit proxy 会将事务的 read ranges 和 write ranges 以及事务的 prev commit version，commit version 一起通过 <code class="language-plaintext highlighter-rouge">ResolveTransactionBatchRequest</code> 发送给 Resolver 。</p>
+
+<p>Resolver 会按照事务 version 顺序处理每个到达请求，事务间的顺序依靠 prev commit version 和 commit version 一起组织起来。如果事务与之前已经提交的事务不存在 read-write confliction，那么就可以提交；否则事务应该被拒绝。</p>
+
+<h3 id="持久化-mutation">持久化 mutation</h3>
+
+<p>解决事务间冲突后，需要将 mutations 通过 <code class="language-plaintext highlighter-rouge">TLogCommitRequest</code> 发送给 TLog 完成持久化。集群中可能有多个 TLog 实例，那么这些 mutations 会被发送给每一个 TLog，所有 TLog 完成持久化后，事务才算完成提交。（实际上 mutations 只会发送给一部分 TLog，剩余的只会发送一个空请求，这部分将在后续的文章中介绍）</p>
+
+<p>如果某个事务被拒绝提交，那么它的 mutations 不会被发送到 TLog 持久化。由于 TLog 也是按照事务的 version 顺序依次持久化，所以尽管某一批事务请求都拒绝，Commit proxy 仍然需要发送 <code class="language-plaintext highlighter-rouge">TLogCommitRequest</code> 给 TLog ，这样 TLog 才能知道何时可以持久化后续的 mutations。</p>
+
+<h3 id="响应事务提交结果">响应事务提交结果</h3>
+
+<p>一旦事务的 mutations 成功持久化到 TLog 后，就算完成了提交请求，但是在回复 client 前，Commit proxy 还需要发送 <code class="language-plaintext highlighter-rouge">ReportRawCommittedRequest</code> 给 Master 以更新后者内存中记录的最大的已提交事务的 version。所以，FoundationDB 保证如果 client 收到了提交事务的回复，那么它再开启的新事务一定能够读取到此前已经提交的数据。</p>
+
+<h3 id="异步-apply-mutations">异步 apply mutations</h3>
+
+<p>存储系统中的 Storage 会发送 <code class="language-plaintext highlighter-rouge">TLogPeek</code> 请求，从 TLog 中获取新写入的 mutations，并完成 apply。</p>
+
+<p>到此为止，整个提交事务的流程就介绍完了。其中的一些细节，比如事务冲突处理、TLog 如何持久化 mutations，将在后续的文章中一一介绍。</p>]]></content><author><name></name></author><summary type="html"><![CDATA[前一篇文章 FoundationDB 架构概述 从全局视角介绍了 FoundationDB 架构的特点，这篇文章将介绍 FoundationDB 写事务的处理流程以及各个组件间是如何沟通协作的。 Open Database 在与 FoundationDB 集群交互前，client 需要先执行 open database。 执行 open database 时，client 会从 fdb.cluster 文件中获取 connection string，后者指向了集群中的 coordinators；client 发送 OpenDatabaseCoordRequest 请求给 coordinator 进行验证，并获取 ClientDBInfo。 ClientDBInfo 中记录了集群中 GRV proxy 和 Commit proxy 的地址，后续的写请求会用到这两个 proxy 的地址。 提交事务 FoundationDB 依赖一个全局单调递增的时间戳来提供多版本并发控制。每个事务提交时，会分配一个新的版本（Version）；事务间按照 version 大小确定唯一的提交顺序。 FoundationDB 支持交互式事务，开启事务时会获取之前已经提交的最大的事务 version，并在一段时间后才会提交，所以事务间可能存在冲突。FoundationDB 通过检测事务间的 read-write confliction 来避免快照隔离（snapshot isolation, si）带来的 write skew，从而取得序列化快照隔离（serializable snapshot isolation, ssi）。 上述实现又称 write snapshot isolation, 出处见论文： A critique of snapshot isolation。 最后，可以提交的事务会写入 TLog 中完成持久化，再异步地发送到存储系统中。 上图展示了一个写事务提交的完整交互流程，接下来将按照上图详细分析各个流程。 开启新事务时，需要确定新事务的可见范围，也就是当前事务执行时有哪些事务已经提交。为此，Client 会发送 GetReadVersionRequest 给 GRV proxy 以查询已经提交的最大的事务 version；后者积攒一批请求后，发送 GetRawCommitVersionRequest 给 Master 节点，查询记录在 Master 内存中的已经提交的最大的事务 version。 之后的任何写入操作会暂存在 client 的内存中，同时记录下读请求的范围供后续检测事务间的冲突。（读事务的处理流程将在后续的文章中介绍。） 暂存在 client 内存中的数据在提交时通过 CommitTransactionRequest 发送给 Commit proxy，后者将提交过程分成几个步骤： 获取 commit version 解决事务冲突 持久化改动 响应事务提交结果 获取 commit version Commit proxy 积攒一批请求后，发送 GetCommitVersionRequest 给 Master 以获取一个新的提交 version 以及确定事务间的顺序。Master 内存中记录着上一次分配（前一个事务）的 commit version，在上一次的基础上按照时间间隔分配一个新的 version。由于 Master 分配的 version 的大小和时间也有一定关系，所以 GetCommitVersionReply 中会携带前一个事务的 commit version（prev commit version） 和新分配的 commit version。 拿到新 commit version 后，commit proxy 会按照顺序给这一批事务分配 versionstamp，它由两部分组成 &lt;commit version, group id&gt;，其中 group id 是事务在本批次队列中的序号。 FoundationDB 的原子操作中支持将 key 或者 value 的某部分替换成 versionstamp，用于在 client 侧确定一个唯一的事务，分配 versionstamp 的意义就在此。 分配好 versionstamp 后，Commit proxy 会检查每个事务的改动（mutation），并替换掉其中需要设置 versionstamp 的部分 mutation。 解决事务冲突 Resolver 负责解决事务冲突，Commit proxy 会将事务的 read ranges 和 write ranges 以及事务的 prev commit version，commit version 一起通过 ResolveTransactionBatchRequest 发送给 Resolver 。 Resolver 会按照事务 version 顺序处理每个到达请求，事务间的顺序依靠 prev commit version 和 commit version 一起组织起来。如果事务与之前已经提交的事务不存在 read-write confliction，那么就可以提交；否则事务应该被拒绝。 持久化 mutation 解决事务间冲突后，需要将 mutations 通过 TLogCommitRequest 发送给 TLog 完成持久化。集群中可能有多个 TLog 实例，那么这些 mutations 会被发送给每一个 TLog，所有 TLog 完成持久化后，事务才算完成提交。（实际上 mutations 只会发送给一部分 TLog，剩余的只会发送一个空请求，这部分将在后续的文章中介绍） 如果某个事务被拒绝提交，那么它的 mutations 不会被发送到 TLog 持久化。由于 TLog 也是按照事务的 version 顺序依次持久化，所以尽管某一批事务请求都拒绝，Commit proxy 仍然需要发送 TLogCommitRequest 给 TLog ，这样 TLog 才能知道何时可以持久化后续的 mutations。 响应事务提交结果 一旦事务的 mutations 成功持久化到 TLog 后，就算完成了提交请求，但是在回复 client 前，Commit proxy 还需要发送 ReportRawCommittedRequest 给 Master 以更新后者内存中记录的最大的已提交事务的 version。所以，FoundationDB 保证如果 client 收到了提交事务的回复，那么它再开启的新事务一定能够读取到此前已经提交的数据。 异步 apply mutations 存储系统中的 Storage 会发送 TLogPeek 请求，从 TLog 中获取新写入的 mutations，并完成 apply。 到此为止，整个提交事务的流程就介绍完了。其中的一些细节，比如事务冲突处理、TLog 如何持久化 mutations，将在后续的文章中一一介绍。]]></summary></entry><entry><title type="html">FoundationDB 架构 - 概述</title><link href="/2023/08/12/FDB-arch-overview.html" rel="alternate" type="text/html" title="FoundationDB 架构 - 概述" /><published>2023-08-12T00:00:00+08:00</published><updated>2023-08-12T00:00:00+08:00</updated><id>/2023/08/12/FDB-arch-overview</id><content type="html" xml:base="/2023/08/12/FDB-arch-overview.html"><![CDATA[<p><img src="https://www.foundationdb.org/assets/images/logo@2x-e7437ad1.png" alt="FDB" /></p>
+
+<p>FoundationDB 是一款分布式强一致、高可扩展的 key value 数据库，它提供多版本并发控制（MVCC），同时提供了可序列化快照隔离级别（SSI）。</p>
+
+<p>这里将从架构、元数据组织、数据组织三个方面，简述 FoundationDB 的架构设计，更详细的设计细节会在后续文章中介绍。</p>
+
+<h2 id="架构">架构</h2>
+
+<p>总的来说，FoundationDB 的架构可以分成三部分：控制系统，事务系统以及存储系统。</p>
+
+<p><img src="FDB-arch-overview-imgs/architecture.png" alt="FoundationDB Architecture" /></p>
+
+<p>控制系统部分提供了类似 zookeeper, etcd 等元数据管理系统的功能。它使用 disk paxos 实现选举、协调与元数据多副本的一致性。</p>
+
+<p>存储系统是依赖单机 key value store 构建的一个多副本的 key value store。底层的 kv store 支持多种实现，目前有：sqlite （default），redwood 和 rocksdb。其中 redwood 是一款用于替代 sqlite 的基于 btree 的 kv store，目前主要是 snowflake 在负责开发。根据反馈，使用 redwood 作为引擎底座，在性能上比依赖 sqlite 的版本强上不少。</p>
+
+<p>最复杂的是事务系统，它所涉及的组件最多。事务系统主要解决两个问题：</p>
+<ol>
+  <li>写入事务的持久化，类似于单机 RDMS 的 WAL</li>
+  <li>判断事务间是否存在冲突，是否能够提交。</li>
+</ol>
+
+<h2 id="元数据">元数据</h2>
+
+<p><img src="FDB-arch-overview-imgs/metadata.png" alt="Metadata" /></p>
+
+<p>FoundationDB 的元数据组织也可以按架构分成三部分。每个 FoundationDB 集群有一个唯一的地址，保存在 <code class="language-plaintext highlighter-rouge">fdb.cluster</code> 文件中；通过这个地址，可以定位到控制系统。</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>description:ID@IP:PORT,IP:PORT,...
+</code></pre></div></div>
+
+<p>控制系统中记录了事务系统的元数据，TLog 的位置、当前事务系统的版本号，都记录在控制系统中；client 也能通过查询控制系统，获取到事务系统的路由表。</p>
+
+<p>事务系统中又记录着存储系统的元数据，key 到 storage 的映射就保存在事务系统中。</p>
+
+<p>通过上述的层级关系，任何一个 client 或 server 只要能拿到 <code class="language-plaintext highlighter-rouge">fdb.cluster</code>，就能访问到集群中的任何一个节点。</p>
+
+<h2 id="数据组织">数据组织</h2>
+
+<p><img src="FDB-arch-overview-imgs/keyspace.png" alt="Key space" /></p>
+
+<p>FoundationDB 将 key space 划分成两部分，其中前缀为 <code class="language-plaintext highlighter-rouge">0xFF</code> 的被保留为系统空间，也就是记录在事务系统中的存储系统的元数据。</p>
+
+<p>剩余的 <code class="language-plaintext highlighter-rouge">[0x00, 0xFF)</code> 则用于存储用户数据。用户数据会按照 range 切分成一个个 shard，一个 shard 有多个副本，保存在不同的 storage server 上。</p>]]></content><author><name></name></author><summary type="html"><![CDATA[FoundationDB 是一款分布式强一致、高可扩展的 key value 数据库，它提供多版本并发控制（MVCC），同时提供了可序列化快照隔离级别（SSI）。 这里将从架构、元数据组织、数据组织三个方面，简述 FoundationDB 的架构设计，更详细的设计细节会在后续文章中介绍。 架构 总的来说，FoundationDB 的架构可以分成三部分：控制系统，事务系统以及存储系统。 控制系统部分提供了类似 zookeeper, etcd 等元数据管理系统的功能。它使用 disk paxos 实现选举、协调与元数据多副本的一致性。 存储系统是依赖单机 key value store 构建的一个多副本的 key value store。底层的 kv store 支持多种实现，目前有：sqlite （default），redwood 和 rocksdb。其中 redwood 是一款用于替代 sqlite 的基于 btree 的 kv store，目前主要是 snowflake 在负责开发。根据反馈，使用 redwood 作为引擎底座，在性能上比依赖 sqlite 的版本强上不少。 最复杂的是事务系统，它所涉及的组件最多。事务系统主要解决两个问题： 写入事务的持久化，类似于单机 RDMS 的 WAL 判断事务间是否存在冲突，是否能够提交。 元数据 FoundationDB 的元数据组织也可以按架构分成三部分。每个 FoundationDB 集群有一个唯一的地址，保存在 fdb.cluster 文件中；通过这个地址，可以定位到控制系统。 description:ID@IP:PORT,IP:PORT,... 控制系统中记录了事务系统的元数据，TLog 的位置、当前事务系统的版本号，都记录在控制系统中；client 也能通过查询控制系统，获取到事务系统的路由表。 事务系统中又记录着存储系统的元数据，key 到 storage 的映射就保存在事务系统中。 通过上述的层级关系，任何一个 client 或 server 只要能拿到 fdb.cluster，就能访问到集群中的任何一个节点。 数据组织 FoundationDB 将 key space 划分成两部分，其中前缀为 0xFF 的被保留为系统空间，也就是记录在事务系统中的存储系统的元数据。 剩余的 [0x00, 0xFF) 则用于存储用户数据。用户数据会按照 range 切分成一个个 shard，一个 shard 有多个副本，保存在不同的 storage server 上。]]></summary></entry><entry><title type="html">FoundationDB 架构 - 写事务处理流程</title><link href="/2023/07/20/FDB-exclude-cmd.html" rel="alternate" type="text/html" title="FoundationDB 架构 - 写事务处理流程" /><published>2023-07-20T00:00:00+08:00</published><updated>2023-07-20T00:00:00+08:00</updated><id>/2023/07/20/FDB-exclude-cmd</id><content type="html" xml:base="/2023/07/20/FDB-exclude-cmd.html"><![CDATA[<h1 id="背景">背景</h1>
+
+<p>从<a href="https://mp.weixin.qq.com/s?__biz=MzU4ODgyOTg5NA==&amp;mid=2247483676&amp;idx=1&amp;sn=3f8175c1b2996a9690ac620e053b9034&amp;chksm=fdd784b5caa00da338f85dc606152eda51c25bdd7c052370fdc6de3dc789fede709a6437f7fe&amp;=873428723&amp;=zh_CN#rd">FoundationDB 源码阅读：maintenace 模式的作用</a>中可知 FDB 的 <code class="language-plaintext highlighter-rouge">maintenance</code> 模式并不会主动触发 recruit 流程，如果待操作的机器上有 transaction system 的进程，那么重启操作将会引起 3~5s 的服务中断，原因是等待直到 failure detectors 判断机器故障后，cluster controller 才会触发 recruit 流程。</p>
+
+<p>我们需要找到一个机制触发 recruit 流程，同时不触发任何数据迁移，使用 <code class="language-plaintext highlighter-rouge">exclude</code> 和 <code class="language-plaintext highlighter-rouge">maintenance</code> 配合是否能够取得这个目标呢？这就是本文研究的目的。</p>
+
+<p>FDB 的 <code class="language-plaintext highlighter-rouge">exclude</code> 命令用于在不影响可用性和容错的情况下，从集群中临时或永久地移除机器、进程。详情参考：<a href="https://apple.github.io/foundationdb/administration.html#removing-machines-from-a-cluster" title="removing-machines-from-a-cluster">removing-machines-from-a-cluster</a>。</p>
+
+<h1 id="代码分析">代码分析</h1>
+
+<h2 id="设置-exclude-选项">设置 exclude 选项</h2>
+
+<p>在 fdbcli 中输入 exclude ip:port no_wait 后，会进入 excludeCommandActor(fdbcli/ExcludeCommand.actor.cpp)；完成一系列检查后和准备后，进入 excludeSeversAndLocalities：</p>
+
+<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">ACTOR</span> <span class="n">Future</span><span class="o">&lt;</span><span class="kt">bool</span><span class="o">&gt;</span> <span class="n">excludeServersAndLocalities</span><span class="p">(</span><span class="n">Reference</span><span class="o">&lt;</span><span class="n">IDatabase</span><span class="o">&gt;</span> <span class="n">db</span><span class="p">,</span>
+                                               <span class="n">std</span><span class="o">::</span><span class="n">vector</span><span class="o">&lt;</span><span class="n">AddressExclusion</span><span class="o">&gt;</span> <span class="n">servers</span><span class="p">,</span>
+                                               <span class="n">std</span><span class="o">::</span><span class="n">unordered_set</span><span class="o">&lt;</span><span class="n">std</span><span class="o">::</span><span class="n">string</span><span class="o">&gt;</span> <span class="n">localities</span><span class="p">,</span>
+                                               <span class="kt">bool</span> <span class="n">failed</span><span class="p">,</span>
+                                               <span class="kt">bool</span> <span class="n">force</span><span class="p">)</span> <span class="p">{</span>
+    <span class="n">state</span> <span class="n">Reference</span><span class="o">&lt;</span><span class="n">ITransaction</span><span class="o">&gt;</span> <span class="n">tr</span> <span class="o">=</span> <span class="n">db</span><span class="o">-&gt;</span><span class="n">createTransaction</span><span class="p">();</span>
+    <span class="n">loop</span> <span class="p">{</span>
+        <span class="n">tr</span><span class="o">-&gt;</span><span class="n">setOption</span><span class="p">(</span><span class="n">FDBTransactionOptions</span><span class="o">::</span><span class="n">SPECIAL_KEY_SPACE_ENABLE_WRITES</span><span class="p">);</span>
+        <span class="k">try</span> <span class="p">{</span>
+            <span class="k">if</span> <span class="p">(</span><span class="n">force</span> <span class="o">&amp;&amp;</span> <span class="n">servers</span><span class="p">.</span><span class="n">size</span><span class="p">())</span>
+                <span class="n">tr</span><span class="o">-&gt;</span><span class="n">set</span><span class="p">(</span><span class="n">failed</span> <span class="o">?</span> <span class="n">fdb_cli</span><span class="o">::</span><span class="n">failedForceOptionSpecialKey</span> <span class="o">:</span> <span class="n">fdb_cli</span><span class="o">::</span><span class="n">excludedForceOptionSpecialKey</span><span class="p">,</span>
+                        <span class="n">ValueRef</span><span class="p">());</span>
+            <span class="k">for</span> <span class="p">(</span><span class="k">const</span> <span class="k">auto</span><span class="o">&amp;</span> <span class="n">s</span> <span class="o">:</span> <span class="n">servers</span><span class="p">)</span> <span class="p">{</span>
+                <span class="n">Key</span> <span class="n">addr</span> <span class="o">=</span> <span class="n">failed</span> <span class="o">?</span> <span class="n">fdb_cli</span><span class="o">::</span><span class="n">failedServersSpecialKeyRange</span><span class="p">.</span><span class="n">begin</span><span class="p">.</span><span class="n">withSuffix</span><span class="p">(</span><span class="n">s</span><span class="p">.</span><span class="n">toString</span><span class="p">())</span>
+                                  <span class="o">:</span> <span class="n">fdb_cli</span><span class="o">::</span><span class="n">excludedServersSpecialKeyRange</span><span class="p">.</span><span class="n">begin</span><span class="p">.</span><span class="n">withSuffix</span><span class="p">(</span><span class="n">s</span><span class="p">.</span><span class="n">toString</span><span class="p">());</span>
+                <span class="n">tr</span><span class="o">-&gt;</span><span class="n">set</span><span class="p">(</span><span class="n">addr</span><span class="p">,</span> <span class="n">ValueRef</span><span class="p">());</span>
+            <span class="p">}</span>
+            <span class="k">if</span> <span class="p">(</span><span class="n">force</span> <span class="o">&amp;&amp;</span> <span class="n">localities</span><span class="p">.</span><span class="n">size</span><span class="p">())</span>
+                <span class="n">tr</span><span class="o">-&gt;</span><span class="n">set</span><span class="p">(</span><span class="n">failed</span> <span class="o">?</span> <span class="n">fdb_cli</span><span class="o">::</span><span class="n">failedLocalityForceOptionSpecialKey</span>
+                               <span class="o">:</span> <span class="n">fdb_cli</span><span class="o">::</span><span class="n">excludedLocalityForceOptionSpecialKey</span><span class="p">,</span>
+                        <span class="n">ValueRef</span><span class="p">());</span>
+            <span class="k">for</span> <span class="p">(</span><span class="k">const</span> <span class="k">auto</span><span class="o">&amp;</span> <span class="n">l</span> <span class="o">:</span> <span class="n">localities</span><span class="p">)</span> <span class="p">{</span>
+                <span class="n">Key</span> <span class="n">addr</span> <span class="o">=</span> <span class="n">failed</span> <span class="o">?</span> <span class="n">fdb_cli</span><span class="o">::</span><span class="n">failedLocalitySpecialKeyRange</span><span class="p">.</span><span class="n">begin</span><span class="p">.</span><span class="n">withSuffix</span><span class="p">(</span><span class="n">l</span><span class="p">)</span>
+                                  <span class="o">:</span> <span class="n">fdb_cli</span><span class="o">::</span><span class="n">excludedLocalitySpecialKeyRange</span><span class="p">.</span><span class="n">begin</span><span class="p">.</span><span class="n">withSuffix</span><span class="p">(</span><span class="n">l</span><span class="p">);</span>
+                <span class="n">tr</span><span class="o">-&gt;</span><span class="n">set</span><span class="p">(</span><span class="n">addr</span><span class="p">,</span> <span class="n">ValueRef</span><span class="p">());</span>
+            <span class="p">}</span>
+            <span class="n">wait</span><span class="p">(</span><span class="n">safeThreadFutureToFuture</span><span class="p">(</span><span class="n">tr</span><span class="o">-&gt;</span><span class="n">commit</span><span class="p">()))</span>
+</code></pre></div></div>
+
+<p>severs 最终保存到 <code class="language-plaintext highlighter-rouge">excludedServersSpecialKeyRange</code> 中。注意到 transaction 设置了 <code class="language-plaintext highlighter-rouge">SPECIAL_KEY_SPACE_ENABLE_WRITES</code>，在提交给 fdbserver 前，fdbclient 会对 key value 做一些修饰。exclude 对应的 impl 为 <code class="language-plaintext highlighter-rouge">ExcludeServersRangeImpl</code>(<code class="language-plaintext highlighter-rouge">fdbclient/SpecialKeySpace.actor.cpp</code>)，完成检查后，进入 <code class="language-plaintext highlighter-rouge">excludeServers</code>(<code class="language-plaintext highlighter-rouge">fdbclient/ManagementAPI.actor.cpp</code>):</p>
+
+<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">ACTOR</span> <span class="n">Future</span><span class="o">&lt;</span><span class="n">Void</span><span class="o">&gt;</span> <span class="n">excludeServers</span><span class="p">(</span><span class="n">Transaction</span><span class="o">*</span> <span class="n">tr</span><span class="p">,</span> <span class="n">std</span><span class="o">::</span><span class="n">vector</span><span class="o">&lt;</span><span class="n">AddressExclusion</span><span class="o">&gt;</span> <span class="n">servers</span><span class="p">,</span> <span class="kt">bool</span> <span class="n">failed</span><span class="p">)</span> <span class="p">{</span>
+    <span class="n">tr</span><span class="o">-&gt;</span><span class="n">setOption</span><span class="p">(</span><span class="n">FDBTransactionOptions</span><span class="o">::</span><span class="n">ACCESS_SYSTEM_KEYS</span><span class="p">);</span>
+    <span class="n">tr</span><span class="o">-&gt;</span><span class="n">setOption</span><span class="p">(</span><span class="n">FDBTransactionOptions</span><span class="o">::</span><span class="n">PRIORITY_SYSTEM_IMMEDIATE</span><span class="p">);</span>
+    <span class="n">tr</span><span class="o">-&gt;</span><span class="n">setOption</span><span class="p">(</span><span class="n">FDBTransactionOptions</span><span class="o">::</span><span class="n">LOCK_AWARE</span><span class="p">);</span>
+    <span class="n">tr</span><span class="o">-&gt;</span><span class="n">setOption</span><span class="p">(</span><span class="n">FDBTransactionOptions</span><span class="o">::</span><span class="n">USE_PROVISIONAL_PROXIES</span><span class="p">);</span>
+    <span class="n">std</span><span class="o">::</span><span class="n">vector</span><span class="o">&lt;</span><span class="n">AddressExclusion</span><span class="o">&gt;</span> <span class="n">excl</span> <span class="o">=</span> <span class="n">wait</span><span class="p">(</span><span class="n">failed</span> <span class="o">?</span> <span class="n">getExcludedFailedServerList</span><span class="p">(</span><span class="n">tr</span><span class="p">)</span> <span class="o">:</span> <span class="n">getExcludedServerList</span><span class="p">(</span><span class="n">tr</span><span class="p">));</span>
+    <span class="n">std</span><span class="o">::</span><span class="n">set</span><span class="o">&lt;</span><span class="n">AddressExclusion</span><span class="o">&gt;</span> <span class="n">exclusions</span><span class="p">(</span><span class="n">excl</span><span class="p">.</span><span class="n">begin</span><span class="p">(),</span> <span class="n">excl</span><span class="p">.</span><span class="n">end</span><span class="p">());</span>
+    <span class="kt">bool</span> <span class="n">containNewExclusion</span> <span class="o">=</span> <span class="nb">false</span><span class="p">;</span>
+    <span class="k">for</span> <span class="p">(</span><span class="k">auto</span><span class="o">&amp;</span> <span class="n">s</span> <span class="o">:</span> <span class="n">servers</span><span class="p">)</span> <span class="p">{</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">exclusions</span><span class="p">.</span><span class="n">find</span><span class="p">(</span><span class="n">s</span><span class="p">)</span> <span class="o">!=</span> <span class="n">exclusions</span><span class="p">.</span><span class="n">end</span><span class="p">())</span> <span class="p">{</span>
+            <span class="k">continue</span><span class="p">;</span>
+        <span class="p">}</span>
+        <span class="n">containNewExclusion</span> <span class="o">=</span> <span class="nb">true</span><span class="p">;</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">failed</span><span class="p">)</span> <span class="p">{</span>
+            <span class="n">tr</span><span class="o">-&gt;</span><span class="n">set</span><span class="p">(</span><span class="n">encodeFailedServersKey</span><span class="p">(</span><span class="n">s</span><span class="p">),</span> <span class="n">StringRef</span><span class="p">());</span>
+        <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+            <span class="n">tr</span><span class="o">-&gt;</span><span class="n">set</span><span class="p">(</span><span class="n">encodeExcludedServersKey</span><span class="p">(</span><span class="n">s</span><span class="p">),</span> <span class="n">StringRef</span><span class="p">());</span>
+        <span class="p">}</span>
+    <span class="p">}</span>
+
+    <span class="k">if</span> <span class="p">(</span><span class="n">containNewExclusion</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">std</span><span class="o">::</span><span class="n">string</span> <span class="n">excludeVersionKey</span> <span class="o">=</span> <span class="n">deterministicRandom</span><span class="p">()</span><span class="o">-&gt;</span><span class="n">randomUniqueID</span><span class="p">().</span><span class="n">toString</span><span class="p">();</span>
+        <span class="k">auto</span> <span class="n">serversVersionKey</span> <span class="o">=</span> <span class="n">failed</span> <span class="o">?</span> <span class="n">failedServersVersionKey</span> <span class="o">:</span> <span class="n">excludedServersVersionKey</span><span class="p">;</span>
+        <span class="n">tr</span><span class="o">-&gt;</span><span class="n">addReadConflictRange</span><span class="p">(</span><span class="n">singleKeyRange</span><span class="p">(</span><span class="n">serversVersionKey</span><span class="p">));</span> <span class="c1">// To conflict with parallel includeServers</span>
+        <span class="n">tr</span><span class="o">-&gt;</span><span class="n">set</span><span class="p">(</span><span class="n">serversVersionKey</span><span class="p">,</span> <span class="n">excludeVersionKey</span><span class="p">);</span>
+    <span class="p">}</span>
+</code></pre></div></div>
+
+<p>最终写入到 key <code class="language-plaintext highlighter-rouge">\xff\xff/conf/excluded/$server</code> 中。</p>
+
+<h2 id="标记-worker-为-excluded">标记 worker 为 excluded</h2>
+
+<p>fdbserver 的 cluster controller 在执行完 cluster recovery 后，会启动一个 actor <code class="language-plaintext highlighter-rouge">configurationMonitor</code> （<code class="language-plaintext highlighter-rouge">fdbserver/ClusterRecovery.actor.cpp</code>）监听 <code class="language-plaintext highlighter-rouge">excludedServersVersionKey</code> 的变化。一旦发生变化，则重新读取 <code class="language-plaintext highlighter-rouge">DatabaseConfiguration</code>，当其与内存中记录的 configuration 不同时触发 registration：</p>
+
+<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">RangeResult</span> <span class="n">results</span> <span class="o">=</span> <span class="n">wait</span><span class="p">(</span><span class="n">tr</span><span class="p">.</span><span class="n">getRange</span><span class="p">(</span><span class="n">configKeys</span><span class="p">,</span> <span class="n">CLIENT_KNOBS</span><span class="o">-&gt;</span><span class="n">TOO_MANY</span><span class="p">));</span>
+<span class="n">ASSERT</span><span class="p">(</span><span class="o">!</span><span class="n">results</span><span class="p">.</span><span class="n">more</span> <span class="o">&amp;&amp;</span> <span class="n">results</span><span class="p">.</span><span class="n">size</span><span class="p">()</span> <span class="o">&lt;</span> <span class="n">CLIENT_KNOBS</span><span class="o">-&gt;</span><span class="n">TOO_MANY</span><span class="p">);</span>
+
+<span class="n">DatabaseConfiguration</span> <span class="n">conf</span><span class="p">;</span>
+<span class="n">conf</span><span class="p">.</span><span class="n">fromKeyValues</span><span class="p">((</span><span class="n">VectorRef</span><span class="o">&lt;</span><span class="n">KeyValueRef</span><span class="o">&gt;</span><span class="p">)</span><span class="n">results</span><span class="p">);</span>
+<span class="n">TraceEvent</span><span class="p">(</span><span class="s">"ConfigurationMonitor"</span><span class="p">,</span> <span class="n">self</span><span class="o">-&gt;</span><span class="n">dbgid</span><span class="p">)</span>
+    <span class="p">.</span><span class="n">detail</span><span class="p">(</span><span class="n">getRecoveryEventName</span><span class="p">(</span><span class="n">ClusterRecoveryEventType</span><span class="o">::</span><span class="n">CLUSTER_RECOVERY_STATE_EVENT_NAME</span><span class="p">).</span><span class="n">c_str</span><span class="p">(),</span>
+            <span class="n">self</span><span class="o">-&gt;</span><span class="n">recoveryState</span><span class="p">);</span>
+<span class="k">if</span> <span class="p">(</span><span class="n">conf</span> <span class="o">!=</span> <span class="n">self</span><span class="o">-&gt;</span><span class="n">configuration</span><span class="p">)</span> <span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">self</span><span class="o">-&gt;</span><span class="n">recoveryState</span> <span class="o">!=</span> <span class="n">RecoveryState</span><span class="o">::</span><span class="n">ALL_LOGS_RECRUITED</span> <span class="o">&amp;&amp;</span>
+        <span class="n">self</span><span class="o">-&gt;</span><span class="n">recoveryState</span> <span class="o">!=</span> <span class="n">RecoveryState</span><span class="o">::</span><span class="n">FULLY_RECOVERED</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">self</span><span class="o">-&gt;</span><span class="n">controllerData</span><span class="o">-&gt;</span><span class="n">shouldCommitSuicide</span> <span class="o">=</span> <span class="nb">true</span><span class="p">;</span>
+        <span class="k">throw</span> <span class="n">restart_cluster_controller</span><span class="p">();</span>
+    <span class="p">}</span>
+
+    <span class="n">self</span><span class="o">-&gt;</span><span class="n">configuration</span> <span class="o">=</span> <span class="n">conf</span><span class="p">;</span>
+    <span class="n">self</span><span class="o">-&gt;</span><span class="n">registrationTrigger</span><span class="p">.</span><span class="n">trigger</span><span class="p">();</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>另一个 actor <code class="language-plaintext highlighter-rouge">updateRegistration</code> 会等待 <code class="language-plaintext highlighter-rouge">registrationTrigger</code>，最后调用 <code class="language-plaintext highlighter-rouge">sendMasterRegistration</code> ；后者将新的 configuration 通过 <code class="language-plaintext highlighter-rouge">RegisterMasterRequest</code> 发送给 cluster controller。</p>
+
+<p>Cluster controller 的 <code class="language-plaintext highlighter-rouge">clusterRegisterMaster</code>(<code class="language-plaintext highlighter-rouge">fdbserver/ClusterController.actor.cpp</code>) 负责处理 <code class="language-plaintext highlighter-rouge">RegisterMasterRequest</code> 。对于每一个 worker，cluster controller 会将其信息记录在 <code class="language-plaintext highlighter-rouge">WorkerInfo</code> 中；<code class="language-plaintext highlighter-rouge">WorkerInfo</code> 的成员 <code class="language-plaintext highlighter-rouge">priorityInfo</code> 中记录了 <code class="language-plaintext highlighter-rouge">isExcluded</code> 字段，表示是否通过 <code class="language-plaintext highlighter-rouge">exclude</code> 命令标记。<code class="language-plaintext highlighter-rouge">clusterRegisterMaster</code> 会遍历 <code class="language-plaintext highlighter-rouge">RegisterMasterRequest</code> 中携带的 configuration，并将 excluded 的 server 标记为 <code class="language-plaintext highlighter-rouge">isExcluded = true</code>:</p>
+
+<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">db</span><span class="o">-&gt;</span><span class="n">fullyRecoveredConfig</span> <span class="o">=</span> <span class="n">req</span><span class="p">.</span><span class="n">configuration</span><span class="p">.</span><span class="n">get</span><span class="p">();</span>
+<span class="k">for</span> <span class="p">(</span><span class="k">auto</span><span class="o">&amp;</span> <span class="n">it</span> <span class="o">:</span> <span class="n">self</span><span class="o">-&gt;</span><span class="n">id_worker</span><span class="p">)</span> <span class="p">{</span>
+    <span class="kt">bool</span> <span class="n">isExcludedFromConfig</span> <span class="o">=</span>
+        <span class="n">db</span><span class="o">-&gt;</span><span class="n">fullyRecoveredConfig</span><span class="p">.</span><span class="n">isExcludedServer</span><span class="p">(</span><span class="n">it</span><span class="p">.</span><span class="n">second</span><span class="p">.</span><span class="n">details</span><span class="p">.</span><span class="n">interf</span><span class="p">.</span><span class="n">addresses</span><span class="p">());</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">it</span><span class="p">.</span><span class="n">second</span><span class="p">.</span><span class="n">priorityInfo</span><span class="p">.</span><span class="n">isExcluded</span> <span class="o">!=</span> <span class="n">isExcludedFromConfig</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">it</span><span class="p">.</span><span class="n">second</span><span class="p">.</span><span class="n">priorityInfo</span><span class="p">.</span><span class="n">isExcluded</span> <span class="o">=</span> <span class="n">isExcludedFromConfig</span><span class="p">;</span>
+        <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">it</span><span class="p">.</span><span class="n">second</span><span class="p">.</span><span class="n">reply</span><span class="p">.</span><span class="n">isSet</span><span class="p">())</span> <span class="p">{</span>
+            <span class="n">it</span><span class="p">.</span><span class="n">second</span><span class="p">.</span><span class="n">reply</span><span class="p">.</span><span class="n">send</span><span class="p">(</span>
+                <span class="n">RegisterWorkerReply</span><span class="p">(</span><span class="n">it</span><span class="p">.</span><span class="n">second</span><span class="p">.</span><span class="n">details</span><span class="p">.</span><span class="n">processClass</span><span class="p">,</span> <span class="n">it</span><span class="p">.</span><span class="n">second</span><span class="p">.</span><span class="n">priorityInfo</span><span class="p">));</span>
+        <span class="p">}</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<h2 id="执行-recruit">执行 recruit</h2>
+
+<p>除了标记 <code class="language-plaintext highlighter-rouge">isExcluded</code> 外，<code class="language-plaintext highlighter-rouge">clusterRegisterMaster</code> 还会启动一个 actor <code class="language-plaintext highlighter-rouge">doCheckOutstandingRequests</code>（<code class="language-plaintext highlighter-rouge">fdbserver/ClusterController.actor.cpp</code>）；后者会调用 <code class="language-plaintext highlighter-rouge">ClusterControllerData::betterMasterExists</code>：</p>
+
+<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">if</span> <span class="p">(</span><span class="n">self</span><span class="o">-&gt;</span><span class="n">betterMasterExists</span><span class="p">())</span> <span class="p">{</span>
+    <span class="n">self</span><span class="o">-&gt;</span><span class="n">db</span><span class="p">.</span><span class="n">forceMasterFailure</span><span class="p">.</span><span class="n">trigger</span><span class="p">();</span>
+    <span class="n">TraceEvent</span><span class="p">(</span><span class="s">"MasterRegistrationKill"</span><span class="p">,</span> <span class="n">self</span><span class="o">-&gt;</span><span class="n">id</span><span class="p">).</span><span class="n">detail</span><span class="p">(</span><span class="s">"MasterId"</span><span class="p">,</span> <span class="n">self</span><span class="o">-&gt;</span><span class="n">db</span><span class="p">.</span><span class="n">serverInfo</span><span class="o">-&gt;</span><span class="n">get</span><span class="p">().</span><span class="n">master</span><span class="p">.</span><span class="n">id</span><span class="p">());</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p><code class="language-plaintext highlighter-rouge">betterMasterExists</code> 会依次遍历 TLog, commit proxy, GRV proxy, resolver，任何一个 process 所在的 worker 的 <code class="language-plaintext highlighter-rouge">isExcluded</code> 为 <code class="language-plaintext highlighter-rouge">true</code>，都会返回 <code class="language-plaintext highlighter-rouge">true</code>：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>if (commitProxyWorker-&gt;second.priorityInfo.isExcluded) {
+    TraceEvent("BetterMasterExists", id)
+        .detail("Reason", "CommitProxyExcluded")
+        .detail("ProcessID", it.processId);
+    return true;
+}
+</code></pre></div></div>
+
+<p>最后 <code class="language-plaintext highlighter-rouge">forceMasterFailure</code> 会唤醒 <code class="language-plaintext highlighter-rouge">clusterWatchDatabase</code> ，后者做一些当前 epoch 的清理工作后，重新调用：<code class="language-plaintext highlighter-rouge">clusterRecoveryCore</code> 启动新阶段的 transaction system。</p>
+
+<h2 id="storage-会迁移吗">Storage 会迁移吗？</h2>
+
+<p>fdbserver 还有一个 <code class="language-plaintext highlighter-rouge">ExclusionTracker</code>，它负责监听 <code class="language-plaintext highlighter-rouge">excludedServersVersionKey</code>（<code class="language-plaintext highlighter-rouge">fdbserver/include/fdbserver/ExclusionTracker.actor.h</code>)。一旦 excluded servers 发生变化，它会唤醒 ACTOR <code class="language-plaintext highlighter-rouge">trackExcludedServers</code> (<code class="language-plaintext highlighter-rouge">fdbserver/DDTeamCollection.actor.cpp</code>)；后者最终会唤醒 <code class="language-plaintext highlighter-rouge">DDTeamCollectionImpl::storageRecruiter</code>:</p>
+
+<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">ACTOR</span> <span class="k">static</span> <span class="n">Future</span><span class="o">&lt;</span><span class="n">Void</span><span class="o">&gt;</span> <span class="n">trackExcludedServers</span><span class="p">(</span><span class="n">DDTeamCollection</span><span class="o">*</span> <span class="n">self</span><span class="p">)</span> <span class="p">{</span>
+    <span class="n">state</span> <span class="n">ExclusionTracker</span> <span class="n">exclusionTracker</span><span class="p">(</span><span class="n">self</span><span class="o">-&gt;</span><span class="n">dbContext</span><span class="p">());</span>
+    <span class="n">loop</span> <span class="p">{</span>
+        <span class="c1">// wait for new set of excluded servers</span>
+        <span class="n">wait</span><span class="p">(</span><span class="n">exclusionTracker</span><span class="p">.</span><span class="n">changed</span><span class="p">.</span><span class="n">onTrigger</span><span class="p">());</span>
+
+        <span class="k">auto</span> <span class="n">old</span> <span class="o">=</span> <span class="n">self</span><span class="o">-&gt;</span><span class="n">excludedServers</span><span class="p">.</span><span class="n">getKeys</span><span class="p">();</span>
+        <span class="k">for</span> <span class="p">(</span><span class="k">const</span> <span class="k">auto</span><span class="o">&amp;</span> <span class="n">o</span> <span class="o">:</span> <span class="n">old</span><span class="p">)</span> <span class="p">{</span>
+            <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">exclusionTracker</span><span class="p">.</span><span class="n">excluded</span><span class="p">.</span><span class="n">count</span><span class="p">(</span><span class="n">o</span><span class="p">)</span> <span class="o">&amp;&amp;</span> <span class="o">!</span><span class="n">exclusionTracker</span><span class="p">.</span><span class="n">failed</span><span class="p">.</span><span class="n">count</span><span class="p">(</span><span class="n">o</span><span class="p">)</span> <span class="o">&amp;&amp;</span>
+                <span class="o">!</span><span class="p">(</span><span class="n">self</span><span class="o">-&gt;</span><span class="n">excludedServers</span><span class="p">.</span><span class="n">count</span><span class="p">(</span><span class="n">o</span><span class="p">)</span> <span class="o">&amp;&amp;</span>
+                  <span class="n">self</span><span class="o">-&gt;</span><span class="n">excludedServers</span><span class="p">.</span><span class="n">get</span><span class="p">(</span><span class="n">o</span><span class="p">)</span> <span class="o">==</span> <span class="n">DDTeamCollection</span><span class="o">::</span><span class="n">Status</span><span class="o">::</span><span class="n">WIGGLING</span><span class="p">))</span> <span class="p">{</span>
+                <span class="n">self</span><span class="o">-&gt;</span><span class="n">excludedServers</span><span class="p">.</span><span class="n">set</span><span class="p">(</span><span class="n">o</span><span class="p">,</span> <span class="n">DDTeamCollection</span><span class="o">::</span><span class="n">Status</span><span class="o">::</span><span class="n">NONE</span><span class="p">);</span>
+            <span class="p">}</span>
+        <span class="p">}</span>
+        <span class="k">for</span> <span class="p">(</span><span class="k">const</span> <span class="k">auto</span><span class="o">&amp;</span> <span class="n">n</span> <span class="o">:</span> <span class="n">exclusionTracker</span><span class="p">.</span><span class="n">excluded</span><span class="p">)</span> <span class="p">{</span>
+            <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">exclusionTracker</span><span class="p">.</span><span class="n">failed</span><span class="p">.</span><span class="n">count</span><span class="p">(</span><span class="n">n</span><span class="p">))</span> <span class="p">{</span>
+                <span class="n">self</span><span class="o">-&gt;</span><span class="n">excludedServers</span><span class="p">.</span><span class="n">set</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">DDTeamCollection</span><span class="o">::</span><span class="n">Status</span><span class="o">::</span><span class="n">EXCLUDED</span><span class="p">);</span>
+            <span class="p">}</span>
+        <span class="p">}</span>
+
+        <span class="p">...</span>
+
+        <span class="n">self</span><span class="o">-&gt;</span><span class="n">restartRecruiting</span><span class="p">.</span><span class="n">trigger</span><span class="p">();</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p><code class="language-plaintext highlighter-rouge">storageRecruiter</code> 会收集信息并发送 <code class="language-plaintext highlighter-rouge">RecruitStorageRequest</code> 给 cluster controller:</p>
+
+<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">std</span><span class="o">::</span><span class="n">set</span><span class="o">&lt;</span><span class="n">AddressExclusion</span><span class="o">&gt;</span> <span class="n">exclusions</span><span class="p">;</span>
+<span class="k">auto</span> <span class="n">excl</span> <span class="o">=</span> <span class="n">self</span><span class="o">-&gt;</span><span class="n">excludedServers</span><span class="p">.</span><span class="n">getKeys</span><span class="p">();</span>
+<span class="k">for</span> <span class="p">(</span><span class="k">const</span> <span class="k">auto</span><span class="o">&amp;</span> <span class="n">s</span> <span class="o">:</span> <span class="n">excl</span><span class="p">)</span> <span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">self</span><span class="o">-&gt;</span><span class="n">excludedServers</span><span class="p">.</span><span class="n">get</span><span class="p">(</span><span class="n">s</span><span class="p">)</span> <span class="o">!=</span> <span class="n">DDTeamCollection</span><span class="o">::</span><span class="n">Status</span><span class="o">::</span><span class="n">NONE</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">TraceEvent</span><span class="p">(</span><span class="n">SevDebug</span><span class="p">,</span> <span class="s">"DDRecruitExcl2"</span><span class="p">)</span>
+            <span class="p">.</span><span class="n">detail</span><span class="p">(</span><span class="s">"Primary"</span><span class="p">,</span> <span class="n">self</span><span class="o">-&gt;</span><span class="n">primary</span><span class="p">)</span>
+            <span class="p">.</span><span class="n">detail</span><span class="p">(</span><span class="s">"Excluding"</span><span class="p">,</span> <span class="n">s</span><span class="p">.</span><span class="n">toString</span><span class="p">());</span>
+        <span class="n">exclusions</span><span class="p">.</span><span class="n">insert</span><span class="p">(</span><span class="n">s</span><span class="p">);</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+
+<span class="k">for</span> <span class="p">(</span><span class="k">auto</span> <span class="n">it</span> <span class="o">:</span> <span class="n">exclusions</span><span class="p">)</span> <span class="p">{</span>
+    <span class="n">rsr</span><span class="p">.</span><span class="n">excludeAddresses</span><span class="p">.</span><span class="n">push_back</span><span class="p">(</span><span class="n">it</span><span class="p">);</span>
+<span class="p">}</span>
+
+<span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">fCandidateWorker</span><span class="p">.</span><span class="n">isValid</span><span class="p">()</span> <span class="o">||</span> <span class="n">fCandidateWorker</span><span class="p">.</span><span class="n">isReady</span><span class="p">()</span> <span class="o">||</span>
+    <span class="n">rsr</span><span class="p">.</span><span class="n">excludeAddresses</span> <span class="o">!=</span> <span class="n">lastRequest</span><span class="p">.</span><span class="n">excludeAddresses</span> <span class="o">||</span>
+    <span class="n">rsr</span><span class="p">.</span><span class="n">criticalRecruitment</span> <span class="o">!=</span> <span class="n">lastRequest</span><span class="p">.</span><span class="n">criticalRecruitment</span><span class="p">)</span> <span class="p">{</span>
+    <span class="n">lastRequest</span> <span class="o">=</span> <span class="n">rsr</span><span class="p">;</span>
+    <span class="n">fCandidateWorker</span> <span class="o">=</span>
+        <span class="n">brokenPromiseToNever</span><span class="p">(</span><span class="n">recruitStorage</span><span class="o">-&gt;</span><span class="n">get</span><span class="p">().</span><span class="n">getReply</span><span class="p">(</span><span class="n">rsr</span><span class="p">,</span> <span class="n">TaskPriority</span><span class="o">::</span><span class="n">DataDistribution</span><span class="p">));</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>前边设置好的 exclude 会被放到请求的 <code class="language-plaintext highlighter-rouge">excludeAddresses</code> 字段中。cluster controller 会根据请求条件过滤掉不合适的 worker（<code class="language-plaintext highlighter-rouge">fdbserver/include/fdbserver/ClusterController.actor.h</code>:<code class="language-plaintext highlighter-rouge">ClusterControllerData::getStorageWorker</code>）。收到 response 后，<code class="language-plaintext highlighter-rouge">storageRecruiter</code> 会发送 <code class="language-plaintext highlighter-rouge">InitialStorageRequest</code> 给目标进程，完成 recruit 流程。</p>
+
+<p>可以发现，这个过程中并没有判断 storage process 的 failure status，而是直接发送 <code class="language-plaintext highlighter-rouge">RecruitStorageRequest</code>。那么这就意味着不能手动临时 exclude 任何一个 storage，否则都会触发数据迁移。</p>
+
+<h1 id="结论">结论</h1>
+
+<p>通过分析，<code class="language-plaintext highlighter-rouge">exclude</code> 命令的确可以主动触发 recruit 流程，同时如果 process 上有 storage role，它还出触发 recruit storage 流程。</p>
+
+<p>如果我们现在需要取得平滑升级的能力，那么需要以下几个步骤：</p>
+
+<ol>
+  <li>列出所有的 process 的 role，如果目标机器上某个 process 有 transaction system 的 role （非 coordinator，非 storage），那么执行 <code class="language-plaintext highlighter-rouge">exclude $IP:$PORT</code></li>
+  <li>等到 recovery 完成后，执行 <code class="language-plaintext highlighter-rouge">maintenance on $zone-id</code>，表示禁用 storage process 的 failure detector</li>
+  <li>修改配置、重启</li>
+  <li>执行 <code class="language-plaintext highlighter-rouge">maintenance off</code></li>
+  <li>执行 <code class="language-plaintext highlighter-rouge">include $IP:$PORT</code>，允许 transaction system 的 role 调度回该机器</li>
+</ol>]]></content><author><name></name></author><summary type="html"><![CDATA[背景 从FoundationDB 源码阅读：maintenace 模式的作用中可知 FDB 的 maintenance 模式并不会主动触发 recruit 流程，如果待操作的机器上有 transaction system 的进程，那么重启操作将会引起 3~5s 的服务中断，原因是等待直到 failure detectors 判断机器故障后，cluster controller 才会触发 recruit 流程。 我们需要找到一个机制触发 recruit 流程，同时不触发任何数据迁移，使用 exclude 和 maintenance 配合是否能够取得这个目标呢？这就是本文研究的目的。 FDB 的 exclude 命令用于在不影响可用性和容错的情况下，从集群中临时或永久地移除机器、进程。详情参考：removing-machines-from-a-cluster。 代码分析 设置 exclude 选项 在 fdbcli 中输入 exclude ip:port no_wait 后，会进入 excludeCommandActor(fdbcli/ExcludeCommand.actor.cpp)；完成一系列检查后和准备后，进入 excludeSeversAndLocalities： ACTOR Future&lt;bool&gt; excludeServersAndLocalities(Reference&lt;IDatabase&gt; db, std::vector&lt;AddressExclusion&gt; servers, std::unordered_set&lt;std::string&gt; localities, bool failed, bool force) { state Reference&lt;ITransaction&gt; tr = db-&gt;createTransaction(); loop { tr-&gt;setOption(FDBTransactionOptions::SPECIAL_KEY_SPACE_ENABLE_WRITES); try { if (force &amp;&amp; servers.size()) tr-&gt;set(failed ? fdb_cli::failedForceOptionSpecialKey : fdb_cli::excludedForceOptionSpecialKey, ValueRef()); for (const auto&amp; s : servers) { Key addr = failed ? fdb_cli::failedServersSpecialKeyRange.begin.withSuffix(s.toString()) : fdb_cli::excludedServersSpecialKeyRange.begin.withSuffix(s.toString()); tr-&gt;set(addr, ValueRef()); } if (force &amp;&amp; localities.size()) tr-&gt;set(failed ? fdb_cli::failedLocalityForceOptionSpecialKey : fdb_cli::excludedLocalityForceOptionSpecialKey, ValueRef()); for (const auto&amp; l : localities) { Key addr = failed ? fdb_cli::failedLocalitySpecialKeyRange.begin.withSuffix(l) : fdb_cli::excludedLocalitySpecialKeyRange.begin.withSuffix(l); tr-&gt;set(addr, ValueRef()); } wait(safeThreadFutureToFuture(tr-&gt;commit())) severs 最终保存到 excludedServersSpecialKeyRange 中。注意到 transaction 设置了 SPECIAL_KEY_SPACE_ENABLE_WRITES，在提交给 fdbserver 前，fdbclient 会对 key value 做一些修饰。exclude 对应的 impl 为 ExcludeServersRangeImpl(fdbclient/SpecialKeySpace.actor.cpp)，完成检查后，进入 excludeServers(fdbclient/ManagementAPI.actor.cpp): ACTOR Future&lt;Void&gt; excludeServers(Transaction* tr, std::vector&lt;AddressExclusion&gt; servers, bool failed) { tr-&gt;setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS); tr-&gt;setOption(FDBTransactionOptions::PRIORITY_SYSTEM_IMMEDIATE); tr-&gt;setOption(FDBTransactionOptions::LOCK_AWARE); tr-&gt;setOption(FDBTransactionOptions::USE_PROVISIONAL_PROXIES); std::vector&lt;AddressExclusion&gt; excl = wait(failed ? getExcludedFailedServerList(tr) : getExcludedServerList(tr)); std::set&lt;AddressExclusion&gt; exclusions(excl.begin(), excl.end()); bool containNewExclusion = false; for (auto&amp; s : servers) { if (exclusions.find(s) != exclusions.end()) { continue; } containNewExclusion = true; if (failed) { tr-&gt;set(encodeFailedServersKey(s), StringRef()); } else { tr-&gt;set(encodeExcludedServersKey(s), StringRef()); } } if (containNewExclusion) { std::string excludeVersionKey = deterministicRandom()-&gt;randomUniqueID().toString(); auto serversVersionKey = failed ? failedServersVersionKey : excludedServersVersionKey; tr-&gt;addReadConflictRange(singleKeyRange(serversVersionKey)); // To conflict with parallel includeServers tr-&gt;set(serversVersionKey, excludeVersionKey); } 最终写入到 key \xff\xff/conf/excluded/$server 中。 标记 worker 为 excluded fdbserver 的 cluster controller 在执行完 cluster recovery 后，会启动一个 actor configurationMonitor （fdbserver/ClusterRecovery.actor.cpp）监听 excludedServersVersionKey 的变化。一旦发生变化，则重新读取 DatabaseConfiguration，当其与内存中记录的 configuration 不同时触发 registration： RangeResult results = wait(tr.getRange(configKeys, CLIENT_KNOBS-&gt;TOO_MANY)); ASSERT(!results.more &amp;&amp; results.size() &lt; CLIENT_KNOBS-&gt;TOO_MANY); DatabaseConfiguration conf; conf.fromKeyValues((VectorRef&lt;KeyValueRef&gt;)results); TraceEvent("ConfigurationMonitor", self-&gt;dbgid) .detail(getRecoveryEventName(ClusterRecoveryEventType::CLUSTER_RECOVERY_STATE_EVENT_NAME).c_str(), self-&gt;recoveryState); if (conf != self-&gt;configuration) { if (self-&gt;recoveryState != RecoveryState::ALL_LOGS_RECRUITED &amp;&amp; self-&gt;recoveryState != RecoveryState::FULLY_RECOVERED) { self-&gt;controllerData-&gt;shouldCommitSuicide = true; throw restart_cluster_controller(); } self-&gt;configuration = conf; self-&gt;registrationTrigger.trigger(); } 另一个 actor updateRegistration 会等待 registrationTrigger，最后调用 sendMasterRegistration ；后者将新的 configuration 通过 RegisterMasterRequest 发送给 cluster controller。 Cluster controller 的 clusterRegisterMaster(fdbserver/ClusterController.actor.cpp) 负责处理 RegisterMasterRequest 。对于每一个 worker，cluster controller 会将其信息记录在 WorkerInfo 中；WorkerInfo 的成员 priorityInfo 中记录了 isExcluded 字段，表示是否通过 exclude 命令标记。clusterRegisterMaster 会遍历 RegisterMasterRequest 中携带的 configuration，并将 excluded 的 server 标记为 isExcluded = true: db-&gt;fullyRecoveredConfig = req.configuration.get(); for (auto&amp; it : self-&gt;id_worker) { bool isExcludedFromConfig = db-&gt;fullyRecoveredConfig.isExcludedServer(it.second.details.interf.addresses()); if (it.second.priorityInfo.isExcluded != isExcludedFromConfig) { it.second.priorityInfo.isExcluded = isExcludedFromConfig; if (!it.second.reply.isSet()) { it.second.reply.send( RegisterWorkerReply(it.second.details.processClass, it.second.priorityInfo)); } } } 执行 recruit 除了标记 isExcluded 外，clusterRegisterMaster 还会启动一个 actor doCheckOutstandingRequests（fdbserver/ClusterController.actor.cpp）；后者会调用 ClusterControllerData::betterMasterExists： if (self-&gt;betterMasterExists()) { self-&gt;db.forceMasterFailure.trigger(); TraceEvent("MasterRegistrationKill", self-&gt;id).detail("MasterId", self-&gt;db.serverInfo-&gt;get().master.id()); } betterMasterExists 会依次遍历 TLog, commit proxy, GRV proxy, resolver，任何一个 process 所在的 worker 的 isExcluded 为 true，都会返回 true： if (commitProxyWorker-&gt;second.priorityInfo.isExcluded) { TraceEvent("BetterMasterExists", id) .detail("Reason", "CommitProxyExcluded") .detail("ProcessID", it.processId); return true; } 最后 forceMasterFailure 会唤醒 clusterWatchDatabase ，后者做一些当前 epoch 的清理工作后，重新调用：clusterRecoveryCore 启动新阶段的 transaction system。 Storage 会迁移吗？ fdbserver 还有一个 ExclusionTracker，它负责监听 excludedServersVersionKey（fdbserver/include/fdbserver/ExclusionTracker.actor.h)。一旦 excluded servers 发生变化，它会唤醒 ACTOR trackExcludedServers (fdbserver/DDTeamCollection.actor.cpp)；后者最终会唤醒 DDTeamCollectionImpl::storageRecruiter: ACTOR static Future&lt;Void&gt; trackExcludedServers(DDTeamCollection* self) { state ExclusionTracker exclusionTracker(self-&gt;dbContext()); loop { // wait for new set of excluded servers wait(exclusionTracker.changed.onTrigger()); auto old = self-&gt;excludedServers.getKeys(); for (const auto&amp; o : old) { if (!exclusionTracker.excluded.count(o) &amp;&amp; !exclusionTracker.failed.count(o) &amp;&amp; !(self-&gt;excludedServers.count(o) &amp;&amp; self-&gt;excludedServers.get(o) == DDTeamCollection::Status::WIGGLING)) { self-&gt;excludedServers.set(o, DDTeamCollection::Status::NONE); } } for (const auto&amp; n : exclusionTracker.excluded) { if (!exclusionTracker.failed.count(n)) { self-&gt;excludedServers.set(n, DDTeamCollection::Status::EXCLUDED); } } ... self-&gt;restartRecruiting.trigger(); } } storageRecruiter 会收集信息并发送 RecruitStorageRequest 给 cluster controller: std::set&lt;AddressExclusion&gt; exclusions; auto excl = self-&gt;excludedServers.getKeys(); for (const auto&amp; s : excl) { if (self-&gt;excludedServers.get(s) != DDTeamCollection::Status::NONE) { TraceEvent(SevDebug, "DDRecruitExcl2") .detail("Primary", self-&gt;primary) .detail("Excluding", s.toString()); exclusions.insert(s); } } for (auto it : exclusions) { rsr.excludeAddresses.push_back(it); } if (!fCandidateWorker.isValid() || fCandidateWorker.isReady() || rsr.excludeAddresses != lastRequest.excludeAddresses || rsr.criticalRecruitment != lastRequest.criticalRecruitment) { lastRequest = rsr; fCandidateWorker = brokenPromiseToNever(recruitStorage-&gt;get().getReply(rsr, TaskPriority::DataDistribution)); } 前边设置好的 exclude 会被放到请求的 excludeAddresses 字段中。cluster controller 会根据请求条件过滤掉不合适的 worker（fdbserver/include/fdbserver/ClusterController.actor.h:ClusterControllerData::getStorageWorker）。收到 response 后，storageRecruiter 会发送 InitialStorageRequest 给目标进程，完成 recruit 流程。 可以发现，这个过程中并没有判断 storage process 的 failure status，而是直接发送 RecruitStorageRequest。那么这就意味着不能手动临时 exclude 任何一个 storage，否则都会触发数据迁移。 结论 通过分析，exclude 命令的确可以主动触发 recruit 流程，同时如果 process 上有 storage role，它还出触发 recruit storage 流程。 如果我们现在需要取得平滑升级的能力，那么需要以下几个步骤： 列出所有的 process 的 role，如果目标机器上某个 process 有 transaction system 的 role （非 coordinator，非 storage），那么执行 exclude $IP:$PORT 等到 recovery 完成后，执行 maintenance on $zone-id，表示禁用 storage process 的 failure detector 修改配置、重启 执行 maintenance off 执行 include $IP:$PORT，允许 transaction system 的 role 调度回该机器]]></summary></entry><entry><title type="html">grpc 的一些踩坑经验</title><link href="/2023/07/09/grpc-and-vip.html" rel="alternate" type="text/html" title="grpc 的一些踩坑经验" /><published>2023-07-09T00:00:00+08:00</published><updated>2023-07-09T00:00:00+08:00</updated><id>/2023/07/09/grpc-and-vip</id><content type="html" xml:base="/2023/07/09/grpc-and-vip.html"><![CDATA[<p>最近的工作需要对某个系统的 RPC 部分做优化。这个系统有多个组件，分别使用不同语言编写，此次我需要优化的组件分别由 java 和 c++ 编写，java 使用 grpc 访问使用 brpc 的 c++ 服务。</p>
 
 <p>该系统在编写之初为了省事，将 c++ 服务放在四层负载均衡 VIP 之后，以利用其提供的负载均衡、探活熔断的能力。这种图省事的操作为系统留下了几个隐患：</p>
 <ol>
@@ -1783,669 +2229,4 @@ The command ID is equals <code class="language-plaintext highlighter-rouge">make
 
 <h3 id="txn">Txn</h3>
 
-<p>TODO</p>]]></content><author><name></name></author><summary type="html"><![CDATA[CockroachDB KV Entrance In pkg/cmd/cockroach.go: func main() { cli.Main() } In pkg/cli/cli.go: cockroachCmd.AddCommand( startCmd, initCmd, ) According cockroach db manual: cockroach start --join xxx cockroach init --host &lt;address of any node&gt; So the setup logic lie in startCmd, and cluster bootstrap login lie in initCmd. In pkg/cli/start.go, command startCmd will invoke runStartJoin -&gt; runStart: func runStart() { var s *server.Server s, err = server.NewServer() s.PreStart() s.InitialStart() s.AcceptClients() } Start Node In Server::NewServer: clock = hlc.NewClock() engines = cfg.CreateEngines() eng, err = storage.NewPebble(ctx, pebbleConfig) rpcContext = rpc.NewContext() grpcServer = newGRPCServer(rpcContext) g = gossip.New() distSender = kvcoord.NewDistSender() // `pkg/kv/kvclient/kvcoord/dist_sender.go` tcsFactory = kvcoord.NewTxnCoordSenderFactory(txnCoordSenderFactoryCfg, distSender) // `pkg/kv/kvclient/kvcoord/txn_coord_sender_factory.go` db = kv.NewDBWithContext(clock, dbCtx) raftTransport = kvserver.NewRaftTransport() stores = kvserver.NewStores() tsDB = ts.NewDB(db, tcsFactory) node = NewNode() roachpb.RegisterInternalServer(grpcServer.Server, node) kvserver.RegisterPerReplicaServer(grpcServer.Server, node.perReplicaServer) kvserver.RegisterPerStoreServer(grpcServer.Server, node.perReplicaServer) ctpb.RegisterSideTransportServer(grpcServer.Server, ctReceiver) sqlServer, err := newSQLServer(ctx, sqlServerArgs) In Server::PreStart: s.rpcContext.SetLocalInternalServer(s.node) s.http.start() s.externalStorageBuilder.init() inspectEngineState = inspectEngines() // go through engines and constructs an initState. In `pkg/server/init.go` storeIdent, err = kvserver.ReadStoreIdent() serverpb.RegisterInitServer(s.grpc.Server, initServer) // support `service Init` in `pkg/server/serverpb/init.proto`. startListenRPCAndSQL() // only start rpc server, but initialize sql server. configureGRPCGateway() startRPCServer() onInitServerReady() state = initServer.ServeAndWait() // bootstrapAddresses := cfg.FilterGossipBootstrapAddress() in `newInitServerConfig`. from func (cfg *Config) parseGossipBootstrapAddresses s.startJoinLoop() // continuously retries connecting to nodes specified in the join list, in order to determine what the cluster ID, node ID is. s.attemptJoinIn() send JoinNodeRequest s.initializeFirstStoreAfterJoin() kvserver.InitEngines() state := &lt;- s.joinCh s.rpcContext.NodeID.set(state.NodeID) runAsyncTask("connect-gossip") // only log s.gossip.Start() g.setAddresses(addresses) g.server.start() g.bootstrap() g.manage() s.node.start() // In `pkg/server/node.go` s.replicationReporter.start() s.sqlServer.preStart() There are some comments in PreStart: // "bootstrapping problem": nodes need to connect to Gossip fairly // early, but what drives Gossip connectivity are the first range // replicas in the kv store. This in turn suggests opening the Gossip // server early. However, naively doing so also serves most other // services prematurely, which exposes a large surface of potentially // underinitialized services. This is avoided with some additional // complexity that can be summarized as follows: // // - before blocking trying to connect to the Gossip network, we already open // the admin UI (so that its diagnostics are available) // - we also allow our Gossip and our connection health Ping service // - everything else returns Unavailable errors (which are retryable) // - once the node has started, unlock all RPCs. In Node::start: n.storeCfg.Gossip.NodeID.set(n.nodeDescriptor.NodeID) n.storeCfg.Gossip.SetNodeDescriptor.set(n.nodeDescriptor) for _, e := state.initializedEngines { s := kvserver.NewStore(e) // In `pkg/kv/kvserver/store.go` s.Start() // Iterate over all range descriptor, ignoring uncommitted version. IterateRangeDescriptorFromDisk() replica = newReplica() // In `pkg/kv/kvserver/replica_init.go` newUnloadReplica() loadRaftMuLockedReplicaMuLocked() lastIndex = r.stateLoader.LoadLastIndex() s.addReplicaInternal(replica) s.cfg.Transport.Listen(s.StoreID(), s) s.processRaft() s.storeRebalancer.Start() // rebalance is finished in store? s.startGossip() s.startLeaseRenewer() n.addStore(s) } n.storeCfg.Gossip.SetStorage(n.stores) n.startGossiping(n.stopper) // loops on a periodic ticker to gossip node-related information. s.GossipStore() // GossipStore broadcasts the store on the gossip network. In Server::AcceptClients: s.sqlServer.startServerSQL() Start Store In pkg/kv/kvserver/store.go: Store::Start ReadStoreIdent idalloc.NewAllocator intentResolver.New makeRaftLogTruncator txnrecovery.NewManager // Iterate over all range descriptor, ignoring uncommitted version. IterateRangeDescriptorFromDisk() replica = newReplica() // In `pkg/kv/kvserver/replica_init.go` newUnloadReplica() loadRaftMuLockedReplicaMuLocked() lastIndex = r.stateLoader.LoadLastIndex() s.addReplicaInternal(replica) s.cfg.Transport.Listen(s.StoreID(), s) s.cfg.NodeLiveness.RegisterCallback(s.nodeIsLiveCallback) s.processRaft() s.storeRebalancer.Start() // rebalance is finished in store? s.startGossip() s.startLeaseRenewer() s.startRangefeedUpdator() NewStoreRebalancer() ID Allocator In pkg/kv/kvserver/store.go: // Create ID allocators. idAlloc, err := idalloc.NewAllocator(idalloc.Options{ AmbientCtx: s.cfg.AmbientCtx, Key: keys.RangeIDGenerator, Incrementer: idalloc.DBIncrementer(s.db), BlockSize: rangeIDAllocCount, Stopper: s.stopper, } The Allocator will allocate rangeIDAllocCount count from DB with key keys.RangeIDGenerator. Bootstrap In pkg/cli/init.go: func runInit() { c, err := NewInitClient() c.Bootstrap(BootstrapRequest {}) } In pkg/server/init.go: func (s *initServer) Bootstrap() { state, err = s.tryBootstrap() } func (s *initServer) tryBootstrap() { return bootstrapCluster() } In pkg/server/node.go, function bootstrapCluster: kvserver.InitEngine(engine, storeIdent) kvserver.WriteInitialClusterData() // writes initialization data to an engine. It creates system ranges (filling in meta1 and meta2) and the default zone config. Question: When the first range was creatiation? In pkg/kv/kvserver/store_init.go: desc := &amp;roachpb.RangeDescriptor{ RangeID: rangeID, StartKey: startKey, EndKey: endKey, NextReplicaID: 2, } const firstReplicaID = 1 replicas := []roachpb.ReplicaDescriptor{ { NodeID: FirstNodeID, StoreID: FirstStoreID, ReplicaID: firstReplicaID, }, } desc.SetReplicas(roachpb.MakeReplicaSet(replicas)) How to determine whether a cluster has been bootstrapped when restarting? In Server::PreStart, inspectEngineState := InspectEngines() In InitServer::ServeAndWait, s.inspectEngineState.bootstrapt() When to start serving ranges? See Node::start for details. What happen if no any join list was specified? Report errors Join Node In pkg/server/node.go, function Join(): compareBinaryVersion() nodeID, err := allocateNodeID() val, err := kv.IncrementValRetryable(ctx, db, keys.NodeIDGenerator, 1) db.Inc(ctx, key, inc) // pkg/kv/db.go var db *DB storeID, err := allocateStoreIDs() val, err := kv.IncrementValRetryable(ctx, db, keys.StoreIDGenerator, count) // create liveness record, so what is the purpose of liveness record? n.storeCfg.NodeLiveness.CreateLivenessRecord() Questions: What happen if receives Join requests? Only check version and allocate NodeID. If a node has already bootstrapted, it won’t allocate new node id again (See PreStart() for details). What should to do for adding new table? TODO Where is the master role for cockroachdb? TODO Add Replica on Store In pkg/kv/kvserver/store_create_replica.go, function getOrCreateReplica: getOrCreateReplica -&gt; tryGetOrCreateReplica // 1. current replica is removed, go back around // 2. drop messages from replica we known to be too old // 3. the current replica need to be removed, remove it and go back around // 4. drop staled msg silently // 5. check tombstone newUnloadedReplica Store::addReplicaToRangeMapLocked StateLoader::SetRangeReplicaID Replica::loadRaftMuLockedReplicaMuLocked Questions: When the new replica are created? See above. Raft Initialize Node::start Store::processRaft raftScheduler::Start async raftScheduler::worker async raftScheduler::Wait async raftTickLoop async coalescedHeartbeatsLoop run worker, in pkg/kv/kvserver/store_raft.go and pkg/kv/kvserver/replica_raft.go. raftScheduler::worker raftScheduler::processTick Replica::tick(IsLiveMap) // `pkg/kv/kvserver/replica_raft.go` RawNode::ReportUnreachable(Replica.unreachablesMu.remotes) Replica::maybeQuiesceRaftMuLockedReplicaMuLocked Replica::maybeTransferRaftLeadershipToLeaseholderLocked RawNode::Tick raftScheduler::processReady // See below apply parts. raftScheduler::processRequestQueue Store::withReplicaForRequest Store::getOrCreateReplica Store::processRaftRequestWithReplica Replica::stepRaftGroup Replica::withRaftGroup // if internal raft group is null, try create it RawNode::Step propose Node::Batch -&gt; Node::batchInternal Stores::Send(BatchRequest) -&gt; Stores::GetStore -&gt; Store::Send // `pkg/kv/kvserver/store_send.go` Clock::Update // Advances the local node's clock to a high water mark from all nodes with which it has interacted. Store::GetReplica -&gt; Replica::Send -&gt; Replica::sendWithoutRangeID // `pkg/kv/kvserver/replica_send.go` Replica::maybeInitializeRaftGroup // If the internal Raft group is not initialized, create it and wake the leader. Replica::withRaftGroupLocked Replica::maybeCampaignOnWakeLocked -&gt; Replica::campaignLocked Store::enqueueRaftUpdateCheck -&gt; raftScheduler::EnqueueRaftReady Replica::executeBatchWithConcurrencyRetries Replica::executeReadOnlyBatch Replica::executeReadWriteBatch // `pkg/kv/kvserver/replica_write.go` Replica::applyTimestampCache Replica::evalAndPropose // `pkg/kv/kvserver/replica_raft.go` Replica::requestToProposal // `pkg/kv/kvserver/replica_proposal.go` Replica::evaluateProposal -&gt; Replica::evaluateWriteBatch Replica::evaluate1PC Replica::evaluateWriteBatchWithServersideRefreshes -&gt; Replica::evaluateWriteBatchWrapper -&gt; evaluateBatch // `pkg/kv/kvserver/replica_evaluate.go` optimizePuts evaluateCommand batcheval.LookupCommand Command::EvalRO Command::EvalRW Put // `pkg/kv/kvserver/batcheval/cmd_put.go` storage.MVCCPut storage.MVCCConditionalPut // `pkg/storage/mvcc.go` Replica::propose -&gt; propBuf::Insert Replica::executeAdminBatch // No interaction with the spanlatch manager or the timestamp cache. Replica::maybeAddRangeInfoToResponse // if ranges are mismatched, try to suggest a more suitable range from this store. apply Store::processReady -&gt; Replica::HandleRaftReady -&gt; Replica::HandleRaftReadyRaftMuLocked -&gt; Replica::withRaftGroupLocked propBuf::FlushLockedWithRaftGroup // Question: will `propBuf::Insert` signal ready queue? RawNode::Ready Replica::applySnapshot Task::AckCommittedEntriesBeforeApplication // `pkg/kv/kvserver/apply/task.go` Replica::sendRaftMessagesRaftMuLocked // `pkg/kv/kvserver/replica_raft.go` Replica::append // `pkg/kv/kvserver/replica_raftstorage.go` storage.Writer::MVCCPut // Writer is `Store::Engine().NewUnindexedBatch` Batch::Commit Replica::sendRaftMessagesRaftMuLocked // `pkg/kv/kvserver/replica_raft.go` Task::ApplyCommittedEntries -&gt; Task::ApplyOneBatch Batch::Stage(Command) -&gt; replicaAppBatch::Stage // `pkg/kv/kvserver/replica_application_state_machine.go` Replica::ShouldApplyCommand Batch::ApplyToStateMachine // StateMachine::NewBatch AppliedCommand::AckOutcomeAndFinish Replica::withRaftGroupLocked RawNode::Advance(Ready) Replica::campaignLocked // if shouldCampaignAfterConfChange: if raft leader got moved, campaign the first remaning voter. Store::enqueueRaftUpdateCheck // if RawNode::HasReady transport API defines in pkg/kv/kvserver/storage_services.proto: service MultiRaft { rpc RaftMessageBatch (stream cockroach.kv.kvserver.kvserverpb.RaftMessageRequestBatch) returns (stream cockroach.kv.kvserver.kvserverpb.RaftMessageResponse) {} rpc RaftSnapshot (stream cockroach.kv.kvserver.kvserverpb.SnapshotRequest) returns (stream cockroach.kv.kvserver.kvserverpb.SnapshotResponse) {} rpc DelegateRaftSnapshot(stream cockroach.kv.kvserver.kvserverpb.DelegateSnapshotRequest) returns (stream cockroach.kv.kvserver.kvserverpb.DelegateSnapshotResponse) {} } The implementation lie in pkg/kv/kvserver/raft_transport.go, function is RaftTransport::RaftMessageBatch: RaftMessageBatch stream.Recv RaftTransport::handleRaftRequest RaftTransport::getHandler(StoreID) // read handler of corresponding store ID Store::HandleRaftRequest // `pkg/kv/kvserver/store_raft.go`: dispatches a raft message to the appropriate Replica. Store::HandleRaftUncoalescedRequest raftReceiveQueues::LoadOrCreate(RangeID) raftReceiveQueue::Append raftScheduler::EnqueueRaftRequest stream.Send(newRaftMessageResponse) Questions: Where the conditional_put is executed? In file pkg/kv/kvserver/batcheval/cmd_conditional_put.go, it is invoked by executeCommand. What is the purpose of CommandID? The command ID is equals makeIDKey() -&gt; rand.Int64(). // CmdIDKey is a Raft command id. This will be logged unredacted - keep it random. Rebalance In pkg/kv/kvserver/store.go, function Store::Start: NewStoreRebalancer StoreRebalancer::Start // rebalanceStore iterates through the top K hottest ranges on this store and // for each such range, performs a lease transfer if it determines that that // will improve QPS balance across the stores in the cluster. After it runs out // of leases to transfer away (i.e. because it couldn't find better // replacements), it considers these ranges for replica rebalancing. async StoreRebalancer::rebalanceStore StoreRebalancer::chooseLeaseToTransfer replicateQueue::transferLease StoreRebalancer::chooseRangeToRebalance DB::AdminRelocateRange DB DB is a database handle to a single cockroach cluster. A DB is safe for concurrent use by multiple goroutines. kv.DB interfaces: Get GetForUpdate GetProto GetProtoTs Put PutInline CPut Inc Scan AdminSplit AdminMerge AdminRelocateRange AdminChangeReplicas etc … Put code path: DB::Put -&gt; DB::Run(Batch) -&gt; DB::SendAndFail -&gt; DB::send -&gt; DB::sendUsingSender CrossRangeTxnWrapperSender::Send -&gt; DistSender::Send DistSender::initAndVerifyBatch keys.Range DistSender::divideAndSendParallelCommit DistSender::divideAndSendBatchToRanges DistSender::divideAndSendBatchToRanges RangeIterator::Seek DistSender::sendPartialBatch DistSender::sendToReplicas DistSender::transportFactory Transport::SendNext Error Retry TODO Range Cache TODO Txn TODO]]></summary></entry><entry><title type="html">Shrinking Logs by Safely Discarding Commands</title><link href="/2022/03/31/Shrinking-Logs-by-Safely-Discarding-Commands.html" rel="alternate" type="text/html" title="Shrinking Logs by Safely Discarding Commands" /><published>2022-03-31T00:00:00+08:00</published><updated>2022-03-31T00:00:00+08:00</updated><id>/2022/03/31/Shrinking-Logs-by-Safely-Discarding-Commands</id><content type="html" xml:base="/2022/03/31/Shrinking-Logs-by-Safely-Discarding-Commands.html"><![CDATA[<h2 id="log-based-protocols">Log based protocols</h2>
-
-<p><img src="/uploads/images/2022/shrinking-log-by-discarding-records-1.png" alt="Figure 1: log based protocols" /></p>
-
-<p>Log 主要用于保证日志持久化、按照固定顺序复制以获得 consistent state。一个标准的 log-based protocol 需要按照一定顺序将 record 追加到 log 中，完成持久化后才响应 client。恢复时，从快照中拿到一个 index，从这个点开始回放日志，最终保证状态与恢复前一致。</p>
-
-<h2 id="主要设计">主要设计</h2>
-
-<p><img src="/uploads/images/2022/shrinking-log-by-discarding-records-2.png" alt="Figure 2: stable" /></p>
-
-<p>记录到日志中的 record 之间可能存在 overwrite，比如两个相邻的 write 操作，都更新了某个 key，那么实际上只有后一个操作需要持久化。着这个思路下，每次获取一批需要持久化的 records，将他们的更新先记录到一个 hash table 上。如果存在 overwrite 的情况，只记录下最后一个 key-value。</p>
-
-<p>通过这种方式，能够减小写入到持久化设备的 record 大小，从而增加了吞吐。</p>
-
-<p>这篇论文实际参考价值不大，里面涉及到的设计思路实际上在工业环境中效果不大。比如在支持 MVCC 的 key value 数据库中，更新之间基本上不存在 overwrite。一些可以 merge 的操作，也大都在写 log 前完成。不过论文的 Introduction 和 Releated Work 倒是可以当作综述阅读。</p>]]></content><author><name></name></author><summary type="html"><![CDATA[Log based protocols Log 主要用于保证日志持久化、按照固定顺序复制以获得 consistent state。一个标准的 log-based protocol 需要按照一定顺序将 record 追加到 log 中，完成持久化后才响应 client。恢复时，从快照中拿到一个 index，从这个点开始回放日志，最终保证状态与恢复前一致。 主要设计 记录到日志中的 record 之间可能存在 overwrite，比如两个相邻的 write 操作，都更新了某个 key，那么实际上只有后一个操作需要持久化。着这个思路下，每次获取一批需要持久化的 records，将他们的更新先记录到一个 hash table 上。如果存在 overwrite 的情况，只记录下最后一个 key-value。 通过这种方式，能够减小写入到持久化设备的 record 大小，从而增加了吞吐。 这篇论文实际参考价值不大，里面涉及到的设计思路实际上在工业环境中效果不大。比如在支持 MVCC 的 key value 数据库中，更新之间基本上不存在 overwrite。一些可以 merge 的操作，也大都在写 log 前完成。不过论文的 Introduction 和 Releated Work 倒是可以当作综述阅读。]]></summary></entry><entry><title type="html">Achieving High Throughput and Elasticity in a Large-than-Memory Store</title><link href="/papers/2022/03/30/Achieving-High-Throughput-and-Elasticity-in-a-Large-than-Memory-Store.html" rel="alternate" type="text/html" title="Achieving High Throughput and Elasticity in a Large-than-Memory Store" /><published>2022-03-30T00:00:00+08:00</published><updated>2022-03-30T00:00:00+08:00</updated><id>/papers/2022/03/30/Achieving-High-Throughput-and-Elasticity-in-a-Large-than-Memory-Store</id><content type="html" xml:base="/papers/2022/03/30/Achieving-High-Throughput-and-Elasticity-in-a-Large-than-Memory-Store.html"><![CDATA[<h2 id="背景">背景</h2>
-
-<p>如果数据都来自同一台机器，那么可以用导入、索引数据达到 100Mops/s 的单机 multi-core key-value stores 处理。而实际上现在有数十亿的数据需要处理，所以数据必须经过网络传输，并通过云的弹性能力创建足够的实例进行服务。为了满足这个需求，Shadowfax 在 FASTER 的基础上，构建了一个具有快速数据迁移能力的高性能分布式 key-value store。</p>
-
-<h2 id="基本设计">基本设计</h2>
-
-<p><img src="/uploads/images/2022/shadowfox-1.png" alt="Figure 1: shadowfox design" /></p>
-
-<h3 id="per-core-per-thread-but-shared-everthing">Per core per thread but Shared Everthing</h3>
-
-<p>Shadowfox 的设计目标是能够充分利用 CPU 资源，提高系统吞吐。减少核间通信、竞争是提高 CPU 资源的关键。</p>
-
-<p>一种可行的方式是 shared nothing，每个 thread 有一个单独的 FASTER 实例，实例间互不影响。这需要路由请求到与之对应的 FASTER 线程上去，仍然不能避免跨线程协调。一个改进的方式是每个 client 和每个 server thread 都建立连接，将路由的工作交给 client 完成。但是这也要求 client 做跨线程协调，同时让连接数量暴涨。</p>
-
-<p>Shadowfox 采用的则是 shared everthing 的方式，每个线程共享一个 FASTER 实例。FASTER 提供了一种延迟通信的机制，使得它在多核下仍能取得非常高的并发。每个 client 和一个指定的 server thread 建立 session，这个 thread 负责处理该 client 的所有请求。</p>
-
-<p>另外一个需要考虑的是网络部分。网络收发包需要消耗大量的 CPU 资源。Shadowfox 通过将网络请求 offload 到智能卡处理，节省出来的 CPU 资源用于提升吞吐。</p>
-
-<p>这样设计的好处是：</p>
-
-<ul>
-  <li>避免竞争。同一个 client 的请求（来自相同 session）由同一个 thread 处理，不需要跨线程协调。</li>
-  <li>充分 batch，提高 pipeline。同一个 session 的请求可以充分 batch，以减少 per-packet 的开销。</li>
-  <li>client 异步提交请求，避免 head-of-line blocking。因为 Shadowfox 随时会发生 reconfiguration，而 session 中的请求是有序的，发生 reconfiguration 时 client 能够知道哪些 request 一定失败。</li>
-</ul>
-
-<h3 id="hash-partition-and-view-number">Hash partition and View number</h3>
-
-<p>Shadowfox 将数据通过 hash range 划分的方式分布到不同的 server 中。每个 server 负责服务一个 hash range。为了识别出 reconfiguration，每个 server 为当前的 hash range 计数（view number），每次 reconfiguration 发生时递增。</p>
-
-<p>view number 需要和 reconfiguration 一起持久化到 meta server 中。</p>
-
-<p>view number 的好处：</p>
-<ul>
-  <li>检查请求范围时只需要比较 view number 即可，不需要依次对比请求。</li>
-  <li>允许进行异步、延迟执行的 record ownership change。</li>
-</ul>
-
-<p>第二项时通过 asynchronous global cut 实现的。所谓 asynchronous global cut，其实只是通过 epoch based protection 异步地更新 view number，并将这个变化通过 session 异步地传播给 client。这个方式非常简单，无需多说，但是要取得论文中提到的保证同一时间没有任何两个 server 服务相同区间，还需要 migration 机制参与。</p>
-
-<blockquote>
-  <p>This cut unambiguously ensures no two servers concurrently serve operations on an overlapping hash range. This approach is free of synchronous coordination, helping maintain high throughput.</p>
-</blockquote>
-
-<h3 id="migration">Migration</h3>
-
-<p>Migration 机制可以看作两阶段提交，首先 source 发送 PrepForTransfer RPC 给 target，通知 target block 所有更大 view number 的请求。等这阶段完成后，source 就提升自己的 view number，并等待所有线程同步变更（一旦线程知道 view number 提升了，就会拒绝 staled request，交由 client 重试）。所有线程的 view number 一致后，就进入下一阶段，source 发送 TransferedOwnership RPC 给 target，这个时候 target 就开始服务请求了。</p>
-
-<p>Shadowfox 的 migration 可以分为两个阶段，正如上文所述，需要先通过提升 view number 完成 record ownership transfer，此后再异步地传输数据给 target。</p>
-
-<p>异步传输期间，尽管 target 已经拿到 ownership，在 source 同步这部分 record 给 target 前，它都不能服务这部分数据。</p>
-
-<blockquote>
-  <p>这中间显然有一个 gap，怎么看都不是异步的。。。</p>
-</blockquote>
-
-<p>当然，Shadowfox 为了减小这个 gap，会在开始 migration 前，对请求做一个 sampling，并将涉及到的 hot records 附带在 TransferedOwnership RPC 中一并发送给 target。这样 target 就能尽快的为 hot records 提供服务。</p>
-
-<p>等到所有 record 都同步完成，migration 就算结束。整个过程可以组成一个状态机，如下图：</p>
-
-<p><img src="/uploads/images/2022/shadowfox-2.png" alt="Figure 2: Migration states" /></p>
-
-<p>一部分 record 可能没有在内存中，在 SSD 里，Shadowfox 可以将这部分 record 写到共享存储上，这样 target 就可以直接读取这部分 record 而不是等 source 复制给它。</p>
-
-<h4 id="fault-tolerance">Fault tolerance</h4>
-
-<p>为了保证容错，source 和 target 在标记 complete 前，需要创建一份 checkpoint，如果之后任何一台机器故障，都可以通过 checkpoint 恢复数据。如果时在迁移过程中发生了故障，则 shadowfox 会取消迁移操作，并将迁移涉及到的 hash range 迁移回 source。</p>
-
-<p>如果某个机器不可用，shadowfox 需要从这条机器撤销其 record 的所有权，这是通过 lease 完成的。</p>
-
-<h2 id="评估">评估</h2>
-
-<p><img src="/uploads/images/2022/shadowfox-3.png" alt="Figure 3: throughput during migrate" /></p>
-
-<p>看起来 migrate 和 scale up 仍然对 throughput 有较大影响。</p>
-
-<p><img src="/uploads/images/2022/shadowfox-4.png" alt="Figure 4: Number of pending operations during scale up" /></p>
-
-<p>同时看起来在迁移过程中，被 block 的请求数量也不少。</p>]]></content><author><name></name></author><category term="papers" /><category term="live-migration," /><category term="shared-everything," /><category term="epoch-based-protection" /><summary type="html"><![CDATA[背景 如果数据都来自同一台机器，那么可以用导入、索引数据达到 100Mops/s 的单机 multi-core key-value stores 处理。而实际上现在有数十亿的数据需要处理，所以数据必须经过网络传输，并通过云的弹性能力创建足够的实例进行服务。为了满足这个需求，Shadowfax 在 FASTER 的基础上，构建了一个具有快速数据迁移能力的高性能分布式 key-value store。 基本设计 Per core per thread but Shared Everthing Shadowfox 的设计目标是能够充分利用 CPU 资源，提高系统吞吐。减少核间通信、竞争是提高 CPU 资源的关键。 一种可行的方式是 shared nothing，每个 thread 有一个单独的 FASTER 实例，实例间互不影响。这需要路由请求到与之对应的 FASTER 线程上去，仍然不能避免跨线程协调。一个改进的方式是每个 client 和每个 server thread 都建立连接，将路由的工作交给 client 完成。但是这也要求 client 做跨线程协调，同时让连接数量暴涨。 Shadowfox 采用的则是 shared everthing 的方式，每个线程共享一个 FASTER 实例。FASTER 提供了一种延迟通信的机制，使得它在多核下仍能取得非常高的并发。每个 client 和一个指定的 server thread 建立 session，这个 thread 负责处理该 client 的所有请求。 另外一个需要考虑的是网络部分。网络收发包需要消耗大量的 CPU 资源。Shadowfox 通过将网络请求 offload 到智能卡处理，节省出来的 CPU 资源用于提升吞吐。 这样设计的好处是： 避免竞争。同一个 client 的请求（来自相同 session）由同一个 thread 处理，不需要跨线程协调。 充分 batch，提高 pipeline。同一个 session 的请求可以充分 batch，以减少 per-packet 的开销。 client 异步提交请求，避免 head-of-line blocking。因为 Shadowfox 随时会发生 reconfiguration，而 session 中的请求是有序的，发生 reconfiguration 时 client 能够知道哪些 request 一定失败。 Hash partition and View number Shadowfox 将数据通过 hash range 划分的方式分布到不同的 server 中。每个 server 负责服务一个 hash range。为了识别出 reconfiguration，每个 server 为当前的 hash range 计数（view number），每次 reconfiguration 发生时递增。 view number 需要和 reconfiguration 一起持久化到 meta server 中。 view number 的好处： 检查请求范围时只需要比较 view number 即可，不需要依次对比请求。 允许进行异步、延迟执行的 record ownership change。 第二项时通过 asynchronous global cut 实现的。所谓 asynchronous global cut，其实只是通过 epoch based protection 异步地更新 view number，并将这个变化通过 session 异步地传播给 client。这个方式非常简单，无需多说，但是要取得论文中提到的保证同一时间没有任何两个 server 服务相同区间，还需要 migration 机制参与。 This cut unambiguously ensures no two servers concurrently serve operations on an overlapping hash range. This approach is free of synchronous coordination, helping maintain high throughput. Migration Migration 机制可以看作两阶段提交，首先 source 发送 PrepForTransfer RPC 给 target，通知 target block 所有更大 view number 的请求。等这阶段完成后，source 就提升自己的 view number，并等待所有线程同步变更（一旦线程知道 view number 提升了，就会拒绝 staled request，交由 client 重试）。所有线程的 view number 一致后，就进入下一阶段，source 发送 TransferedOwnership RPC 给 target，这个时候 target 就开始服务请求了。 Shadowfox 的 migration 可以分为两个阶段，正如上文所述，需要先通过提升 view number 完成 record ownership transfer，此后再异步地传输数据给 target。 异步传输期间，尽管 target 已经拿到 ownership，在 source 同步这部分 record 给 target 前，它都不能服务这部分数据。 这中间显然有一个 gap，怎么看都不是异步的。。。 当然，Shadowfox 为了减小这个 gap，会在开始 migration 前，对请求做一个 sampling，并将涉及到的 hot records 附带在 TransferedOwnership RPC 中一并发送给 target。这样 target 就能尽快的为 hot records 提供服务。 等到所有 record 都同步完成，migration 就算结束。整个过程可以组成一个状态机，如下图： 一部分 record 可能没有在内存中，在 SSD 里，Shadowfox 可以将这部分 record 写到共享存储上，这样 target 就可以直接读取这部分 record 而不是等 source 复制给它。 Fault tolerance 为了保证容错，source 和 target 在标记 complete 前，需要创建一份 checkpoint，如果之后任何一台机器故障，都可以通过 checkpoint 恢复数据。如果时在迁移过程中发生了故障，则 shadowfox 会取消迁移操作，并将迁移涉及到的 hash range 迁移回 source。 如果某个机器不可用，shadowfox 需要从这条机器撤销其 record 的所有权，这是通过 lease 完成的。 评估 看起来 migrate 和 scale up 仍然对 throughput 有较大影响。 同时看起来在迁移过程中，被 block 的请求数量也不少。]]></summary></entry><entry><title type="html">OpLog - a library for scaling update heavy data structures</title><link href="/2022/03/30/OpLog-a-library-for-scaling-update-heavy-data-structures.html" rel="alternate" type="text/html" title="OpLog - a library for scaling update heavy data structures" /><published>2022-03-30T00:00:00+08:00</published><updated>2022-03-30T00:00:00+08:00</updated><id>/2022/03/30/OpLog-a-library-for-scaling-update-heavy-data-structures</id><content type="html" xml:base="/2022/03/30/OpLog-a-library-for-scaling-update-heavy-data-structures.html"><![CDATA[<h2 id="背景">背景</h2>
-
-<p>在 multi-core scaling read-heavy data structure 上已经有了很多有用的技术，比如 Read-copy-update。但是 update-heavy 的数据结构还鲜有通用的方案。显然，对于 update-heavy 的数据结构来说，只要在读之前，将数据准备好就行。OpLog 针对这部分场景，提出了一种通用的 scaling update-heavy data structures 实现方式。</p>
-
-<h2 id="思路">思路</h2>
-
-<p>OpLog 的解决办法是为每个数据结构准备一个 per-core 的日志，写操作只需要将其追加到日志中即可。在读时，按照时间顺序合并日志并应用到数据结构上。这样的设计方式有几个好处：</p>
-
-<ul>
-  <li>Batching updates：通过延迟执行，很多 update 操作可以直接合并，计数操作，原来的 N 次 +1 操作可以合并为一次 +N</li>
-  <li>Absorbing updates: 比如先执行 put，之后 delete，那么无需执行任何操作</li>
-</ul>
-
-<p>OpLog 作为一种通用的设计思路，还需要考虑到尽管某个实现需要解决 update-heavy 的问题，但是只有少数 update-heavy 的实例才会通过 OpLog 收益，多数情况下 per-core 的日志对这部分实例是一个负担。OpLog 只对最近使用过的对象设置 log，如果一个对象长期未更新，那么 OpLog 可以回收这部分空间。</p>
-
-<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">struct</span> <span class="nc">Counter</span> <span class="o">:</span> <span class="k">public</span> <span class="n">Object</span><span class="o">&lt;</span><span class="n">CounterLog</span><span class="o">&gt;</span> <span class="p">{</span>
-    <span class="k">struct</span> <span class="nc">IncOp</span> <span class="o">:</span> <span class="k">public</span> <span class="n">Op</span> <span class="p">{</span>
-        <span class="kt">void</span> <span class="n">exec</span><span class="p">(</span><span class="kt">uint64_t</span><span class="o">*</span> <span class="n">v</span><span class="p">)</span> <span class="p">{</span> <span class="o">*</span><span class="n">v</span> <span class="o">=</span> <span class="o">*</span><span class="n">v</span> <span class="o">+</span> <span class="mi">1</span><span class="p">;</span> <span class="p">}</span>
-    <span class="p">}</span>
-    <span class="k">struct</span> <span class="nc">DecOp</span> <span class="o">:</span> <span class="k">public</span> <span class="n">Op</span> <span class="p">{</span>
-        <span class="kt">void</span> <span class="n">exec</span><span class="p">(</span><span class="kt">uint64_t</span><span class="o">*</span> <span class="n">v</span><span class="p">)</span> <span class="p">{</span> <span class="o">*</span><span class="n">v</span> <span class="o">=</span> <span class="o">*</span><span class="n">v</span> <span class="o">-</span> <span class="mi">1</span><span class="p">;</span> <span class="p">}</span>
-    <span class="p">}</span>
-
-    <span class="kt">void</span> <span class="n">inc</span><span class="p">()</span> <span class="p">{</span> <span class="n">log</span><span class="p">(</span><span class="n">IncOp</span><span class="p">());</span> <span class="p">}</span>
-    <span class="kt">void</span> <span class="n">dec</span><span class="p">()</span> <span class="p">{</span> <span class="n">log</span><span class="p">(</span><span class="n">DecOp</span><span class="p">());</span> <span class="p">}</span>
-
-    <span class="kt">uint64_t</span> <span class="n">read</span><span class="p">()</span> <span class="p">{</span>
-        <span class="n">synchronize</span><span class="p">();</span>
-        <span class="kt">uint64_t</span> <span class="n">r</span> <span class="o">=</span> <span class="n">val_</span><span class="p">;</span>
-        <span class="n">unlock</span><span class="p">();</span>
-        <span class="k">return</span> <span class="n">r</span><span class="p">;</span>
-    <span class="p">}</span>
-
-    <span class="kt">uint64_t</span> <span class="n">val_</span><span class="p">;</span>
-<span class="p">};</span>
-
-<span class="k">struct</span> <span class="nc">CounterLog</span> <span class="o">:</span> <span class="k">public</span> <span class="n">Log</span> <span class="p">{</span>
-    <span class="kt">void</span> <span class="n">push</span><span class="p">(</span><span class="n">Op</span><span class="o">*</span> <span class="n">op</span><span class="p">)</span> <span class="p">{</span> <span class="n">op</span><span class="o">-&gt;</span><span class="n">exec</span><span class="p">(</span><span class="o">&amp;</span><span class="n">val_</span><span class="p">);</span> <span class="p">}</span>
-
-    <span class="k">static</span> <span class="kt">void</span> <span class="n">apply</span><span class="p">(</span><span class="n">CounterLog</span><span class="o">*</span> <span class="n">qs</span><span class="p">[],</span> <span class="n">Counter</span><span class="o">*</span> <span class="n">c</span><span class="p">)</span> <span class="p">{</span>
-        <span class="n">for_each_log</span><span class="p">(</span><span class="n">CounterLog</span><span class="o">*</span> <span class="n">q</span><span class="p">,</span> <span class="n">qs</span><span class="p">)</span>
-            <span class="n">c</span><span class="o">-&gt;</span><span class="n">val_</span> <span class="o">+=</span> <span class="n">q</span><span class="o">-&gt;</span><span class="n">val_</span><span class="p">;</span>
-    <span class="p">}</span>
-
-    <span class="kt">uint64_t</span> <span class="n">val_</span><span class="p">;</span>
-<span class="p">};</span>
-</code></pre></div></div>
-
-<p>论文中有使用 OpLog 实现 Counter 的例子。<code class="language-plaintext highlighter-rouge">inc</code> 和 <code class="language-plaintext highlighter-rouge">dec</code> 操作生成一个 OP 并记录到 log 中，读操作需要先加锁，合并 log 并应用到 counter 上，再返回 <code class="language-plaintext highlighter-rouge">val_</code>。</p>
-
-<h2 id="评估">评估</h2>
-
-<p>一般会认为 OpLog 的实现对 read 不友好。不过论文也做了一个 benchmark。</p>
-
-<p><img src="/uploads/images/2022/OpLog-update-heavy-data-structures.png" alt="Figure 1 fork-turncate" /></p>
-
-<p>结果显示，OpLog 对一些 read periodically 的数据结构也有性能改善。</p>]]></content><author><name></name></author><summary type="html"><![CDATA[背景 在 multi-core scaling read-heavy data structure 上已经有了很多有用的技术，比如 Read-copy-update。但是 update-heavy 的数据结构还鲜有通用的方案。显然，对于 update-heavy 的数据结构来说，只要在读之前，将数据准备好就行。OpLog 针对这部分场景，提出了一种通用的 scaling update-heavy data structures 实现方式。 思路 OpLog 的解决办法是为每个数据结构准备一个 per-core 的日志，写操作只需要将其追加到日志中即可。在读时，按照时间顺序合并日志并应用到数据结构上。这样的设计方式有几个好处： Batching updates：通过延迟执行，很多 update 操作可以直接合并，计数操作，原来的 N 次 +1 操作可以合并为一次 +N Absorbing updates: 比如先执行 put，之后 delete，那么无需执行任何操作 OpLog 作为一种通用的设计思路，还需要考虑到尽管某个实现需要解决 update-heavy 的问题，但是只有少数 update-heavy 的实例才会通过 OpLog 收益，多数情况下 per-core 的日志对这部分实例是一个负担。OpLog 只对最近使用过的对象设置 log，如果一个对象长期未更新，那么 OpLog 可以回收这部分空间。 struct Counter : public Object&lt;CounterLog&gt; { struct IncOp : public Op { void exec(uint64_t* v) { *v = *v + 1; } } struct DecOp : public Op { void exec(uint64_t* v) { *v = *v - 1; } } void inc() { log(IncOp()); } void dec() { log(DecOp()); } uint64_t read() { synchronize(); uint64_t r = val_; unlock(); return r; } uint64_t val_; }; struct CounterLog : public Log { void push(Op* op) { op-&gt;exec(&amp;val_); } static void apply(CounterLog* qs[], Counter* c) { for_each_log(CounterLog* q, qs) c-&gt;val_ += q-&gt;val_; } uint64_t val_; }; 论文中有使用 OpLog 实现 Counter 的例子。inc 和 dec 操作生成一个 OP 并记录到 log 中，读操作需要先加锁，合并 log 并应用到 counter 上，再返回 val_。 评估 一般会认为 OpLog 的实现对 read 不友好。不过论文也做了一个 benchmark。 结果显示，OpLog 对一些 read periodically 的数据结构也有性能改善。]]></summary></entry><entry><title type="html">HotRing - A Hotspot Aware In-Memory Key-Value Store</title><link href="/papers/2022/03/29/HotRing-A-Hotspot-Aware-In-Memory-Key-Value-Store.html" rel="alternate" type="text/html" title="HotRing - A Hotspot Aware In-Memory Key-Value Store" /><published>2022-03-29T00:00:00+08:00</published><updated>2022-03-29T00:00:00+08:00</updated><id>/papers/2022/03/29/HotRing-A-Hotspot-Aware-In-Memory-Key-Value-Store</id><content type="html" xml:base="/papers/2022/03/29/HotRing-A-Hotspot-Aware-In-Memory-Key-Value-Store.html"><![CDATA[<p>在 Alibaba 的生产环境中，KVS 的请求里有 50%-90% 只访问了 1% 的数据。如下图：</p>
-
-<p><img src="/uploads/images/2022/hotring-1.png" alt="Figure 1: Access ratio of different keys." /></p>
-
-<p>实现 KVS 有很多可用的索引结构，其中 HASH 用得最多。目前的 HASH 算法并没有优化热点访问，也就是说读取一条热点数据，所付出的代价和读取其他数据是一样的。如下图，传统 HASH INDEX 结构的热点数据可能分布在 collision chaining 的任意位置。</p>
-
-<p><img src="/uploads/images/2022/hotring-2.png" alt="Figure 2: The conventional hash index structure" /></p>
-
-<p>理想情况下，查找一条数据的内存访问次数应该和它的冷热层度负相关。</p>
-
-<p><img src="/uploads/images/2022/hotring-3.png" alt="Figure 3: Expected memory accesses for an index lookup" /></p>
-
-<p>想要达到理想的情况，需要解决两个问题：</p>
-<ol>
-  <li>检测并适应 hotspot shift</li>
-  <li>concurrent access</li>
-</ol>
-
-<h2 id="hotring">HotRing</h2>
-
-<p>论文的做法是：针对问题 1，将传统哈希表中的 collision chain 替换成 ordered-ring。如果热点发生迁移，那么直接将 bucket header 指向新的热点 item 即可。针对问题 2，采用 lock-free 设计。</p>
-
-<p><img src="/uploads/images/2022/hotring-4.png" alt="Figure 4: The index structure of HotRing" /></p>
-
-<p>ordered ring 的结构如上图所示，整个 ring 首尾相连，一旦发现热点迁移，只需要将 bucket 的 header 更新到新热点 item 即可。这样做的好处是热点迁移时无需重新给 ring 上数据排序。</p>
-
-<p>查找时从 header 开始，遍历整个 ring ；同时 Ring 上的数据会按照 <code class="language-plaintext highlighter-rouge">&lt;tag, key&gt;</code> 的顺序插入到合适的位置。这样做的目的是：</p>
-<ul>
-  <li>tag 主要用来避免对 key 的比较</li>
-  <li>顺序则是用于查询时判断 ring 是否结束，否则查找时可能会受到并发更新操作的影响，无法判断是否已经遍历完整个 ring。</li>
-</ul>
-
-<p><img src="/uploads/images/2022/hotring-5.png" alt="Figure 5: Lookup Termination" /></p>
-
-<p>此外，排序还有另一个好处，根据 termination 条件，平均查找次数约为传统 collision chain 实现方式的一半。</p>
-
-<h2 id="hotspot-shift-identification">Hotspot Shift Identification</h2>
-
-<p>由于 hash 的 strongly uniformed distribution，可以认为热点数据也分布在各个 bucket 中，热点迁移识别的工作主要在 bucket 内部。</p>
-
-<p>论文提出了两种识别方式：</p>
-<ol>
-  <li>random movement</li>
-  <li>statistical sampling</li>
-</ol>
-
-<p>第一种方式是每隔 R 个请求，如果第 R 个请求是 hot access，则不做任何改变；如果第 R 个请求是 cold access ，那么这个请求对应的 item 会成为新的 hot item。</p>
-
-<p>这种方式是一个简单的概率实现，其缺点也非常明显：参数 R 的大小显著影响热点识别效果；如果数据访问频率分布是均匀的，或者 collision ring 中有多个热点，那么 head pointer 可能会频繁在这些热点中跳变；</p>
-
-<p>另一种方式则是在 item 里记录下访问次数，根据次数选择出合适的 item 来作为新的 hot item。</p>
-
-<blockquote>
-  <p>猜想：是否可以使用 thread-local 级别的数据采样算法，来得到更为精确的数据，同时也避免了不必要的 CAS 操作？</p>
-</blockquote>
-
-<p><img src="/uploads/images/2022/hotring-6.png" alt="Figure 6: Index Format" /></p>
-
-<p>如上图所示，每个 head pointer 的前 16bits 和 item pointer 其中的 14 bits 用于存储采样信息。其中 Active 表示在这条 collision ring 上开启采样，它主要是为了进行优化：为了确保采样不对正常读写造成影响，默认情况下 Active 为 false；每 R 个请求进行一次判断，如果仍然是 hot access，则认为目前的 hot item 仍然是准确的；否则才设置 Active 为 true。一旦 Active 被设置，后续请求需要同时使用 CAS 更新 Total Counter 和 Item 的 Counter。</p>
-
-<p>采样完成后，最后一个访问的线程负责计算 collision ring 上每个 item 的访问频率，并调整 hot item。（先清除 Active 的标记）</p>
-
-<h3 id="write-intensive-hotspot-with-rcu">Write-Intensive Hotspot with RCU</h3>
-
-<p>HotRing 上的 key 是通过 read-copy-update 操作进行的。更改一个 key 时，需要遍历整个 collision ring ，找到待更新的 key 的前项，并更改其指针到新 item 上。所以更新操作的 Counter 应该需要记录到 hot item 的前一项中，这样算法就会选择前一项作为 hot item，因更新操作所需要的访问次数也因此降低。</p>
-
-<p><img src="/uploads/images/2022/hotring-7.png" alt="Figure 7: Update a Hot Item A with RCU makes item F hot" /></p>
-
-<h2 id="concurrent">Concurrent</h2>
-
-<ul>
-  <li>read: 读操作从 head pointer 开始遍历 HotRing，直到碰到终止条件</li>
-  <li>insert: 找到合适位置，更新前一项的 Next Item Address 即可</li>
-</ul>
-
-<p>update 和 deletion 会复杂一些。对于 update，如果 value 在 8 字节内，可以直接通过 CAS 进行 in-place 更新。否则，需要使用两阶段提交的策略来避免异常。</p>
-
-<p><img src="/uploads/images/2022/hotring-8.png" alt="Figure 8: Concurrent issues" /></p>
-
-<p>如果 read-copy-update 和其他更新操作同时执行，就会上图所示的异常。以 RCU Update &amp; Insert 为例，由于 update B 和 insert C 同时进行，C 负责更新 B 的 Next Item Address，而此时 B’ 更新了 A 的 Next Item Address，最终 C 丢失，无法被访问。</p>
-
-<p>解决方式是在 update\delete 某个 item 时，先标记上 Occupied bit，这样其他尝试更新该 Next Item Address 的请求会失败并进行重试，所以后续对这个 Item 进行的操作就是安全的。</p>
-
-<h3 id="head-pointer-movement">Head Pointer Movement</h3>
-
-<p>head pointer 同样也会受到并发操作的影响，主要有两种情况：</p>
-<ol>
-  <li>热点迁移导致的 head pointer 更新</li>
-  <li>其他 update 和 deletion 操作</li>
-</ol>
-
-<p>对于 case 1，head pointer 在迁移前，需要设置新 hot item 为 Occupied 保证这个过程中该节点不会被 update 或 delete。</p>
-
-<p>对于 update head pointer 指向的 item，只需要在替换时设置上新 item 的 Occupied 即可；对于 delete head pointer 指向的 item，还需要设置 head pointer 指向的新 item 的 Occupied。</p>
-
-<h2 id="lock-free-rehash">Lock free Rehash</h2>
-
-<p>传统的 Hash Table 使用 load factor 来出发 rehash，这个过程显然没有考虑到 hotspot 的影响。HotRing 使用 access overhead 来出发 rehash。</p>
-
-<p>由于 HotRing 是有序的，rehash 时只需要从中间某个位置断开，生成两个新的 HotRing 即可。这个阶段主要分为三步：</p>
-
-<p><img src="/uploads/images/2022/hotring-9.png" alt="Figure 9: Rehash" /></p>
-
-<h2 id="评估">评估</h2>
-
-<p>略</p>]]></content><author><name></name></author><category term="papers" /><category term="concurrent" /><summary type="html"><![CDATA[在 Alibaba 的生产环境中，KVS 的请求里有 50%-90% 只访问了 1% 的数据。如下图： 实现 KVS 有很多可用的索引结构，其中 HASH 用得最多。目前的 HASH 算法并没有优化热点访问，也就是说读取一条热点数据，所付出的代价和读取其他数据是一样的。如下图，传统 HASH INDEX 结构的热点数据可能分布在 collision chaining 的任意位置。 理想情况下，查找一条数据的内存访问次数应该和它的冷热层度负相关。 想要达到理想的情况，需要解决两个问题： 检测并适应 hotspot shift concurrent access HotRing 论文的做法是：针对问题 1，将传统哈希表中的 collision chain 替换成 ordered-ring。如果热点发生迁移，那么直接将 bucket header 指向新的热点 item 即可。针对问题 2，采用 lock-free 设计。 ordered ring 的结构如上图所示，整个 ring 首尾相连，一旦发现热点迁移，只需要将 bucket 的 header 更新到新热点 item 即可。这样做的好处是热点迁移时无需重新给 ring 上数据排序。 查找时从 header 开始，遍历整个 ring ；同时 Ring 上的数据会按照 &lt;tag, key&gt; 的顺序插入到合适的位置。这样做的目的是： tag 主要用来避免对 key 的比较 顺序则是用于查询时判断 ring 是否结束，否则查找时可能会受到并发更新操作的影响，无法判断是否已经遍历完整个 ring。 此外，排序还有另一个好处，根据 termination 条件，平均查找次数约为传统 collision chain 实现方式的一半。 Hotspot Shift Identification 由于 hash 的 strongly uniformed distribution，可以认为热点数据也分布在各个 bucket 中，热点迁移识别的工作主要在 bucket 内部。 论文提出了两种识别方式： random movement statistical sampling 第一种方式是每隔 R 个请求，如果第 R 个请求是 hot access，则不做任何改变；如果第 R 个请求是 cold access ，那么这个请求对应的 item 会成为新的 hot item。 这种方式是一个简单的概率实现，其缺点也非常明显：参数 R 的大小显著影响热点识别效果；如果数据访问频率分布是均匀的，或者 collision ring 中有多个热点，那么 head pointer 可能会频繁在这些热点中跳变； 另一种方式则是在 item 里记录下访问次数，根据次数选择出合适的 item 来作为新的 hot item。 猜想：是否可以使用 thread-local 级别的数据采样算法，来得到更为精确的数据，同时也避免了不必要的 CAS 操作？ 如上图所示，每个 head pointer 的前 16bits 和 item pointer 其中的 14 bits 用于存储采样信息。其中 Active 表示在这条 collision ring 上开启采样，它主要是为了进行优化：为了确保采样不对正常读写造成影响，默认情况下 Active 为 false；每 R 个请求进行一次判断，如果仍然是 hot access，则认为目前的 hot item 仍然是准确的；否则才设置 Active 为 true。一旦 Active 被设置，后续请求需要同时使用 CAS 更新 Total Counter 和 Item 的 Counter。 采样完成后，最后一个访问的线程负责计算 collision ring 上每个 item 的访问频率，并调整 hot item。（先清除 Active 的标记） Write-Intensive Hotspot with RCU HotRing 上的 key 是通过 read-copy-update 操作进行的。更改一个 key 时，需要遍历整个 collision ring ，找到待更新的 key 的前项，并更改其指针到新 item 上。所以更新操作的 Counter 应该需要记录到 hot item 的前一项中，这样算法就会选择前一项作为 hot item，因更新操作所需要的访问次数也因此降低。 Concurrent read: 读操作从 head pointer 开始遍历 HotRing，直到碰到终止条件 insert: 找到合适位置，更新前一项的 Next Item Address 即可 update 和 deletion 会复杂一些。对于 update，如果 value 在 8 字节内，可以直接通过 CAS 进行 in-place 更新。否则，需要使用两阶段提交的策略来避免异常。 如果 read-copy-update 和其他更新操作同时执行，就会上图所示的异常。以 RCU Update &amp; Insert 为例，由于 update B 和 insert C 同时进行，C 负责更新 B 的 Next Item Address，而此时 B’ 更新了 A 的 Next Item Address，最终 C 丢失，无法被访问。 解决方式是在 update\delete 某个 item 时，先标记上 Occupied bit，这样其他尝试更新该 Next Item Address 的请求会失败并进行重试，所以后续对这个 Item 进行的操作就是安全的。 Head Pointer Movement head pointer 同样也会受到并发操作的影响，主要有两种情况： 热点迁移导致的 head pointer 更新 其他 update 和 deletion 操作 对于 case 1，head pointer 在迁移前，需要设置新 hot item 为 Occupied 保证这个过程中该节点不会被 update 或 delete。 对于 update head pointer 指向的 item，只需要在替换时设置上新 item 的 Occupied 即可；对于 delete head pointer 指向的 item，还需要设置 head pointer 指向的新 item 的 Occupied。 Lock free Rehash 传统的 Hash Table 使用 load factor 来出发 rehash，这个过程显然没有考虑到 hotspot 的影响。HotRing 使用 access overhead 来出发 rehash。 由于 HotRing 是有序的，rehash 时只需要从中间某个位置断开，生成两个新的 HotRing 即可。这个阶段主要分为三步： 评估 略]]></summary></entry><entry><title type="html">探究 Linux 下 TCP 的 RST Packet</title><link href="/network/2019/01/26/Linux-TCP-Rst.html" rel="alternate" type="text/html" title="探究 Linux 下 TCP 的 RST Packet" /><published>2019-01-26T15:13:00+08:00</published><updated>2019-01-26T15:13:00+08:00</updated><id>/network/2019/01/26/Linux-TCP-Rst</id><content type="html" xml:base="/network/2019/01/26/Linux-TCP-Rst.html"><![CDATA[<blockquote>
-  <p>注：<strong>本文结论来自网络，真实性未考究，请批判性阅读，如果谬误，请斧正。</strong>本文所讨论内容，均假设工作环境为 Linux 服务器。</p>
-</blockquote>
-
-<p>作为 TCP 不可或缺的一部分，TCP 包头的 <code class="language-plaintext highlighter-rouge">RST</code> 为 $1$ 时，表示重置，关闭异常链接。发送 RST 包关闭连接时，不必等缓冲区的包都发出去，直接就丢弃缓存区的包发送 <code class="language-plaintext highlighter-rouge">RST</code> 包。而接收端收到 <code class="language-plaintext highlighter-rouge">RST</code> 包后，也不必发送 <code class="language-plaintext highlighter-rouge">ACK</code> 包来确认。TCP 处理程序会在自己认为的异常时刻发送 <code class="language-plaintext highlighter-rouge">RST</code> 包。</p>
-
-<div class="language-shell highlighter-rouge"><div class="highlight"><pre class="highlight"><code>14:59:23.379829 IP localhost.62412 <span class="o">&gt;</span> localhost.9490: Flags <span class="o">[</span>R], <span class="nb">seq </span>4127385762, win 0, length 0
-</code></pre></div></div>
-
-<p><em>通过 tcpdump 观察，<code class="language-plaintext highlighter-rouge">Flags [R]</code> 表示该包携带了 <code class="language-plaintext highlighter-rouge">RST</code> 。</em></p>
-
-<p><code class="language-plaintext highlighter-rouge">RST</code> 主要用在三种场景中，保证 TCP 链接的安全性，三种场景分别是：1、到不存在端口的连接请求；2、异常终止连接；3、检测半打开连接。接下来看看 <code class="language-plaintext highlighter-rouge">RST</code> 的具体表现。</p>
-
-<h1 id="三种错误">三种错误</h1>
-
-<p>内核中的 TCP 协议栈将收到 <code class="language-plaintext highlighter-rouge">RST</code> 的场景分为三种，并抛出了对应的错误。</p>
-
-<h2 id="connection-refused">connection refused</h2>
-
-<p>当内核中的 TCP 协议栈收到了 <code class="language-plaintext highlighter-rouge">SYN</code> 请求，但是该端口上没有处于监听状态，则相应 <code class="language-plaintext highlighter-rouge">RST</code>，此时 client 看到的便是 <code class="language-plaintext highlighter-rouge">connection refused</code>。</p>
-
-<h2 id="broken-pipe">broken pipe</h2>
-
-<blockquote>
-  <p><code class="language-plaintext highlighter-rouge">fd</code> is connected to a pipe or socket whose reading end is closed.  When this happens the writing process will also receive a SIGPIPE signal.(Thus, the write return value is seen only if the program catches, blocks or ignores this signal.)</p>
-</blockquote>
-
-<p>简单的说，如果<strong>已知</strong>远端读通道已经被关闭，而应用程序仍然在调用 <code class="language-plaintext highlighter-rouge">write</code>(2) 尝试向 socket 中写入数据，TCP 协议栈便会抛出 <code class="language-plaintext highlighter-rouge">broken pipe</code>。</p>
-
-<h2 id="connection-reset-by-peer">connection reset by peer</h2>
-
-<blockquote>
-  <p>A network connection was closed for reasons outside the control of the local host, such as by the remote machine rebooting or an unrecoverable protocol violation.</p>
-</blockquote>
-
-<p>如果远端已经 <code class="language-plaintext highlighter-rouge">close</code>(2) 连接了，本地服务仍发送了数据，此时 TCP 协议栈便会抛出 <code class="language-plaintext highlighter-rouge">connection reset by peer</code>。</p>
-
-<h1 id="broken-pipe-和-connection-reset-by-peer">broken pipe 和 connection reset by peer</h1>
-
-<p>无论是 <code class="language-plaintext highlighter-rouge">broken pipe</code> 还是 <code class="language-plaintext highlighter-rouge">connection reset by peer</code>，都是收到 <code class="language-plaintext highlighter-rouge">RST</code> 的表现，二者有何不同呢？</p>
-
-<p>为了进一步研究，这里尝试着构建两个场景，分别重现 <code class="language-plaintext highlighter-rouge">broken pipe</code> 和 <code class="language-plaintext highlighter-rouge">connection reset by peer</code>。</p>
-
-<h2 id="重现-broken-pipe">重现 broken pipe</h2>
-
-<p>首先，在服务中监听端口，每个连接分多次写入数据，然后关闭连接。</p>
-
-<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">int</span> <span class="nf">server</span><span class="p">()</span> <span class="p">{</span>
-    <span class="n">Acceptor</span> <span class="n">acceptor</span> <span class="o">=</span> <span class="n">Socket</span><span class="o">::</span><span class="n">create</span><span class="p">(</span><span class="n">AF_INET</span><span class="p">,</span> <span class="n">SOCK_STREAM</span><span class="p">,</span> <span class="mi">0</span><span class="p">);</span>
-    <span class="n">InetAddress</span> <span class="n">address</span> <span class="o">=</span> <span class="n">InetAddress</span><span class="o">::</span><span class="n">parseV4</span><span class="p">(</span><span class="s">"127.0.0.1"</span><span class="p">,</span> <span class="mi">9490</span><span class="p">);</span>
-    <span class="n">acceptor</span><span class="p">.</span><span class="n">bind</span><span class="p">(</span><span class="n">address</span><span class="p">);</span>
-    <span class="n">acceptor</span><span class="p">.</span><span class="n">listen</span><span class="p">(</span><span class="mi">10</span><span class="p">);</span>
-
-    <span class="k">const</span> <span class="kt">char</span> <span class="o">*</span><span class="n">msg1</span> <span class="o">=</span> <span class="s">"hello"</span><span class="p">,</span> <span class="o">*</span><span class="n">msg2</span> <span class="o">=</span> <span class="s">"world"</span><span class="p">;</span>
-    <span class="k">while</span> <span class="p">(</span><span class="nb">true</span><span class="p">)</span> <span class="p">{</span>
-        <span class="n">Connection</span> <span class="n">conn</span> <span class="o">=</span> <span class="n">acceptor</span><span class="p">.</span><span class="n">accept</span><span class="p">();</span>
-        <span class="n">sleep</span><span class="p">(</span><span class="mi">1</span><span class="p">);</span>                        <span class="c1">// wait client shutdown</span>
-        <span class="n">conn</span><span class="p">.</span><span class="n">write</span><span class="p">(</span><span class="n">msg1</span><span class="p">,</span> <span class="n">strlen</span><span class="p">(</span><span class="n">msg1</span><span class="p">));</span>  <span class="c1">// write success, but RST recieved</span>
-        <span class="n">conn</span><span class="p">.</span><span class="n">write</span><span class="p">(</span><span class="n">msg2</span><span class="p">,</span> <span class="n">strlen</span><span class="p">(</span><span class="n">msg2</span><span class="p">));</span>  <span class="c1">// throw `broken pipe`</span>
-    <span class="p">}</span> <span class="c1">// RAII close conn socket</span>
-<span class="p">}</span> <span class="c1">// RAII close acceptor socket</span>
-</code></pre></div></div>
-
-<p>然后客户端连接到服务端，并立即关闭连接。</p>
-
-<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">int</span> <span class="nf">client</span><span class="p">()</span> <span class="p">{</span>
-    <span class="n">Connector</span> <span class="n">connector</span> <span class="o">=</span> <span class="n">Socket</span><span class="o">::</span><span class="n">create</span><span class="p">(</span><span class="n">AF_INET</span><span class="p">,</span> <span class="n">SOCK_STREAM</span><span class="p">,</span> <span class="mi">0</span><span class="p">);</span>
-    <span class="n">InetAddress</span> <span class="n">address</span> <span class="o">=</span> <span class="n">InetAddress</span><span class="o">::</span><span class="n">parseV4</span><span class="p">(</span><span class="s">"127.0.0.1"</span><span class="p">,</span> <span class="mi">9490</span><span class="p">);</span>
-    <span class="n">connector</span><span class="p">.</span><span class="n">connect</span><span class="p">(</span><span class="n">address</span><span class="p">);</span>
-<span class="p">}</span> <span class="c1">// RAII close connector socket</span>
-</code></pre></div></div>
-
-<p>通过 tcpdump 观察程序运行时请求：</p>
-
-<div class="language-shell highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nv">$ </span><span class="nb">sudo </span>tcpdump <span class="nt">-i</span> lo <span class="s1">'(src host 127.0.0.1) and (port 9490)'</span>  <span class="nt">-B</span> 4096
-14:59:13.376906 IP localhost.62412 <span class="o">&gt;</span> localhost.9490: Flags <span class="o">[</span>S], <span class="nb">seq </span>4127385760, win 43690, options <span class="o">[</span>mss 65495,sackOK,TS val 168040030 ecr 0,nop,wscale 10], length 0
-14:59:13.376919 IP localhost.9490 <span class="o">&gt;</span> localhost.62412: Flags <span class="o">[</span>S.], <span class="nb">seq </span>2306780414, ack 4127385761, win 43690, options <span class="o">[</span>mss 65495,sackOK,TS val 168040030 ecr 168040030,nop,wscale 10], length 0
-14:59:13.376928 IP localhost.62412 <span class="o">&gt;</span> localhost.9490: Flags <span class="o">[</span>.], ack 1, win 43, options <span class="o">[</span>nop,nop,TS val 168040030 ecr 168040030], length 0
-14:59:13.377089 IP localhost.9490 <span class="o">&gt;</span> localhost.62412: Flags <span class="o">[</span>P.], <span class="nb">seq </span>1:2, ack 1, win 43, options <span class="o">[</span>nop,nop,TS val 168040030 ecr 168040030], length 1
-14:59:13.377223 IP localhost.62412 <span class="o">&gt;</span> localhost.9490: Flags <span class="o">[</span>.], ack 2, win 43, options <span class="o">[</span>nop,nop,TS val 168040030 ecr 168040030], length 0
-14:59:14.377352 IP localhost.9490 <span class="o">&gt;</span> localhost.62412: Flags <span class="o">[</span>P.], <span class="nb">seq </span>2:3, ack 1, win 43, options <span class="o">[</span>nop,nop,TS val 168040280 ecr 168040030], length 1
-14:59:14.377439 IP localhost.62412 <span class="o">&gt;</span> localhost.9490: Flags <span class="o">[</span>.], ack 3, win 43, options <span class="o">[</span>nop,nop,TS val 168040280 ecr 168040280], length 0
-// ....
-14:59:22.379462 IP localhost.9490 <span class="o">&gt;</span> localhost.62412: Flags <span class="o">[</span>P.], <span class="nb">seq </span>10:11, ack 1, win 43, options <span class="o">[</span>nop,nop,TS val 168042281 ecr 168042031], length 1
-14:59:22.379489 IP localhost.62412 <span class="o">&gt;</span> localhost.9490: Flags <span class="o">[</span>.], ack 11, win 43, options <span class="o">[</span>nop,nop,TS val 168042281 ecr 168042281], length 0
-14:59:22.379626 IP localhost.62412 <span class="o">&gt;</span> localhost.9490: Flags <span class="o">[</span>F.], <span class="nb">seq </span>1, ack 11, win 43, options <span class="o">[</span>nop,nop,TS val 168042281 ecr 168042281], length 0
-14:59:22.382190 IP localhost.9490 <span class="o">&gt;</span> localhost.62412: Flags <span class="o">[</span>.], ack 2, win 43, options <span class="o">[</span>nop,nop,TS val 168042282 ecr 168042281], length 0
-14:59:23.379808 IP localhost.9490 <span class="o">&gt;</span> localhost.62412: Flags <span class="o">[</span>P.], <span class="nb">seq </span>11:12, ack 2, win 43, options <span class="o">[</span>nop,nop,TS val 168042531 ecr 168042281], length 1
-14:59:23.379829 IP localhost.62412 <span class="o">&gt;</span> localhost.9490: Flags <span class="o">[</span>R], <span class="nb">seq </span>4127385762, win 0, length 0
-</code></pre></div></div>
-
-<p><em>上述 log 为实验过程中，和上面上面的代码略有出入。</em></p>
-
-<p>可以观察到，client <code class="language-plaintext highlighter-rouge">close</code>(2)，发送了 <code class="language-plaintext highlighter-rouge">FIN</code> 给 server，并收到了 <code class="language-plaintext highlighter-rouge">ACK</code>。server 此时再次尝试 <code class="language-plaintext highlighter-rouge">write</code>(2)，便抛出了 <code class="language-plaintext highlighter-rouge">broken pipe</code> 异常。</p>
-
-<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">int</span> <span class="nf">main</span><span class="p">(</span><span class="kt">int</span> <span class="n">argc</span><span class="p">,</span> <span class="kt">char</span><span class="o">**</span> <span class="n">argv</span><span class="p">)</span> <span class="p">{</span>
-    <span class="k">try</span> <span class="p">{</span>
-        <span class="k">return</span> <span class="n">server</span><span class="p">();</span>
-    <span class="p">}</span> <span class="k">catch</span> <span class="p">(</span><span class="n">Exception</span><span class="o">&amp;</span> <span class="n">e</span><span class="p">)</span> <span class="p">{</span>
-        <span class="n">cout</span> <span class="o">&lt;&lt;</span> <span class="n">e</span><span class="p">.</span><span class="n">what</span><span class="p">()</span> <span class="o">&lt;&lt;</span> <span class="n">endl</span><span class="p">;</span>
-        <span class="k">return</span> <span class="o">-</span><span class="mi">1</span><span class="p">;</span>
-    <span class="p">}</span>
-<span class="p">}</span>
-</code></pre></div></div>
-
-<p><em><code class="language-plaintext highlighter-rouge">server</code> 调用方式。</em></p>
-
-<h3 id="sigpipe-与-broken-pipe">SIGPIPE 与 broken pipe</h3>
-
-<p>按照预期，当 socket 抛出 <code class="language-plaintext highlighter-rouge">broken pipe</code> 时，会被最外层 <code class="language-plaintext highlighter-rouge">try</code> 和 <code class="language-plaintext highlighter-rouge">catch</code> 抓住，并输出。实际上运行结果为：</p>
-
-<div class="language-shell highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nv">$ </span>./server
-<span class="nv">$ </span>
-<span class="nv">$ </span><span class="nb">echo</span> <span class="nv">$?</span>
-141
-<span class="nv">$ </span>
-</code></pre></div></div>
-
-<p><em>某次 server 端运行结果，没有任何输出，程序返回值为 $141$。</em></p>
-
-<p>内核中 TCP 栈如果已经接收到 <code class="language-plaintext highlighter-rouge">RST</code>，那么下一次使用 <code class="language-plaintext highlighter-rouge">write</code>(2) 时，除了会返回 <code class="language-plaintext highlighter-rouge">broken pipe</code> 外，还会产生 <code class="language-plaintext highlighter-rouge">SIGPIPE</code>，默认情况下这个信号会终止整个进程，当然你并不想让进程被 <code class="language-plaintext highlighter-rouge">SIGPIPE</code> 信号杀死。对 server 来说，为了不被 <code class="language-plaintext highlighter-rouge">SIGPIPE</code> 信号杀死，那就需要忽略 <code class="language-plaintext highlighter-rouge">SIGPIPE</code> 信号：</p>
-
-<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">signal</span><span class="p">(</span><span class="n">SIGPIPE</span><span class="p">,</span> <span class="n">SIG_IGN</span><span class="p">);</span>
-</code></pre></div></div>
-
-<p>最后，让我们整体分析下 <code class="language-plaintext highlighter-rouge">broken pipe</code> 产生方式：</p>
-
-<ol>
-  <li>client 发送了 <code class="language-plaintext highlighter-rouge">FIN</code> 给 server；</li>
-  <li>server 仍给 client 发送数据，client 回复 <code class="language-plaintext highlighter-rouge">RST</code>；</li>
-  <li>server 收到 <code class="language-plaintext highlighter-rouge">RST</code> 后，再次给 client 发送数据；往一个已经收到 <code class="language-plaintext highlighter-rouge">RST</code> 的 socket 继续写入数据，将引起 <code class="language-plaintext highlighter-rouge">SIGPIPE</code> 信号，<code class="language-plaintext highlighter-rouge">write</code>(2) 返回 <code class="language-plaintext highlighter-rouge">EPIPE</code>。</li>
-</ol>
-
-<h2 id="重现-connection-reset-by-peer">重现 <code class="language-plaintext highlighter-rouge">connection reset by peer</code></h2>
-
-<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">int</span> <span class="nf">server</span><span class="p">()</span> <span class="p">{</span>
-    <span class="n">Acceptor</span> <span class="n">acceptor</span> <span class="o">=</span> <span class="n">Socket</span><span class="o">::</span><span class="n">create</span><span class="p">(</span><span class="n">AF_INET</span><span class="p">,</span> <span class="n">SOCK_STREAM</span><span class="p">,</span> <span class="mi">0</span><span class="p">);</span>
-    <span class="n">InetAddress</span> <span class="n">address</span> <span class="o">=</span> <span class="n">InetAddress</span><span class="o">::</span><span class="n">parseV4</span><span class="p">(</span><span class="s">"127.0.0.1"</span><span class="p">,</span> <span class="mi">9490</span><span class="p">);</span>
-    <span class="n">acceptor</span><span class="p">.</span><span class="n">bind</span><span class="p">(</span><span class="n">address</span><span class="p">);</span>
-    <span class="n">acceptor</span><span class="p">.</span><span class="n">listen</span><span class="p">(</span><span class="mi">10</span><span class="p">);</span>
-
-    <span class="k">while</span> <span class="p">(</span><span class="nb">true</span><span class="p">)</span> <span class="p">{</span>
-        <span class="n">Connection</span> <span class="n">conn</span> <span class="o">=</span> <span class="n">acceptor</span><span class="p">.</span><span class="n">accept</span><span class="p">();</span>
-        <span class="n">sleep</span><span class="p">(</span><span class="mi">10</span><span class="p">);</span>                       <span class="c1">// 给拔网线留下足够的时间</span>
-    <span class="p">}</span> <span class="c1">// RAII close conn socket</span>
-<span class="p">}</span> <span class="c1">// RAII close acceptor socket</span>
-</code></pre></div></div>
-
-<p><em>模拟服务端断线重启。</em></p>
-
-<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">int</span> <span class="nf">client</span><span class="p">()</span> <span class="p">{</span>
-    <span class="n">Connector</span> <span class="n">connector</span> <span class="o">=</span> <span class="n">Socket</span><span class="o">::</span><span class="n">create</span><span class="p">(</span><span class="n">AF_INET</span><span class="p">,</span> <span class="n">SOCK_STREAM</span><span class="p">,</span> <span class="mi">0</span><span class="p">);</span>
-    <span class="n">InetAddress</span> <span class="n">address</span> <span class="o">=</span> <span class="n">InetAddress</span><span class="o">::</span><span class="n">parseV4</span><span class="p">(</span><span class="s">"127.0.0.1"</span><span class="p">,</span> <span class="mi">9490</span><span class="p">);</span>
-    <span class="n">connector</span><span class="p">.</span><span class="n">connect</span><span class="p">(</span><span class="n">address</span><span class="p">);</span>
-    <span class="n">sleep</span><span class="p">(</span><span class="mi">120</span><span class="p">);</span> 
-
-    <span class="k">const</span> <span class="kt">char</span> <span class="o">*</span><span class="n">msg</span> <span class="o">=</span> <span class="s">"hello"</span><span class="p">;</span>
-    <span class="n">connector</span><span class="p">.</span><span class="n">write</span><span class="p">(</span><span class="n">msg</span><span class="p">,</span> <span class="n">strlen</span><span class="p">(</span><span class="n">msg</span><span class="p">));</span>
-<span class="p">}</span> <span class="c1">// RAII close connector socket</span>
-</code></pre></div></div>
-
-<p><em>一段时间后，再给服务器发送请求，此时服务器已经重启。</em></p>
-
-<p>这里构造了这样一个场景，与客户端建立连接后，服务端由于不可抗力，比如断电，未能发送 <code class="language-plaintext highlighter-rouge">FIN</code> 给客户端。当服务器重启后，内核中 TCP 协议栈收到了客户端的数据包，回应 <code class="language-plaintext highlighter-rouge">RST</code>，此时客户端抛出 <code class="language-plaintext highlighter-rouge">connection reset by peer</code>。</p>
-
-<div class="language-shell highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nv">$ </span><span class="nb">sudo </span>tcpdump <span class="nt">-i</span> lo <span class="s1">'(src host 127.0.0.1) and (port 9490)'</span>  <span class="nt">-B</span> 4096
-15:43:12.638464 IP localhost.21316 <span class="o">&gt;</span> localhost.9490: Flags <span class="o">[</span>S], <span class="nb">seq </span>3640034867, win 43690, options <span class="o">[</span>mss 65495,sackOK,TS val 168699846 ecr 0,nop,wscale 10], length 0
-15:43:12.638478 IP localhost.9490 <span class="o">&gt;</span> localhost.21316: Flags <span class="o">[</span>S.], <span class="nb">seq </span>485213568, ack 3640034868, win 43690, options <span class="o">[</span>mss 65495,sackOK,TS val 168699846 ecr 168699846,nop,wscale 10], length 0
-15:43:16.639791 IP localhost.9490 <span class="o">&gt;</span> localhost.21316: Flags <span class="o">[</span>P.], <span class="nb">seq </span>5:6, ack 6, win 43, options <span class="o">[</span>nop,nop,TS val 168700846 ecr 168700596], length 1
-15:43:16.639807 IP localhost.21316 <span class="o">&gt;</span> localhost.9490: Flags <span class="o">[</span>.], ack 6, win 43, options <span class="o">[</span>nop,nop,TS val 168700846 ecr 168700846], length 0
-15:43:17.640127 IP localhost.9490 <span class="o">&gt;</span> localhost.21316: Flags <span class="o">[</span>P.], <span class="nb">seq </span>6:7, ack 6, win 43, options <span class="o">[</span>nop,nop,TS val 168701096 ecr 168700846], length 1
-15:43:17.640137 IP localhost.21316 <span class="o">&gt;</span> localhost.9490: Flags <span class="o">[</span>.], ack 7, win 43, options <span class="o">[</span>nop,nop,TS val 168701096 ecr 168701096], length 0
-15:43:18.170130 IP localhost.9490 <span class="o">&gt;</span> localhost.21316: Flags <span class="o">[</span>R.], <span class="nb">seq </span>7, ack 6, win 43, options <span class="o">[</span>nop,nop,TS val 168701228 ecr 168701096], length 0
-</code></pre></div></div>
-
-<p><em>某次模拟 <code class="language-plaintext highlighter-rouge">connection reset by peer</code>。</em></p>
-
-<hr />
-
-<p>这里从读写两个角度来看 <code class="language-plaintext highlighter-rouge">RST</code>，如果已经 <code class="language-plaintext highlighter-rouge">ACK</code> 远端的 <code class="language-plaintext highlighter-rouge">FIN</code> 包：</p>
-
-<ol>
-  <li><code class="language-plaintext highlighter-rouge">read</code>(2) ：返回 0，表示 eof；</li>
-  <li><code class="language-plaintext highlighter-rouge">write</code>(2) ：远端返回 <code class="language-plaintext highlighter-rouge">RST</code>，抛出 <code class="language-plaintext highlighter-rouge">broken pipe</code>；</li>
-</ol>
-
-<p>如果尚未接收到远端的 <code class="language-plaintext highlighter-rouge">FIN</code> 包，无论读写操作，收到 <code class="language-plaintext highlighter-rouge">RST</code> 时，抛出 <code class="language-plaintext highlighter-rouge">connection reset by peer</code>。</p>
-
-<h2 id="what-more-">what more ？</h2>
-
-<p>除了上述几个场景外，还有其他可能吗？</p>
-
-<h3 id="强行关闭">强行关闭</h3>
-
-<p>正常关闭 TCP 链接时，主动关闭一方会进入 <code class="language-plaintext highlighter-rouge">TIME_WAIT</code> 状态，等待 2MSL（报文段最大生存时间-Maximum Segment Lifetime，根据具体的实现不同，这个值会不同），此时该端口处于不可用状态。</p>
-
-<p>解决 <code class="language-plaintext highlighter-rouge">TIME_WAIT</code> 有三种手段：</p>
-
-<ol>
-  <li>设置 <code class="language-plaintext highlighter-rouge">SO_REUSEADDR</code> 和 <code class="language-plaintext highlighter-rouge">SO_REUSEPORT</code>；</li>
-  <li>修改 <code class="language-plaintext highlighter-rouge">TIME_WAIT</code> 等待时长；</li>
-  <li>设置 <code class="language-plaintext highlighter-rouge">SO_LINGER</code>，强行关闭。</li>
-</ol>
-
-<p>设置 socket 选项 <code class="language-plaintext highlighter-rouge">SO_LINGER</code> 为 <code class="language-plaintext highlighter-rouge">(on, 0)</code> 后，<code class="language-plaintext highlighter-rouge">close</code>(2) 将立即向对端发送 <code class="language-plaintext highlighter-rouge">RST</code>，这种关闭方式称为“强行关闭”。而被动关闭方却不知道对端已经彻底断开，所以紧接着的读写操作，引发 <code class="language-plaintext highlighter-rouge">connection reset by peer</code>。</p>
-
-<h3 id="数据滞留">数据滞留</h3>
-
-<p>socket 关闭时，如果接收窗口仍有数据滞留，那么会直接发送 <code class="language-plaintext highlighter-rouge">RST</code> ，不会进入正常的 <code class="language-plaintext highlighter-rouge">FIN</code> 流程。可以参考：<a href="http://cs.ecs.baylor.edu/~donahoo/practical/CSockets/TCPRST.pdf">TCP RST: Calling close() on a socket with data in the receive queue</a>。</p>
-
-<p>和“强行关闭”一样，数据滞留也会导致被动关闭方引发 <code class="language-plaintext highlighter-rouge">connection reset by peer</code>，这样造成的结果是：如果你的服务各种指标正常，但是有非常多的 <code class="language-plaintext highlighter-rouge">connection reset by peer</code> 警告，可能就是服务上游超时 <code class="language-plaintext highlighter-rouge">close</code>(2) socket，而由于接收窗口仍有数据滞留，发送了 <code class="language-plaintext highlighter-rouge">RST</code>。</p>
-
-<h1 id="references">References</h1>
-
-<p>[1] <a href="/2017/05/26/Linux-TCP-%E7%BC%96%E7%A8%8B/">Linux TCP 编程</a></p>
-
-<p>[2] <a href="http://senlinzhan.github.io/2017/03/02/sigpipe/">网络编程中 SIGPIPE 信号</a></p>
-
-<p>[3] <a href="http://xiangruix.com/2016/01/12/tcp-closed-without-fin/">Linux 下 TCP 连接断开未发送 FIN</a></p>
-
-<p>[4] <a href="http://itindex.net/detail/56132-tcp-time-wait">TCP关闭连接(为什么会能Time_wait,Close_wait?)</a></p>]]></content><author><name></name></author><category term="Network" /><category term="Linux" /><category term="TCP/IP" /><category term="Socket" /><summary type="html"><![CDATA[注：本文结论来自网络，真实性未考究，请批判性阅读，如果谬误，请斧正。本文所讨论内容，均假设工作环境为 Linux 服务器。 作为 TCP 不可或缺的一部分，TCP 包头的 RST 为 $1$ 时，表示重置，关闭异常链接。发送 RST 包关闭连接时，不必等缓冲区的包都发出去，直接就丢弃缓存区的包发送 RST 包。而接收端收到 RST 包后，也不必发送 ACK 包来确认。TCP 处理程序会在自己认为的异常时刻发送 RST 包。 14:59:23.379829 IP localhost.62412 &gt; localhost.9490: Flags [R], seq 4127385762, win 0, length 0 通过 tcpdump 观察，Flags [R] 表示该包携带了 RST 。 RST 主要用在三种场景中，保证 TCP 链接的安全性，三种场景分别是：1、到不存在端口的连接请求；2、异常终止连接；3、检测半打开连接。接下来看看 RST 的具体表现。 三种错误 内核中的 TCP 协议栈将收到 RST 的场景分为三种，并抛出了对应的错误。 connection refused 当内核中的 TCP 协议栈收到了 SYN 请求，但是该端口上没有处于监听状态，则相应 RST，此时 client 看到的便是 connection refused。 broken pipe fd is connected to a pipe or socket whose reading end is closed. When this happens the writing process will also receive a SIGPIPE signal.(Thus, the write return value is seen only if the program catches, blocks or ignores this signal.) 简单的说，如果已知远端读通道已经被关闭，而应用程序仍然在调用 write(2) 尝试向 socket 中写入数据，TCP 协议栈便会抛出 broken pipe。 connection reset by peer A network connection was closed for reasons outside the control of the local host, such as by the remote machine rebooting or an unrecoverable protocol violation. 如果远端已经 close(2) 连接了，本地服务仍发送了数据，此时 TCP 协议栈便会抛出 connection reset by peer。 broken pipe 和 connection reset by peer 无论是 broken pipe 还是 connection reset by peer，都是收到 RST 的表现，二者有何不同呢？ 为了进一步研究，这里尝试着构建两个场景，分别重现 broken pipe 和 connection reset by peer。 重现 broken pipe 首先，在服务中监听端口，每个连接分多次写入数据，然后关闭连接。 int server() { Acceptor acceptor = Socket::create(AF_INET, SOCK_STREAM, 0); InetAddress address = InetAddress::parseV4("127.0.0.1", 9490); acceptor.bind(address); acceptor.listen(10); const char *msg1 = "hello", *msg2 = "world"; while (true) { Connection conn = acceptor.accept(); sleep(1); // wait client shutdown conn.write(msg1, strlen(msg1)); // write success, but RST recieved conn.write(msg2, strlen(msg2)); // throw `broken pipe` } // RAII close conn socket } // RAII close acceptor socket 然后客户端连接到服务端，并立即关闭连接。 int client() { Connector connector = Socket::create(AF_INET, SOCK_STREAM, 0); InetAddress address = InetAddress::parseV4("127.0.0.1", 9490); connector.connect(address); } // RAII close connector socket 通过 tcpdump 观察程序运行时请求： $ sudo tcpdump -i lo '(src host 127.0.0.1) and (port 9490)' -B 4096 14:59:13.376906 IP localhost.62412 &gt; localhost.9490: Flags [S], seq 4127385760, win 43690, options [mss 65495,sackOK,TS val 168040030 ecr 0,nop,wscale 10], length 0 14:59:13.376919 IP localhost.9490 &gt; localhost.62412: Flags [S.], seq 2306780414, ack 4127385761, win 43690, options [mss 65495,sackOK,TS val 168040030 ecr 168040030,nop,wscale 10], length 0 14:59:13.376928 IP localhost.62412 &gt; localhost.9490: Flags [.], ack 1, win 43, options [nop,nop,TS val 168040030 ecr 168040030], length 0 14:59:13.377089 IP localhost.9490 &gt; localhost.62412: Flags [P.], seq 1:2, ack 1, win 43, options [nop,nop,TS val 168040030 ecr 168040030], length 1 14:59:13.377223 IP localhost.62412 &gt; localhost.9490: Flags [.], ack 2, win 43, options [nop,nop,TS val 168040030 ecr 168040030], length 0 14:59:14.377352 IP localhost.9490 &gt; localhost.62412: Flags [P.], seq 2:3, ack 1, win 43, options [nop,nop,TS val 168040280 ecr 168040030], length 1 14:59:14.377439 IP localhost.62412 &gt; localhost.9490: Flags [.], ack 3, win 43, options [nop,nop,TS val 168040280 ecr 168040280], length 0 // .... 14:59:22.379462 IP localhost.9490 &gt; localhost.62412: Flags [P.], seq 10:11, ack 1, win 43, options [nop,nop,TS val 168042281 ecr 168042031], length 1 14:59:22.379489 IP localhost.62412 &gt; localhost.9490: Flags [.], ack 11, win 43, options [nop,nop,TS val 168042281 ecr 168042281], length 0 14:59:22.379626 IP localhost.62412 &gt; localhost.9490: Flags [F.], seq 1, ack 11, win 43, options [nop,nop,TS val 168042281 ecr 168042281], length 0 14:59:22.382190 IP localhost.9490 &gt; localhost.62412: Flags [.], ack 2, win 43, options [nop,nop,TS val 168042282 ecr 168042281], length 0 14:59:23.379808 IP localhost.9490 &gt; localhost.62412: Flags [P.], seq 11:12, ack 2, win 43, options [nop,nop,TS val 168042531 ecr 168042281], length 1 14:59:23.379829 IP localhost.62412 &gt; localhost.9490: Flags [R], seq 4127385762, win 0, length 0 上述 log 为实验过程中，和上面上面的代码略有出入。 可以观察到，client close(2)，发送了 FIN 给 server，并收到了 ACK。server 此时再次尝试 write(2)，便抛出了 broken pipe 异常。 int main(int argc, char** argv) { try { return server(); } catch (Exception&amp; e) { cout &lt;&lt; e.what() &lt;&lt; endl; return -1; } } server 调用方式。 SIGPIPE 与 broken pipe 按照预期，当 socket 抛出 broken pipe 时，会被最外层 try 和 catch 抓住，并输出。实际上运行结果为： $ ./server $ $ echo $? 141 $ 某次 server 端运行结果，没有任何输出，程序返回值为 $141$。 内核中 TCP 栈如果已经接收到 RST，那么下一次使用 write(2) 时，除了会返回 broken pipe 外，还会产生 SIGPIPE，默认情况下这个信号会终止整个进程，当然你并不想让进程被 SIGPIPE 信号杀死。对 server 来说，为了不被 SIGPIPE 信号杀死，那就需要忽略 SIGPIPE 信号： signal(SIGPIPE, SIG_IGN); 最后，让我们整体分析下 broken pipe 产生方式： client 发送了 FIN 给 server； server 仍给 client 发送数据，client 回复 RST； server 收到 RST 后，再次给 client 发送数据；往一个已经收到 RST 的 socket 继续写入数据，将引起 SIGPIPE 信号，write(2) 返回 EPIPE。 重现 connection reset by peer int server() { Acceptor acceptor = Socket::create(AF_INET, SOCK_STREAM, 0); InetAddress address = InetAddress::parseV4("127.0.0.1", 9490); acceptor.bind(address); acceptor.listen(10); while (true) { Connection conn = acceptor.accept(); sleep(10); // 给拔网线留下足够的时间 } // RAII close conn socket } // RAII close acceptor socket 模拟服务端断线重启。 int client() { Connector connector = Socket::create(AF_INET, SOCK_STREAM, 0); InetAddress address = InetAddress::parseV4("127.0.0.1", 9490); connector.connect(address); sleep(120); const char *msg = "hello"; connector.write(msg, strlen(msg)); } // RAII close connector socket 一段时间后，再给服务器发送请求，此时服务器已经重启。 这里构造了这样一个场景，与客户端建立连接后，服务端由于不可抗力，比如断电，未能发送 FIN 给客户端。当服务器重启后，内核中 TCP 协议栈收到了客户端的数据包，回应 RST，此时客户端抛出 connection reset by peer。 $ sudo tcpdump -i lo '(src host 127.0.0.1) and (port 9490)' -B 4096 15:43:12.638464 IP localhost.21316 &gt; localhost.9490: Flags [S], seq 3640034867, win 43690, options [mss 65495,sackOK,TS val 168699846 ecr 0,nop,wscale 10], length 0 15:43:12.638478 IP localhost.9490 &gt; localhost.21316: Flags [S.], seq 485213568, ack 3640034868, win 43690, options [mss 65495,sackOK,TS val 168699846 ecr 168699846,nop,wscale 10], length 0 15:43:16.639791 IP localhost.9490 &gt; localhost.21316: Flags [P.], seq 5:6, ack 6, win 43, options [nop,nop,TS val 168700846 ecr 168700596], length 1 15:43:16.639807 IP localhost.21316 &gt; localhost.9490: Flags [.], ack 6, win 43, options [nop,nop,TS val 168700846 ecr 168700846], length 0 15:43:17.640127 IP localhost.9490 &gt; localhost.21316: Flags [P.], seq 6:7, ack 6, win 43, options [nop,nop,TS val 168701096 ecr 168700846], length 1 15:43:17.640137 IP localhost.21316 &gt; localhost.9490: Flags [.], ack 7, win 43, options [nop,nop,TS val 168701096 ecr 168701096], length 0 15:43:18.170130 IP localhost.9490 &gt; localhost.21316: Flags [R.], seq 7, ack 6, win 43, options [nop,nop,TS val 168701228 ecr 168701096], length 0 某次模拟 connection reset by peer。 这里从读写两个角度来看 RST，如果已经 ACK 远端的 FIN 包： read(2) ：返回 0，表示 eof； write(2) ：远端返回 RST，抛出 broken pipe； 如果尚未接收到远端的 FIN 包，无论读写操作，收到 RST 时，抛出 connection reset by peer。 what more ？ 除了上述几个场景外，还有其他可能吗？ 强行关闭 正常关闭 TCP 链接时，主动关闭一方会进入 TIME_WAIT 状态，等待 2MSL（报文段最大生存时间-Maximum Segment Lifetime，根据具体的实现不同，这个值会不同），此时该端口处于不可用状态。 解决 TIME_WAIT 有三种手段： 设置 SO_REUSEADDR 和 SO_REUSEPORT； 修改 TIME_WAIT 等待时长； 设置 SO_LINGER，强行关闭。 设置 socket 选项 SO_LINGER 为 (on, 0) 后，close(2) 将立即向对端发送 RST，这种关闭方式称为“强行关闭”。而被动关闭方却不知道对端已经彻底断开，所以紧接着的读写操作，引发 connection reset by peer。 数据滞留 socket 关闭时，如果接收窗口仍有数据滞留，那么会直接发送 RST ，不会进入正常的 FIN 流程。可以参考：TCP RST: Calling close() on a socket with data in the receive queue。 和“强行关闭”一样，数据滞留也会导致被动关闭方引发 connection reset by peer，这样造成的结果是：如果你的服务各种指标正常，但是有非常多的 connection reset by peer 警告，可能就是服务上游超时 close(2) socket，而由于接收窗口仍有数据滞留，发送了 RST。 References [1] Linux TCP 编程 [2] 网络编程中 SIGPIPE 信号 [3] Linux 下 TCP 连接断开未发送 FIN [4] TCP关闭连接(为什么会能Time_wait,Close_wait?)]]></summary></entry><entry><title type="html">nsq read notes</title><link href="/%E6%B6%88%E6%81%AF%E4%B8%AD%E9%97%B4%E4%BB%B6/2019/01/03/nsq-read-notes.html" rel="alternate" type="text/html" title="nsq read notes" /><published>2019-01-03T08:00:00+08:00</published><updated>2019-01-03T08:00:00+08:00</updated><id>/%E6%B6%88%E6%81%AF%E4%B8%AD%E9%97%B4%E4%BB%B6/2019/01/03/nsq-read-notes</id><content type="html" xml:base="/%E6%B6%88%E6%81%AF%E4%B8%AD%E9%97%B4%E4%BB%B6/2019/01/03/nsq-read-notes.html"><![CDATA[<h1 id="nsqd">nsqd</h1>
-
-<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">topicMap</span> <span class="k">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="o">*</span><span class="n">Topic</span>
-<span class="n">clientMap</span> <span class="k">map</span><span class="p">[</span><span class="n">id</span><span class="p">]</span><span class="o">*</span><span class="n">Client</span>
-</code></pre></div></div>
-
-<h2 id="初始化过程">初始化过程</h2>
-
-<ol>
-  <li>new</li>
-  <li>load meta data</li>
-  <li>persist meta data</li>
-  <li>main
-    <ol>
-      <li>listen tcp &amp; http port, start server</li>
-      <li>start queueScanLoop, lookupLoop, statsLoop</li>
-    </ol>
-  </li>
-</ol>
-
-<p>有新连接到达时，会生成 connection 的 client，保存到 nsqd 的 clientMap 中，同时启动 goroutine 负责 client 的 messagePump。conn 所在的 goroutine 之后会负责读客户端的命令，并执行以及返回结果。可执行命令如下：</p>
-
-<ol>
-  <li>IDENTIFY: 表名身份</li>
-  <li>FIN: 在 client 绑定的 channel 上，完成一条消息（调用 channel.FinishMessage），同时会更新当前 client 的 metrics 信息，以及状态</li>
-  <li>RDY: 更新 client ready count</li>
-  <li>REQ: 在 client 绑定的 channel 上，把一条消息重新送入队列（调用 channel.RequeueMessage），同时更新 metrics 和状态。这条消息会被放入 defered 队列，延后执行</li>
-  <li>PUB: 往某个 client 有权限的 topic 发送一条消息（调用 topic.PutMessage），更新 metrics 状态</li>
-  <li>MPUB: 和 PUB 一样，不过接收多条消息</li>
-  <li>DPUB: 和 PUB 一样，不过会被放入 defered 队列</li>
-  <li>NOP: 最简单，啥也不干</li>
-  <li>TOUCH: 在 client 绑定的 channel 上，重置一条消息的过期时间（调用 channel.TouchMessage)</li>
-  <li>SUB: 将 client 绑定到 channel 上，如果 topic 和 channel 任一个属于 “”, 且 topic 或 channel 正在关闭， client 会不断重试绑定操作。</li>
-  <li>CLS: 关闭连接</li>
-  <li>AUTH: 授权</li>
-</ol>
-
-<p>client 有多种状态：init, disconnect, connect, subscribe, closing ，状态迁移由一系列命令执行顺序决定。除此外还有 ready 状态，client 通过 RDY 更新了自己的 ready count，表示 client 最多同时处理多少条消息，如果 inflight count &gt;= ready count，则未 ready，需要等待。</p>
-
-<p>client 使用 SUB 进入 subscribe 模式，该模式只能进入一次，进入后 messagePumb 会接收到 subEvent，然后从对应 channel 中读取 message 发送到 client 里。</p>
-
-<h2 id="topic">topic</h2>
-
-<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">messageChan</span> <span class="k">chan</span> <span class="o">*</span><span class="n">Message</span>
-<span class="n">backendChan</span> <span class="n">BackendChan</span>
-<span class="n">channelsMap</span> <span class="k">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="n">Channels</span>
-</code></pre></div></div>
-
-<h3 id="topic-创建流程">topic 创建流程</h3>
-
-<ol>
-  <li>new topic, save to topicMap</li>
-  <li>lookup each lookupd, get all channels in topic $TOPIC</li>
-  <li>skip “#ephemeral” and create channels</li>
-  <li>start topic messagePump</li>
-</ol>
-
-<h3 id="delete-channel">delete channel</h3>
-
-<ol>
-  <li>remove from topic channelsMap</li>
-  <li>mark channel deleted</li>
-  <li>if left channels is zero, and topic is ephemeral, delete topic self</li>
-</ol>
-
-<h3 id="put-messages">put messages</h3>
-
-<ol>
-  <li>try put message into memory message channel</li>
-  <li>fallthrough into backend queue, most case into disk, but ephemeral just ignore</li>
-  <li>update message count</li>
-</ol>
-
-<h3 id="message-pump">message pump</h3>
-
-<ol>
-  <li>read message from memory message channel</li>
-  <li>else read from backend message</li>
-  <li>else update channel status</li>
-  <li>copy memory into each channels in current topic
-    <ol>
-      <li>if message is defered, put into channels defered</li>
-      <li>else put into normal channels</li>
-    </ol>
-  </li>
-</ol>
-
-<h2 id="channel">channel</h2>
-
-<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">clients</span> <span class="k">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="n">Consumer</span>
-<span class="n">backend</span> <span class="n">BackendQueue</span>
-<span class="n">memoryChan</span> <span class="k">chan</span> <span class="o">*</span><span class="n">Message</span>
-<span class="n">deferedMessages</span> <span class="k">map</span><span class="p">[</span><span class="n">MessageID</span><span class="p">]</span><span class="o">*</span><span class="n">Message</span>
-<span class="n">defredPQ</span> <span class="n">PriorityQueue</span>
-<span class="n">inFlightMessages</span> <span class="k">map</span><span class="p">[</span><span class="n">MessageID</span><span class="p">]</span><span class="o">*</span><span class="n">Message</span>
-<span class="n">inFlightPQ</span> <span class="n">PriorityQueue</span>
-</code></pre></div></div>
-
-<p>channel put message 和 topic put message 类似。put defered message 会把 message 放在deferedMessages 中，并加入 deferedPQ 中。如果 defered 时间到了，使用正常流程 put。clients 提供了 Add 和 Remove 接口，但管理职责不是 channel 的。</p>
-
-<h1 id="nsqlookupd">nsqlookupd</h1>
-
-<h2 id="nsqlookupd-数据组织方式">nsqlookupd 数据组织方式</h2>
-
-<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="p">{</span>
-	<span class="p">{</span><span class="s">"client"</span><span class="p">,</span> <span class="s">""</span><span class="p">,</span> <span class="s">""</span><span class="p">}</span> <span class="o">=&gt;</span> <span class="p">{</span>
-		<span class="s">"127.0.0.1:9490"</span> <span class="o">=&gt;</span> <span class="n">Producer</span><span class="p">{</span><span class="s">"127.0.0.1:8081"</span><span class="p">},</span>
-		<span class="s">"127.0.0.1:9491"</span> <span class="o">=&gt;</span> <span class="n">Producer</span><span class="p">{</span><span class="s">"127.0.0.1:8081"</span><span class="p">},</span>
-	<span class="p">},</span>
-
-	<span class="p">{</span><span class="s">"channel"</span><span class="p">,</span> <span class="s">"topic_a"</span><span class="p">,</span> <span class="s">"channel_a"</span><span class="p">}</span> <span class="o">=&gt;</span> <span class="p">{</span>
-		<span class="s">"ip1"</span> <span class="o">=&gt;</span> <span class="n">Producer</span><span class="p">{</span><span class="s">"addr"</span><span class="p">},</span>
-	<span class="p">},</span>
-	<span class="p">{</span><span class="s">"topic"</span><span class="p">,</span> <span class="s">"topic_a"</span><span class="p">,</span> <span class="s">""</span><span class="p">}</span> <span class="o">=&gt;</span> <span class="p">{</span>
-		<span class="s">"ip1"</span> <span class="o">=&gt;</span> <span class="n">Producer</span><span class="p">{</span><span class="s">"addr_1"</span><span class="p">},</span>
-		<span class="s">"ip2"</span> <span class="o">=&gt;</span> <span class="n">Producer</span><span class="p">{</span><span class="s">"addr2"</span><span class="p">},</span>
-	<span class="p">},</span>
-<span class="p">}</span>
-</code></pre></div></div>
-
-<h2 id="nsqd---nsqlookupd-交互">nsqd &lt;-&gt; nsqlookupd 交互</h2>
-
-<ol>
-  <li>connect: send “  V1”</li>
-  <li>ping: send “PING “
-    <ol>
-      <li>nsqlookupd update peer info’s lastUpdate</li>
-      <li>response “OK”</li>
-    </ol>
-  </li>
-  <li>identify: send “IDENTIFY LEN(data) data”
-    <ol>
-      <li>remote addr as id</li>
-      <li>load broadcase address, tcp port, http port, version</li>
-      <li>update peer info’s lastUpdate</li>
-      <li>add producer to db: Registration{“client”} =&gt; PeerInfo{id}</li>
-      <li>response {tcp_port, http_port, version, hostname, broadcast_address}</li>
-    </ol>
-  </li>
-  <li>register: send “REGISTER TOPIC [CHANNEL]”
-    <ol>
-      <li>read topic and channel name</li>
-      <li>if channel name exists:
-        <ol>
-          <li>add producer to db: Registration{“channel”, $TOPIC, $CHANNEL} =&gt; PeerInfo{id}</li>
-        </ol>
-      </li>
-      <li>add producer to db: Registration{“topic”, $TOPIC, “”} =&gt; PeerInfo{id}</li>
-      <li>response “OK”</li>
-    </ol>
-  </li>
-  <li>unregister: send “UNREGISTER TOPIC [CHANNEL]”
-    <ol>
-      <li>read topic and channel name</li>
-      <li>if channel name exists:
-        <ol>
-          <li>remove producer from db: Registration{“channel”, $TOPIC, $CHANNEL}</li>
-          <li>remove registration for channel has suffix “#ephemeral” if left producer is zero</li>
-        </ol>
-      </li>
-      <li>else:
-        <ol>
-          <li>find all registrations of channel of $TOPIC</li>
-          <li>remove all channels of current peer</li>
-          <li>remove producer form db: Registration{“topic”, $TOPIC, “”}</li>
-        </ol>
-      </li>
-      <li>response “OK”</li>
-    </ol>
-  </li>
-</ol>
-
-<h2 id="nsqlookupd-support-http-request">nsqlookupd support http request</h2>
-
-<ol>
-  <li>GET /lookup?topic=topic_name
-    <div class="language-json highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="p">{</span><span class="w">
- </span><span class="nl">"channels"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"channel1"</span><span class="p">],</span><span class="w">
- </span><span class="nl">"producers"</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="w">
-
- </span><span class="p">}],</span><span class="w">
-</span><span class="p">}</span><span class="w">
-</span></code></pre></div>    </div>
-  </li>
-  <li>GET /topics</li>
-  <li>GET /channels?topic=topic_name</li>
-  <li>GET /nodes</li>
-  <li>POST /topic/create?topic=</li>
-  <li>POST /topic/delete?topic=</li>
-  <li>POST /channel/create?topic=topic&amp;channel=channel</li>
-  <li>POST /channel/delete?topic=&amp;channel=</li>
-  <li>POST /topic/tombstone?topic=topic_name&amp;node=node_id</li>
-</ol>]]></content><author><name></name></author><category term="消息中间件" /><category term="Nsq," /><category term="MessageQueue" /><summary type="html"><![CDATA[nsqd topicMap map[string]*Topic clientMap map[id]*Client 初始化过程 new load meta data persist meta data main listen tcp &amp; http port, start server start queueScanLoop, lookupLoop, statsLoop 有新连接到达时，会生成 connection 的 client，保存到 nsqd 的 clientMap 中，同时启动 goroutine 负责 client 的 messagePump。conn 所在的 goroutine 之后会负责读客户端的命令，并执行以及返回结果。可执行命令如下： IDENTIFY: 表名身份 FIN: 在 client 绑定的 channel 上，完成一条消息（调用 channel.FinishMessage），同时会更新当前 client 的 metrics 信息，以及状态 RDY: 更新 client ready count REQ: 在 client 绑定的 channel 上，把一条消息重新送入队列（调用 channel.RequeueMessage），同时更新 metrics 和状态。这条消息会被放入 defered 队列，延后执行 PUB: 往某个 client 有权限的 topic 发送一条消息（调用 topic.PutMessage），更新 metrics 状态 MPUB: 和 PUB 一样，不过接收多条消息 DPUB: 和 PUB 一样，不过会被放入 defered 队列 NOP: 最简单，啥也不干 TOUCH: 在 client 绑定的 channel 上，重置一条消息的过期时间（调用 channel.TouchMessage) SUB: 将 client 绑定到 channel 上，如果 topic 和 channel 任一个属于 “”, 且 topic 或 channel 正在关闭， client 会不断重试绑定操作。 CLS: 关闭连接 AUTH: 授权 client 有多种状态：init, disconnect, connect, subscribe, closing ，状态迁移由一系列命令执行顺序决定。除此外还有 ready 状态，client 通过 RDY 更新了自己的 ready count，表示 client 最多同时处理多少条消息，如果 inflight count &gt;= ready count，则未 ready，需要等待。 client 使用 SUB 进入 subscribe 模式，该模式只能进入一次，进入后 messagePumb 会接收到 subEvent，然后从对应 channel 中读取 message 发送到 client 里。 topic messageChan chan *Message backendChan BackendChan channelsMap map[string]Channels topic 创建流程 new topic, save to topicMap lookup each lookupd, get all channels in topic $TOPIC skip “#ephemeral” and create channels start topic messagePump delete channel remove from topic channelsMap mark channel deleted if left channels is zero, and topic is ephemeral, delete topic self put messages try put message into memory message channel fallthrough into backend queue, most case into disk, but ephemeral just ignore update message count message pump read message from memory message channel else read from backend message else update channel status copy memory into each channels in current topic if message is defered, put into channels defered else put into normal channels channel clients map[string]Consumer backend BackendQueue memoryChan chan *Message deferedMessages map[MessageID]*Message defredPQ PriorityQueue inFlightMessages map[MessageID]*Message inFlightPQ PriorityQueue channel put message 和 topic put message 类似。put defered message 会把 message 放在deferedMessages 中，并加入 deferedPQ 中。如果 defered 时间到了，使用正常流程 put。clients 提供了 Add 和 Remove 接口，但管理职责不是 channel 的。 nsqlookupd nsqlookupd 数据组织方式 { {"client", "", ""} =&gt; { "127.0.0.1:9490" =&gt; Producer{"127.0.0.1:8081"}, "127.0.0.1:9491" =&gt; Producer{"127.0.0.1:8081"}, }, {"channel", "topic_a", "channel_a"} =&gt; { "ip1" =&gt; Producer{"addr"}, }, {"topic", "topic_a", ""} =&gt; { "ip1" =&gt; Producer{"addr_1"}, "ip2" =&gt; Producer{"addr2"}, }, } nsqd &lt;-&gt; nsqlookupd 交互 connect: send “ V1” ping: send “PING “ nsqlookupd update peer info’s lastUpdate response “OK” identify: send “IDENTIFY LEN(data) data” remote addr as id load broadcase address, tcp port, http port, version update peer info’s lastUpdate add producer to db: Registration{“client”} =&gt; PeerInfo{id} response {tcp_port, http_port, version, hostname, broadcast_address} register: send “REGISTER TOPIC [CHANNEL]” read topic and channel name if channel name exists: add producer to db: Registration{“channel”, $TOPIC, $CHANNEL} =&gt; PeerInfo{id} add producer to db: Registration{“topic”, $TOPIC, “”} =&gt; PeerInfo{id} response “OK” unregister: send “UNREGISTER TOPIC [CHANNEL]” read topic and channel name if channel name exists: remove producer from db: Registration{“channel”, $TOPIC, $CHANNEL} remove registration for channel has suffix “#ephemeral” if left producer is zero else: find all registrations of channel of $TOPIC remove all channels of current peer remove producer form db: Registration{“topic”, $TOPIC, “”} response “OK” nsqlookupd support http request GET /lookup?topic=topic_name { "channels": ["channel1"], "producers": [{ }], } GET /topics GET /channels?topic=topic_name GET /nodes POST /topic/create?topic= POST /topic/delete?topic= POST /channel/create?topic=topic&amp;channel=channel POST /channel/delete?topic=&amp;channel= POST /topic/tombstone?topic=topic_name&amp;node=node_id]]></summary></entry></feed>
+<p>TODO</p>]]></content><author><name></name></author><summary type="html"><![CDATA[CockroachDB KV Entrance In pkg/cmd/cockroach.go: func main() { cli.Main() } In pkg/cli/cli.go: cockroachCmd.AddCommand( startCmd, initCmd, ) According cockroach db manual: cockroach start --join xxx cockroach init --host &lt;address of any node&gt; So the setup logic lie in startCmd, and cluster bootstrap login lie in initCmd. In pkg/cli/start.go, command startCmd will invoke runStartJoin -&gt; runStart: func runStart() { var s *server.Server s, err = server.NewServer() s.PreStart() s.InitialStart() s.AcceptClients() } Start Node In Server::NewServer: clock = hlc.NewClock() engines = cfg.CreateEngines() eng, err = storage.NewPebble(ctx, pebbleConfig) rpcContext = rpc.NewContext() grpcServer = newGRPCServer(rpcContext) g = gossip.New() distSender = kvcoord.NewDistSender() // `pkg/kv/kvclient/kvcoord/dist_sender.go` tcsFactory = kvcoord.NewTxnCoordSenderFactory(txnCoordSenderFactoryCfg, distSender) // `pkg/kv/kvclient/kvcoord/txn_coord_sender_factory.go` db = kv.NewDBWithContext(clock, dbCtx) raftTransport = kvserver.NewRaftTransport() stores = kvserver.NewStores() tsDB = ts.NewDB(db, tcsFactory) node = NewNode() roachpb.RegisterInternalServer(grpcServer.Server, node) kvserver.RegisterPerReplicaServer(grpcServer.Server, node.perReplicaServer) kvserver.RegisterPerStoreServer(grpcServer.Server, node.perReplicaServer) ctpb.RegisterSideTransportServer(grpcServer.Server, ctReceiver) sqlServer, err := newSQLServer(ctx, sqlServerArgs) In Server::PreStart: s.rpcContext.SetLocalInternalServer(s.node) s.http.start() s.externalStorageBuilder.init() inspectEngineState = inspectEngines() // go through engines and constructs an initState. In `pkg/server/init.go` storeIdent, err = kvserver.ReadStoreIdent() serverpb.RegisterInitServer(s.grpc.Server, initServer) // support `service Init` in `pkg/server/serverpb/init.proto`. startListenRPCAndSQL() // only start rpc server, but initialize sql server. configureGRPCGateway() startRPCServer() onInitServerReady() state = initServer.ServeAndWait() // bootstrapAddresses := cfg.FilterGossipBootstrapAddress() in `newInitServerConfig`. from func (cfg *Config) parseGossipBootstrapAddresses s.startJoinLoop() // continuously retries connecting to nodes specified in the join list, in order to determine what the cluster ID, node ID is. s.attemptJoinIn() send JoinNodeRequest s.initializeFirstStoreAfterJoin() kvserver.InitEngines() state := &lt;- s.joinCh s.rpcContext.NodeID.set(state.NodeID) runAsyncTask("connect-gossip") // only log s.gossip.Start() g.setAddresses(addresses) g.server.start() g.bootstrap() g.manage() s.node.start() // In `pkg/server/node.go` s.replicationReporter.start() s.sqlServer.preStart() There are some comments in PreStart: // "bootstrapping problem": nodes need to connect to Gossip fairly // early, but what drives Gossip connectivity are the first range // replicas in the kv store. This in turn suggests opening the Gossip // server early. However, naively doing so also serves most other // services prematurely, which exposes a large surface of potentially // underinitialized services. This is avoided with some additional // complexity that can be summarized as follows: // // - before blocking trying to connect to the Gossip network, we already open // the admin UI (so that its diagnostics are available) // - we also allow our Gossip and our connection health Ping service // - everything else returns Unavailable errors (which are retryable) // - once the node has started, unlock all RPCs. In Node::start: n.storeCfg.Gossip.NodeID.set(n.nodeDescriptor.NodeID) n.storeCfg.Gossip.SetNodeDescriptor.set(n.nodeDescriptor) for _, e := state.initializedEngines { s := kvserver.NewStore(e) // In `pkg/kv/kvserver/store.go` s.Start() // Iterate over all range descriptor, ignoring uncommitted version. IterateRangeDescriptorFromDisk() replica = newReplica() // In `pkg/kv/kvserver/replica_init.go` newUnloadReplica() loadRaftMuLockedReplicaMuLocked() lastIndex = r.stateLoader.LoadLastIndex() s.addReplicaInternal(replica) s.cfg.Transport.Listen(s.StoreID(), s) s.processRaft() s.storeRebalancer.Start() // rebalance is finished in store? s.startGossip() s.startLeaseRenewer() n.addStore(s) } n.storeCfg.Gossip.SetStorage(n.stores) n.startGossiping(n.stopper) // loops on a periodic ticker to gossip node-related information. s.GossipStore() // GossipStore broadcasts the store on the gossip network. In Server::AcceptClients: s.sqlServer.startServerSQL() Start Store In pkg/kv/kvserver/store.go: Store::Start ReadStoreIdent idalloc.NewAllocator intentResolver.New makeRaftLogTruncator txnrecovery.NewManager // Iterate over all range descriptor, ignoring uncommitted version. IterateRangeDescriptorFromDisk() replica = newReplica() // In `pkg/kv/kvserver/replica_init.go` newUnloadReplica() loadRaftMuLockedReplicaMuLocked() lastIndex = r.stateLoader.LoadLastIndex() s.addReplicaInternal(replica) s.cfg.Transport.Listen(s.StoreID(), s) s.cfg.NodeLiveness.RegisterCallback(s.nodeIsLiveCallback) s.processRaft() s.storeRebalancer.Start() // rebalance is finished in store? s.startGossip() s.startLeaseRenewer() s.startRangefeedUpdator() NewStoreRebalancer() ID Allocator In pkg/kv/kvserver/store.go: // Create ID allocators. idAlloc, err := idalloc.NewAllocator(idalloc.Options{ AmbientCtx: s.cfg.AmbientCtx, Key: keys.RangeIDGenerator, Incrementer: idalloc.DBIncrementer(s.db), BlockSize: rangeIDAllocCount, Stopper: s.stopper, } The Allocator will allocate rangeIDAllocCount count from DB with key keys.RangeIDGenerator. Bootstrap In pkg/cli/init.go: func runInit() { c, err := NewInitClient() c.Bootstrap(BootstrapRequest {}) } In pkg/server/init.go: func (s *initServer) Bootstrap() { state, err = s.tryBootstrap() } func (s *initServer) tryBootstrap() { return bootstrapCluster() } In pkg/server/node.go, function bootstrapCluster: kvserver.InitEngine(engine, storeIdent) kvserver.WriteInitialClusterData() // writes initialization data to an engine. It creates system ranges (filling in meta1 and meta2) and the default zone config. Question: When the first range was creatiation? In pkg/kv/kvserver/store_init.go: desc := &amp;roachpb.RangeDescriptor{ RangeID: rangeID, StartKey: startKey, EndKey: endKey, NextReplicaID: 2, } const firstReplicaID = 1 replicas := []roachpb.ReplicaDescriptor{ { NodeID: FirstNodeID, StoreID: FirstStoreID, ReplicaID: firstReplicaID, }, } desc.SetReplicas(roachpb.MakeReplicaSet(replicas)) How to determine whether a cluster has been bootstrapped when restarting? In Server::PreStart, inspectEngineState := InspectEngines() In InitServer::ServeAndWait, s.inspectEngineState.bootstrapt() When to start serving ranges? See Node::start for details. What happen if no any join list was specified? Report errors Join Node In pkg/server/node.go, function Join(): compareBinaryVersion() nodeID, err := allocateNodeID() val, err := kv.IncrementValRetryable(ctx, db, keys.NodeIDGenerator, 1) db.Inc(ctx, key, inc) // pkg/kv/db.go var db *DB storeID, err := allocateStoreIDs() val, err := kv.IncrementValRetryable(ctx, db, keys.StoreIDGenerator, count) // create liveness record, so what is the purpose of liveness record? n.storeCfg.NodeLiveness.CreateLivenessRecord() Questions: What happen if receives Join requests? Only check version and allocate NodeID. If a node has already bootstrapted, it won’t allocate new node id again (See PreStart() for details). What should to do for adding new table? TODO Where is the master role for cockroachdb? TODO Add Replica on Store In pkg/kv/kvserver/store_create_replica.go, function getOrCreateReplica: getOrCreateReplica -&gt; tryGetOrCreateReplica // 1. current replica is removed, go back around // 2. drop messages from replica we known to be too old // 3. the current replica need to be removed, remove it and go back around // 4. drop staled msg silently // 5. check tombstone newUnloadedReplica Store::addReplicaToRangeMapLocked StateLoader::SetRangeReplicaID Replica::loadRaftMuLockedReplicaMuLocked Questions: When the new replica are created? See above. Raft Initialize Node::start Store::processRaft raftScheduler::Start async raftScheduler::worker async raftScheduler::Wait async raftTickLoop async coalescedHeartbeatsLoop run worker, in pkg/kv/kvserver/store_raft.go and pkg/kv/kvserver/replica_raft.go. raftScheduler::worker raftScheduler::processTick Replica::tick(IsLiveMap) // `pkg/kv/kvserver/replica_raft.go` RawNode::ReportUnreachable(Replica.unreachablesMu.remotes) Replica::maybeQuiesceRaftMuLockedReplicaMuLocked Replica::maybeTransferRaftLeadershipToLeaseholderLocked RawNode::Tick raftScheduler::processReady // See below apply parts. raftScheduler::processRequestQueue Store::withReplicaForRequest Store::getOrCreateReplica Store::processRaftRequestWithReplica Replica::stepRaftGroup Replica::withRaftGroup // if internal raft group is null, try create it RawNode::Step propose Node::Batch -&gt; Node::batchInternal Stores::Send(BatchRequest) -&gt; Stores::GetStore -&gt; Store::Send // `pkg/kv/kvserver/store_send.go` Clock::Update // Advances the local node's clock to a high water mark from all nodes with which it has interacted. Store::GetReplica -&gt; Replica::Send -&gt; Replica::sendWithoutRangeID // `pkg/kv/kvserver/replica_send.go` Replica::maybeInitializeRaftGroup // If the internal Raft group is not initialized, create it and wake the leader. Replica::withRaftGroupLocked Replica::maybeCampaignOnWakeLocked -&gt; Replica::campaignLocked Store::enqueueRaftUpdateCheck -&gt; raftScheduler::EnqueueRaftReady Replica::executeBatchWithConcurrencyRetries Replica::executeReadOnlyBatch Replica::executeReadWriteBatch // `pkg/kv/kvserver/replica_write.go` Replica::applyTimestampCache Replica::evalAndPropose // `pkg/kv/kvserver/replica_raft.go` Replica::requestToProposal // `pkg/kv/kvserver/replica_proposal.go` Replica::evaluateProposal -&gt; Replica::evaluateWriteBatch Replica::evaluate1PC Replica::evaluateWriteBatchWithServersideRefreshes -&gt; Replica::evaluateWriteBatchWrapper -&gt; evaluateBatch // `pkg/kv/kvserver/replica_evaluate.go` optimizePuts evaluateCommand batcheval.LookupCommand Command::EvalRO Command::EvalRW Put // `pkg/kv/kvserver/batcheval/cmd_put.go` storage.MVCCPut storage.MVCCConditionalPut // `pkg/storage/mvcc.go` Replica::propose -&gt; propBuf::Insert Replica::executeAdminBatch // No interaction with the spanlatch manager or the timestamp cache. Replica::maybeAddRangeInfoToResponse // if ranges are mismatched, try to suggest a more suitable range from this store. apply Store::processReady -&gt; Replica::HandleRaftReady -&gt; Replica::HandleRaftReadyRaftMuLocked -&gt; Replica::withRaftGroupLocked propBuf::FlushLockedWithRaftGroup // Question: will `propBuf::Insert` signal ready queue? RawNode::Ready Replica::applySnapshot Task::AckCommittedEntriesBeforeApplication // `pkg/kv/kvserver/apply/task.go` Replica::sendRaftMessagesRaftMuLocked // `pkg/kv/kvserver/replica_raft.go` Replica::append // `pkg/kv/kvserver/replica_raftstorage.go` storage.Writer::MVCCPut // Writer is `Store::Engine().NewUnindexedBatch` Batch::Commit Replica::sendRaftMessagesRaftMuLocked // `pkg/kv/kvserver/replica_raft.go` Task::ApplyCommittedEntries -&gt; Task::ApplyOneBatch Batch::Stage(Command) -&gt; replicaAppBatch::Stage // `pkg/kv/kvserver/replica_application_state_machine.go` Replica::ShouldApplyCommand Batch::ApplyToStateMachine // StateMachine::NewBatch AppliedCommand::AckOutcomeAndFinish Replica::withRaftGroupLocked RawNode::Advance(Ready) Replica::campaignLocked // if shouldCampaignAfterConfChange: if raft leader got moved, campaign the first remaning voter. Store::enqueueRaftUpdateCheck // if RawNode::HasReady transport API defines in pkg/kv/kvserver/storage_services.proto: service MultiRaft { rpc RaftMessageBatch (stream cockroach.kv.kvserver.kvserverpb.RaftMessageRequestBatch) returns (stream cockroach.kv.kvserver.kvserverpb.RaftMessageResponse) {} rpc RaftSnapshot (stream cockroach.kv.kvserver.kvserverpb.SnapshotRequest) returns (stream cockroach.kv.kvserver.kvserverpb.SnapshotResponse) {} rpc DelegateRaftSnapshot(stream cockroach.kv.kvserver.kvserverpb.DelegateSnapshotRequest) returns (stream cockroach.kv.kvserver.kvserverpb.DelegateSnapshotResponse) {} } The implementation lie in pkg/kv/kvserver/raft_transport.go, function is RaftTransport::RaftMessageBatch: RaftMessageBatch stream.Recv RaftTransport::handleRaftRequest RaftTransport::getHandler(StoreID) // read handler of corresponding store ID Store::HandleRaftRequest // `pkg/kv/kvserver/store_raft.go`: dispatches a raft message to the appropriate Replica. Store::HandleRaftUncoalescedRequest raftReceiveQueues::LoadOrCreate(RangeID) raftReceiveQueue::Append raftScheduler::EnqueueRaftRequest stream.Send(newRaftMessageResponse) Questions: Where the conditional_put is executed? In file pkg/kv/kvserver/batcheval/cmd_conditional_put.go, it is invoked by executeCommand. What is the purpose of CommandID? The command ID is equals makeIDKey() -&gt; rand.Int64(). // CmdIDKey is a Raft command id. This will be logged unredacted - keep it random. Rebalance In pkg/kv/kvserver/store.go, function Store::Start: NewStoreRebalancer StoreRebalancer::Start // rebalanceStore iterates through the top K hottest ranges on this store and // for each such range, performs a lease transfer if it determines that that // will improve QPS balance across the stores in the cluster. After it runs out // of leases to transfer away (i.e. because it couldn't find better // replacements), it considers these ranges for replica rebalancing. async StoreRebalancer::rebalanceStore StoreRebalancer::chooseLeaseToTransfer replicateQueue::transferLease StoreRebalancer::chooseRangeToRebalance DB::AdminRelocateRange DB DB is a database handle to a single cockroach cluster. A DB is safe for concurrent use by multiple goroutines. kv.DB interfaces: Get GetForUpdate GetProto GetProtoTs Put PutInline CPut Inc Scan AdminSplit AdminMerge AdminRelocateRange AdminChangeReplicas etc … Put code path: DB::Put -&gt; DB::Run(Batch) -&gt; DB::SendAndFail -&gt; DB::send -&gt; DB::sendUsingSender CrossRangeTxnWrapperSender::Send -&gt; DistSender::Send DistSender::initAndVerifyBatch keys.Range DistSender::divideAndSendParallelCommit DistSender::divideAndSendBatchToRanges DistSender::divideAndSendBatchToRanges RangeIterator::Seek DistSender::sendPartialBatch DistSender::sendToReplicas DistSender::transportFactory Transport::SendNext Error Retry TODO Range Cache TODO Txn TODO]]></summary></entry></feed>

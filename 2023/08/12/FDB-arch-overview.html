@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>FoundationDB 架构 - 概述 | W41ter’s Bistro</title>
+<meta name="generator" content="Jekyll v4.2.2" />
+<meta property="og:title" content="FoundationDB 架构 - 概述" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="FoundationDB 是一款分布式强一致、高可扩展的 key value 数据库，它提供多版本并发控制（MVCC），同时提供了可序列化快照隔离级别（SSI）。 这里将从架构、元数据组织、数据组织三个方面，简述 FoundationDB 的架构设计，更详细的设计细节会在后续文章中介绍。 架构 总的来说，FoundationDB 的架构可以分成三部分：控制系统，事务系统以及存储系统。 控制系统部分提供了类似 zookeeper, etcd 等元数据管理系统的功能。它使用 disk paxos 实现选举、协调与元数据多副本的一致性。 存储系统是依赖单机 key value store 构建的一个多副本的 key value store。底层的 kv store 支持多种实现，目前有：sqlite （default），redwood 和 rocksdb。其中 redwood 是一款用于替代 sqlite 的基于 btree 的 kv store，目前主要是 snowflake 在负责开发。根据反馈，使用 redwood 作为引擎底座，在性能上比依赖 sqlite 的版本强上不少。 最复杂的是事务系统，它所涉及的组件最多。事务系统主要解决两个问题： 写入事务的持久化，类似于单机 RDMS 的 WAL 判断事务间是否存在冲突，是否能够提交。 元数据 FoundationDB 的元数据组织也可以按架构分成三部分。每个 FoundationDB 集群有一个唯一的地址，保存在 fdb.cluster 文件中；通过这个地址，可以定位到控制系统。 description:ID@IP:PORT,IP:PORT,... 控制系统中记录了事务系统的元数据，TLog 的位置、当前事务系统的版本号，都记录在控制系统中；client 也能通过查询控制系统，获取到事务系统的路由表。 事务系统中又记录着存储系统的元数据，key 到 storage 的映射就保存在事务系统中。 通过上述的层级关系，任何一个 client 或 server 只要能拿到 fdb.cluster，就能访问到集群中的任何一个节点。 数据组织 FoundationDB 将 key space 划分成两部分，其中前缀为 0xFF 的被保留为系统空间，也就是记录在事务系统中的存储系统的元数据。 剩余的 [0x00, 0xFF) 则用于存储用户数据。用户数据会按照 range 切分成一个个 shard，一个 shard 有多个副本，保存在不同的 storage server 上。" />
+<meta property="og:description" content="FoundationDB 是一款分布式强一致、高可扩展的 key value 数据库，它提供多版本并发控制（MVCC），同时提供了可序列化快照隔离级别（SSI）。 这里将从架构、元数据组织、数据组织三个方面，简述 FoundationDB 的架构设计，更详细的设计细节会在后续文章中介绍。 架构 总的来说，FoundationDB 的架构可以分成三部分：控制系统，事务系统以及存储系统。 控制系统部分提供了类似 zookeeper, etcd 等元数据管理系统的功能。它使用 disk paxos 实现选举、协调与元数据多副本的一致性。 存储系统是依赖单机 key value store 构建的一个多副本的 key value store。底层的 kv store 支持多种实现，目前有：sqlite （default），redwood 和 rocksdb。其中 redwood 是一款用于替代 sqlite 的基于 btree 的 kv store，目前主要是 snowflake 在负责开发。根据反馈，使用 redwood 作为引擎底座，在性能上比依赖 sqlite 的版本强上不少。 最复杂的是事务系统，它所涉及的组件最多。事务系统主要解决两个问题： 写入事务的持久化，类似于单机 RDMS 的 WAL 判断事务间是否存在冲突，是否能够提交。 元数据 FoundationDB 的元数据组织也可以按架构分成三部分。每个 FoundationDB 集群有一个唯一的地址，保存在 fdb.cluster 文件中；通过这个地址，可以定位到控制系统。 description:ID@IP:PORT,IP:PORT,... 控制系统中记录了事务系统的元数据，TLog 的位置、当前事务系统的版本号，都记录在控制系统中；client 也能通过查询控制系统，获取到事务系统的路由表。 事务系统中又记录着存储系统的元数据，key 到 storage 的映射就保存在事务系统中。 通过上述的层级关系，任何一个 client 或 server 只要能拿到 fdb.cluster，就能访问到集群中的任何一个节点。 数据组织 FoundationDB 将 key space 划分成两部分，其中前缀为 0xFF 的被保留为系统空间，也就是记录在事务系统中的存储系统的元数据。 剩余的 [0x00, 0xFF) 则用于存储用户数据。用户数据会按照 range 切分成一个个 shard，一个 shard 有多个副本，保存在不同的 storage server 上。" />
+<link rel="canonical" href="/2023/08/12/FDB-arch-overview.html" />
+<meta property="og:url" content="/2023/08/12/FDB-arch-overview.html" />
+<meta property="og:site_name" content="W41ter’s Bistro" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2023-08-12T00:00:00+08:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="FoundationDB 架构 - 概述" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2023-08-12T00:00:00+08:00","datePublished":"2023-08-12T00:00:00+08:00","description":"FoundationDB 是一款分布式强一致、高可扩展的 key value 数据库，它提供多版本并发控制（MVCC），同时提供了可序列化快照隔离级别（SSI）。 这里将从架构、元数据组织、数据组织三个方面，简述 FoundationDB 的架构设计，更详细的设计细节会在后续文章中介绍。 架构 总的来说，FoundationDB 的架构可以分成三部分：控制系统，事务系统以及存储系统。 控制系统部分提供了类似 zookeeper, etcd 等元数据管理系统的功能。它使用 disk paxos 实现选举、协调与元数据多副本的一致性。 存储系统是依赖单机 key value store 构建的一个多副本的 key value store。底层的 kv store 支持多种实现，目前有：sqlite （default），redwood 和 rocksdb。其中 redwood 是一款用于替代 sqlite 的基于 btree 的 kv store，目前主要是 snowflake 在负责开发。根据反馈，使用 redwood 作为引擎底座，在性能上比依赖 sqlite 的版本强上不少。 最复杂的是事务系统，它所涉及的组件最多。事务系统主要解决两个问题： 写入事务的持久化，类似于单机 RDMS 的 WAL 判断事务间是否存在冲突，是否能够提交。 元数据 FoundationDB 的元数据组织也可以按架构分成三部分。每个 FoundationDB 集群有一个唯一的地址，保存在 fdb.cluster 文件中；通过这个地址，可以定位到控制系统。 description:ID@IP:PORT,IP:PORT,... 控制系统中记录了事务系统的元数据，TLog 的位置、当前事务系统的版本号，都记录在控制系统中；client 也能通过查询控制系统，获取到事务系统的路由表。 事务系统中又记录着存储系统的元数据，key 到 storage 的映射就保存在事务系统中。 通过上述的层级关系，任何一个 client 或 server 只要能拿到 fdb.cluster，就能访问到集群中的任何一个节点。 数据组织 FoundationDB 将 key space 划分成两部分，其中前缀为 0xFF 的被保留为系统空间，也就是记录在事务系统中的存储系统的元数据。 剩余的 [0x00, 0xFF) 则用于存储用户数据。用户数据会按照 range 切分成一个个 shard，一个 shard 有多个副本，保存在不同的 storage server 上。","headline":"FoundationDB 架构 - 概述","mainEntityOfPage":{"@type":"WebPage","@id":"/2023/08/12/FDB-arch-overview.html"},"url":"/2023/08/12/FDB-arch-overview.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="/feed.xml" title="W41ter's Bistro" /><!-- for mathjax support -->
+  
+    <script type="text/x-mathjax-config">
+      MathJax.Hub.Config({
+          extensions: [
+          "tex2jax.js",
+          "MathMenu.js",
+          "MathZoom.js",
+          "AssistiveMML.js",
+          "a11y/accessibility-menu.js"
+        ],
+        tex2jax: {      // AND HERE
+          inlineMath: [['$', '$']],
+          displayMath: [['$$', '$$']]
+        },
+        jax: ["input/TeX", "output/CommonHTML"],
+        TeX: {
+          extensions: [
+            "AMSmath.js",
+            "AMSsymbols.js",
+            "noErrors.js",
+            "noUndefined.js",
+          ],
+          equationNumbers: { autoNumber: "AMS" }
+        }
+      });
+    </script>
+    <script type="text/javascript" async src="https://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+  
+</head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">W41ter&#39;s Bistro</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">FoundationDB 架构 - 概述</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2023-08-12T00:00:00+08:00" itemprop="datePublished">Aug 12, 2023
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p><img src="https://www.foundationdb.org/assets/images/logo@2x-e7437ad1.png" alt="FDB" /></p>
+
+<p>FoundationDB 是一款分布式强一致、高可扩展的 key value 数据库，它提供多版本并发控制（MVCC），同时提供了可序列化快照隔离级别（SSI）。</p>
+
+<p>这里将从架构、元数据组织、数据组织三个方面，简述 FoundationDB 的架构设计，更详细的设计细节会在后续文章中介绍。</p>
+
+<h2 id="架构">架构</h2>
+
+<p>总的来说，FoundationDB 的架构可以分成三部分：控制系统，事务系统以及存储系统。</p>
+
+<p><img src="FDB-arch-overview-imgs/architecture.png" alt="FoundationDB Architecture" /></p>
+
+<p>控制系统部分提供了类似 zookeeper, etcd 等元数据管理系统的功能。它使用 disk paxos 实现选举、协调与元数据多副本的一致性。</p>
+
+<p>存储系统是依赖单机 key value store 构建的一个多副本的 key value store。底层的 kv store 支持多种实现，目前有：sqlite （default），redwood 和 rocksdb。其中 redwood 是一款用于替代 sqlite 的基于 btree 的 kv store，目前主要是 snowflake 在负责开发。根据反馈，使用 redwood 作为引擎底座，在性能上比依赖 sqlite 的版本强上不少。</p>
+
+<p>最复杂的是事务系统，它所涉及的组件最多。事务系统主要解决两个问题：</p>
+<ol>
+  <li>写入事务的持久化，类似于单机 RDMS 的 WAL</li>
+  <li>判断事务间是否存在冲突，是否能够提交。</li>
+</ol>
+
+<h2 id="元数据">元数据</h2>
+
+<p><img src="FDB-arch-overview-imgs/metadata.png" alt="Metadata" /></p>
+
+<p>FoundationDB 的元数据组织也可以按架构分成三部分。每个 FoundationDB 集群有一个唯一的地址，保存在 <code class="language-plaintext highlighter-rouge">fdb.cluster</code> 文件中；通过这个地址，可以定位到控制系统。</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>description:ID@IP:PORT,IP:PORT,...
+</code></pre></div></div>
+
+<p>控制系统中记录了事务系统的元数据，TLog 的位置、当前事务系统的版本号，都记录在控制系统中；client 也能通过查询控制系统，获取到事务系统的路由表。</p>
+
+<p>事务系统中又记录着存储系统的元数据，key 到 storage 的映射就保存在事务系统中。</p>
+
+<p>通过上述的层级关系，任何一个 client 或 server 只要能拿到 <code class="language-plaintext highlighter-rouge">fdb.cluster</code>，就能访问到集群中的任何一个节点。</p>
+
+<h2 id="数据组织">数据组织</h2>
+
+<p><img src="FDB-arch-overview-imgs/keyspace.png" alt="Key space" /></p>
+
+<p>FoundationDB 将 key space 划分成两部分，其中前缀为 <code class="language-plaintext highlighter-rouge">0xFF</code> 的被保留为系统空间，也就是记录在事务系统中的存储系统的元数据。</p>
+
+<p>剩余的 <code class="language-plaintext highlighter-rouge">[0x00, 0xFF)</code> 则用于存储用户数据。用户数据会按照 range 切分成一个个 shard，一个 shard 有多个副本，保存在不同的 storage server 上。</p>
+
+  </div><a class="u-url" href="/2023/08/12/FDB-arch-overview.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">W41ter&#39;s Bistro</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">W41ter&#39;s Bistro</li><li><a class="u-email" href="mailto:w41ter.l@gmail.com">w41ter.l@gmail.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/w41ter"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">w41ter</span></a></li><li><a href="https://www.twitter.com/WalterM56697798"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">WalterM56697798</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Focus on distributed storage system, compiler.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>

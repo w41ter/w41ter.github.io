@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>FoundationDB 架构 - 数据存储 | W41ter’s Bistro</title>
+<meta name="generator" content="Jekyll v4.2.2" />
+<meta property="og:title" content="FoundationDB 架构 - 数据存储" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="前一篇文章详细介绍了可序列化快照隔离级别以及 FoundationDB 的实现，这篇文章将介绍在通过事务冲突处理后，FoundationDB 是如何持久化数据的。 在 FoundationDB 中负责持久化数据的主要有两个组件： TLog: 类似于 RDMS 中的 WAL（write ahead log），提供日志的持久化能力； Storage: 负责应用日志、存取 key value 数据。 Commit proxy 检查完事务冲突后，将可提交的 mutations 打包到一个 message 中，并通过 TLogCommitRequest 发送给所有 TLog 。 TLog TLog 首先需要将日志按照事务提交顺序持久化。和 resolver 一样，TLog 收到的 TLogCommitRequest 请求可能和事务的 commit version 不同，它会在内存中对请求进行排序再进行持久化。 日志持久化由 disk queue 负责，日志在序列化后，写入 disk queue 的内存中；后者按照 4KB 为单位将日志切分成多个 page；一批数据写完后再写入磁盘。Disk queue 磁盘结构也很简单，它是两个文件组成的一个 WAL。每次写入时，将数据追加到后一个文件的末尾；如果前一个文件中的数据已经被消费完（可以清除），那么会交换两个文件顺序，之前的前一个文件会被清空，且新数据将依次追加到文件末尾。 在通常情况下，不同 storage 负责的 key 范围不一样，如果都统一从 disk queue 拉取日志，那么将读取到很多不需要的日志。为了减少 storage 拉取日志时的开销，TLog 会提前准备好每个 storage 所需要的日志。 FoundationDB 会为每个 storage 分配一个 tag，key 到 storage 的映射就等价于 key 到 tag 的映射；将 key 按照 tag 划分，得到的就是某个 storage 负责的 key 范围。Commit proxy 在准备提交请求到 TLog 前，会按照 message 中的 key 为 message 打上不同的 tag；而 TLog 会根据 message 中的 tag，将 message 按照顺序暂存在按 tag 分类的 memory queue 中。这样 storage 拉取日志时，只需要从对应 tag 的内存队列中拉取即可。 内存中的数据始终是有上限的，storage 消费并完成对日志数据的持久化后，TLog 就能释放内存中、磁盘上的数据；如果 storage 消费不及时，当 TLog 内存数据达到上限后会触发反压，拒绝新请求直到 storage 的消费速度跟上写入速度。 Storage Storage 会通过 TLogPeekRequest 从 TLog 拉取最新的日志。这些日志暂存在 storage 的内存中，最终持久化到 key value store 中。 Storage 会在内存中维护一个多版本窗口，每个版本由一棵 partial tree 组成；从 TLog 拉取的日志会按照版本生成 partial tree，并按照版本顺序组成队列。所谓的 partial tree 是 key value pairs 组成的一个 map，它只记录了一个事务版本中更新的数据。 超过窗口的数据（默认为 5s）会从内存队列中移出，并通过专用的线程写入到 key value store 中。FoundationDB 有多种 key value store 的实现，默认情况下使用 sqlite 作为底层存储引擎，此外还有 memory，redwood，rocksdb 可供选择。 Key value store 中的 key value 没有记录版本信息，因此一旦内存中的 partial tree 写入到 key value store 中，那么之前的版本信息就会丢失，而小于该版本的事务读将会被拒绝，即返回错误：transaction too old。 一旦数据被持久化到 key value store 中，storage 就可以通知 TLog 释放对应 tag 的内存数据；某个日志如果没有任何 tag 引用，那么就能安全地释放它所占用的磁盘空间。" />
+<meta property="og:description" content="前一篇文章详细介绍了可序列化快照隔离级别以及 FoundationDB 的实现，这篇文章将介绍在通过事务冲突处理后，FoundationDB 是如何持久化数据的。 在 FoundationDB 中负责持久化数据的主要有两个组件： TLog: 类似于 RDMS 中的 WAL（write ahead log），提供日志的持久化能力； Storage: 负责应用日志、存取 key value 数据。 Commit proxy 检查完事务冲突后，将可提交的 mutations 打包到一个 message 中，并通过 TLogCommitRequest 发送给所有 TLog 。 TLog TLog 首先需要将日志按照事务提交顺序持久化。和 resolver 一样，TLog 收到的 TLogCommitRequest 请求可能和事务的 commit version 不同，它会在内存中对请求进行排序再进行持久化。 日志持久化由 disk queue 负责，日志在序列化后，写入 disk queue 的内存中；后者按照 4KB 为单位将日志切分成多个 page；一批数据写完后再写入磁盘。Disk queue 磁盘结构也很简单，它是两个文件组成的一个 WAL。每次写入时，将数据追加到后一个文件的末尾；如果前一个文件中的数据已经被消费完（可以清除），那么会交换两个文件顺序，之前的前一个文件会被清空，且新数据将依次追加到文件末尾。 在通常情况下，不同 storage 负责的 key 范围不一样，如果都统一从 disk queue 拉取日志，那么将读取到很多不需要的日志。为了减少 storage 拉取日志时的开销，TLog 会提前准备好每个 storage 所需要的日志。 FoundationDB 会为每个 storage 分配一个 tag，key 到 storage 的映射就等价于 key 到 tag 的映射；将 key 按照 tag 划分，得到的就是某个 storage 负责的 key 范围。Commit proxy 在准备提交请求到 TLog 前，会按照 message 中的 key 为 message 打上不同的 tag；而 TLog 会根据 message 中的 tag，将 message 按照顺序暂存在按 tag 分类的 memory queue 中。这样 storage 拉取日志时，只需要从对应 tag 的内存队列中拉取即可。 内存中的数据始终是有上限的，storage 消费并完成对日志数据的持久化后，TLog 就能释放内存中、磁盘上的数据；如果 storage 消费不及时，当 TLog 内存数据达到上限后会触发反压，拒绝新请求直到 storage 的消费速度跟上写入速度。 Storage Storage 会通过 TLogPeekRequest 从 TLog 拉取最新的日志。这些日志暂存在 storage 的内存中，最终持久化到 key value store 中。 Storage 会在内存中维护一个多版本窗口，每个版本由一棵 partial tree 组成；从 TLog 拉取的日志会按照版本生成 partial tree，并按照版本顺序组成队列。所谓的 partial tree 是 key value pairs 组成的一个 map，它只记录了一个事务版本中更新的数据。 超过窗口的数据（默认为 5s）会从内存队列中移出，并通过专用的线程写入到 key value store 中。FoundationDB 有多种 key value store 的实现，默认情况下使用 sqlite 作为底层存储引擎，此外还有 memory，redwood，rocksdb 可供选择。 Key value store 中的 key value 没有记录版本信息，因此一旦内存中的 partial tree 写入到 key value store 中，那么之前的版本信息就会丢失，而小于该版本的事务读将会被拒绝，即返回错误：transaction too old。 一旦数据被持久化到 key value store 中，storage 就可以通知 TLog 释放对应 tag 的内存数据；某个日志如果没有任何 tag 引用，那么就能安全地释放它所占用的磁盘空间。" />
+<link rel="canonical" href="/2023/10/02/FDB-arch-txn-store.html" />
+<meta property="og:url" content="/2023/10/02/FDB-arch-txn-store.html" />
+<meta property="og:site_name" content="W41ter’s Bistro" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2023-10-02T00:00:00+08:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="FoundationDB 架构 - 数据存储" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2023-10-02T00:00:00+08:00","datePublished":"2023-10-02T00:00:00+08:00","description":"前一篇文章详细介绍了可序列化快照隔离级别以及 FoundationDB 的实现，这篇文章将介绍在通过事务冲突处理后，FoundationDB 是如何持久化数据的。 在 FoundationDB 中负责持久化数据的主要有两个组件： TLog: 类似于 RDMS 中的 WAL（write ahead log），提供日志的持久化能力； Storage: 负责应用日志、存取 key value 数据。 Commit proxy 检查完事务冲突后，将可提交的 mutations 打包到一个 message 中，并通过 TLogCommitRequest 发送给所有 TLog 。 TLog TLog 首先需要将日志按照事务提交顺序持久化。和 resolver 一样，TLog 收到的 TLogCommitRequest 请求可能和事务的 commit version 不同，它会在内存中对请求进行排序再进行持久化。 日志持久化由 disk queue 负责，日志在序列化后，写入 disk queue 的内存中；后者按照 4KB 为单位将日志切分成多个 page；一批数据写完后再写入磁盘。Disk queue 磁盘结构也很简单，它是两个文件组成的一个 WAL。每次写入时，将数据追加到后一个文件的末尾；如果前一个文件中的数据已经被消费完（可以清除），那么会交换两个文件顺序，之前的前一个文件会被清空，且新数据将依次追加到文件末尾。 在通常情况下，不同 storage 负责的 key 范围不一样，如果都统一从 disk queue 拉取日志，那么将读取到很多不需要的日志。为了减少 storage 拉取日志时的开销，TLog 会提前准备好每个 storage 所需要的日志。 FoundationDB 会为每个 storage 分配一个 tag，key 到 storage 的映射就等价于 key 到 tag 的映射；将 key 按照 tag 划分，得到的就是某个 storage 负责的 key 范围。Commit proxy 在准备提交请求到 TLog 前，会按照 message 中的 key 为 message 打上不同的 tag；而 TLog 会根据 message 中的 tag，将 message 按照顺序暂存在按 tag 分类的 memory queue 中。这样 storage 拉取日志时，只需要从对应 tag 的内存队列中拉取即可。 内存中的数据始终是有上限的，storage 消费并完成对日志数据的持久化后，TLog 就能释放内存中、磁盘上的数据；如果 storage 消费不及时，当 TLog 内存数据达到上限后会触发反压，拒绝新请求直到 storage 的消费速度跟上写入速度。 Storage Storage 会通过 TLogPeekRequest 从 TLog 拉取最新的日志。这些日志暂存在 storage 的内存中，最终持久化到 key value store 中。 Storage 会在内存中维护一个多版本窗口，每个版本由一棵 partial tree 组成；从 TLog 拉取的日志会按照版本生成 partial tree，并按照版本顺序组成队列。所谓的 partial tree 是 key value pairs 组成的一个 map，它只记录了一个事务版本中更新的数据。 超过窗口的数据（默认为 5s）会从内存队列中移出，并通过专用的线程写入到 key value store 中。FoundationDB 有多种 key value store 的实现，默认情况下使用 sqlite 作为底层存储引擎，此外还有 memory，redwood，rocksdb 可供选择。 Key value store 中的 key value 没有记录版本信息，因此一旦内存中的 partial tree 写入到 key value store 中，那么之前的版本信息就会丢失，而小于该版本的事务读将会被拒绝，即返回错误：transaction too old。 一旦数据被持久化到 key value store 中，storage 就可以通知 TLog 释放对应 tag 的内存数据；某个日志如果没有任何 tag 引用，那么就能安全地释放它所占用的磁盘空间。","headline":"FoundationDB 架构 - 数据存储","mainEntityOfPage":{"@type":"WebPage","@id":"/2023/10/02/FDB-arch-txn-store.html"},"url":"/2023/10/02/FDB-arch-txn-store.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="/feed.xml" title="W41ter's Bistro" /><!-- for mathjax support -->
+  
+    <script type="text/x-mathjax-config">
+      MathJax.Hub.Config({
+          extensions: [
+          "tex2jax.js",
+          "MathMenu.js",
+          "MathZoom.js",
+          "AssistiveMML.js",
+          "a11y/accessibility-menu.js"
+        ],
+        tex2jax: {      // AND HERE
+          inlineMath: [['$', '$']],
+          displayMath: [['$$', '$$']]
+        },
+        jax: ["input/TeX", "output/CommonHTML"],
+        TeX: {
+          extensions: [
+            "AMSmath.js",
+            "AMSsymbols.js",
+            "noErrors.js",
+            "noUndefined.js",
+          ],
+          equationNumbers: { autoNumber: "AMS" }
+        }
+      });
+    </script>
+    <script type="text/javascript" async src="https://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+  
+</head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">W41ter&#39;s Bistro</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">FoundationDB 架构 - 数据存储</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2023-10-02T00:00:00+08:00" itemprop="datePublished">Oct 2, 2023
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p>前一篇文章详细介绍了可序列化快照隔离级别以及 FoundationDB 的实现，这篇文章将介绍在通过事务冲突处理后，FoundationDB 是如何持久化数据的。</p>
+
+<p>在 FoundationDB 中负责持久化数据的主要有两个组件：</p>
+
+<ul>
+  <li>TLog: 类似于 RDMS 中的 WAL（write ahead log），提供日志的持久化能力；</li>
+  <li>Storage: 负责应用日志、存取 key value 数据。</li>
+</ul>
+
+<p>Commit proxy 检查完事务冲突后，将可提交的 mutations 打包到一个 message 中，并通过 <code class="language-plaintext highlighter-rouge">TLogCommitRequest</code> 发送给所有 TLog 。</p>
+
+<h2 id="tlog">TLog</h2>
+
+<p><img src="FDB-arch-txn-store-imgs/TLog.png" alt="TLog 内部结构" /></p>
+
+<p>TLog 首先需要将日志按照事务提交顺序持久化。和 resolver 一样，TLog 收到的 <code class="language-plaintext highlighter-rouge">TLogCommitRequest</code> 请求可能和事务的 commit version 不同，它会在内存中对请求进行排序再进行持久化。</p>
+
+<p>日志持久化由 disk queue 负责，日志在序列化后，写入 disk queue 的内存中；后者按照 4KB 为单位将日志切分成多个 page；一批数据写完后再写入磁盘。Disk queue 磁盘结构也很简单，它是两个文件组成的一个 WAL。每次写入时，将数据追加到后一个文件的末尾；如果前一个文件中的数据已经被消费完（可以清除），那么会交换两个文件顺序，之前的前一个文件会被清空，且新数据将依次追加到文件末尾。</p>
+
+<p>在通常情况下，不同 storage 负责的 key 范围不一样，如果都统一从 disk queue 拉取日志，那么将读取到很多不需要的日志。为了减少 storage 拉取日志时的开销，TLog 会提前准备好每个 storage 所需要的日志。</p>
+
+<p>FoundationDB 会为每个 storage 分配一个 tag，key 到 storage 的映射就等价于 key 到 tag 的映射；将 key 按照 tag 划分，得到的就是某个 storage 负责的 key 范围。Commit proxy 在准备提交请求到 TLog 前，会按照 message 中的 key 为 message 打上不同的 tag；而 TLog 会根据 message 中的 tag，将 message 按照顺序暂存在按 tag 分类的 memory queue 中。这样 storage 拉取日志时，只需要从对应 tag 的内存队列中拉取即可。</p>
+
+<p>内存中的数据始终是有上限的，storage 消费并完成对日志数据的持久化后，TLog 就能释放内存中、磁盘上的数据；如果 storage 消费不及时，当 TLog 内存数据达到上限后会触发反压，拒绝新请求直到 storage 的消费速度跟上写入速度。</p>
+
+<h2 id="storage">Storage</h2>
+
+<p><img src="FDB-arch-txn-store-imgs/Storage.png" alt="Storage 内部结构" /></p>
+
+<p>Storage 会通过 <code class="language-plaintext highlighter-rouge">TLogPeekRequest</code> 从 TLog 拉取最新的日志。这些日志暂存在 storage 的内存中，最终持久化到 key value store 中。</p>
+
+<p>Storage 会在内存中维护一个多版本窗口，每个版本由一棵 partial tree 组成；从 TLog 拉取的日志会按照版本生成 partial tree，并按照版本顺序组成队列。所谓的 partial tree 是 key value pairs 组成的一个 map，它只记录了一个事务版本中更新的数据。</p>
+
+<p>超过窗口的数据（默认为 5s）会从内存队列中移出，并通过专用的线程写入到 key value store 中。FoundationDB 有多种 key value store 的实现，默认情况下使用 sqlite 作为底层存储引擎，此外还有 memory，redwood，rocksdb 可供选择。</p>
+
+<p>Key value store 中的 key value 没有记录版本信息，因此一旦内存中的 partial tree 写入到 key value store 中，那么之前的版本信息就会丢失，而小于该版本的事务读将会被拒绝，即返回错误：<code class="language-plaintext highlighter-rouge">transaction too old</code>。</p>
+
+<p>一旦数据被持久化到 key value store 中，storage 就可以通知 TLog 释放对应 tag 的内存数据；某个日志如果没有任何 tag 引用，那么就能安全地释放它所占用的磁盘空间。</p>
+
+  </div><a class="u-url" href="/2023/10/02/FDB-arch-txn-store.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">W41ter&#39;s Bistro</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">W41ter&#39;s Bistro</li><li><a class="u-email" href="mailto:w41ter.l@gmail.com">w41ter.l@gmail.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/w41ter"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">w41ter</span></a></li><li><a href="https://www.twitter.com/WalterM56697798"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">WalterM56697798</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Focus on distributed storage system, compiler.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>
