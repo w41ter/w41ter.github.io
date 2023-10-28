@@ -10,11 +10,11 @@ mathjax: true
 
 快照隔离是一种事务隔离级别，它属于多版本并发控制（multiversion concurreny control, MVCC），它的每个事务读都只读取该事务开始时已经提交的数据的快照。
 
-![A diagram of the isolation levels and their relationships. From a critique of ANSI Isolation](FDB-arch-txn-conflicts-imgs/isolation-level-and-their-relationship.png)
+![A diagram of the isolation levels and their relationships. From a critique of ANSI Isolation](assets/FDB-arch-txn-conflicts-imgs/isolation-level-and-their-relationship.png)
 
 不同事务访问相同资源时会产生竞争，处理竞争的方式可能会影响事务吞吐，比如加读写锁会让读写请求间相互等待。快照隔离可以避免读写竞争，从而提升事务的吞吐。因为在快照隔离中，任何改动都会生成一份新的快照，而后者对于已经持有数据快照的事务读是不可见的，所以只要能够维护数据快照，事务读请求就不会被阻塞。
 
-![Snapshot Read](FDB-arch-txn-conflicts-imgs/snapshot-read.png)
+![Snapshot Read](assets/FDB-arch-txn-conflicts-imgs/snapshot-read.png)
 
 能避免读写竞争的优点让快照隔离有了非常广泛的应用，但它仍然不完美，离理想的可序列化仍然有差距。在论文 A Critique of ANSI Isolation 中就详细介绍了快照隔离和它存在的幻象（Phantoms）： Write Skew。
 
@@ -50,7 +50,7 @@ FoundationDB 的 resolver 负责处理事务间的冲突，它在内存中记录
 
 下面来看一个处理冲突的具体例子。
 
-![处理事务冲突](FDB-arch-txn-conflicts-imgs/resolve-txn-conflicts.png)
+![处理事务冲突](assets/FDB-arch-txn-conflicts-imgs/resolve-txn-conflicts.png)
 
 假设有两个事务 1,2 分别在时刻 200, 100 开始，事务 1 读取 `a,b` 修改 `c`，事务 2 读取 `a,c` 修改 `b`；它们分别发送给不同的 commit proxy 完成提交，其中事务 1 拿到的提交时间为 300，事务 2 为 400，所以 resolver 先处理事务 1，再处理事务 2。
 

@@ -10,7 +10,7 @@ mathjax: true
 
 在与 FoundationDB 集群交互前，client 需要先执行 open database。
 
-![Open Database](FDB-arch-txn-imgs/open-database.png)
+![Open Database](assets/FDB-arch-txn-imgs/open-database.png)
 
 执行 open database 时，client 会从 `fdb.cluster` 文件中获取 `connection string`，后者指向了集群中的 coordinators；client 发送 `OpenDatabaseCoordRequest` 请求给 coordinator 进行验证，并获取 `ClientDBInfo`。
 
@@ -26,7 +26,7 @@ FoundationDB 支持交互式事务，开启事务时会获取之前已经提交�
 
 最后，可以提交的事务会写入 TLog 中完成持久化，再异步地发送到存储系统中。
 
-![Commit Transaction](FDB-arch-txn-imgs/commit-txn.png)
+![Commit Transaction](assets/FDB-arch-txn-imgs/commit-txn.png)
 
 上图展示了一个写事务提交的完整交互流程，接下来将按照上图详细分析各个流程。
 

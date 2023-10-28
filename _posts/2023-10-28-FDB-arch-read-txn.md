@@ -6,7 +6,7 @@ mathjax: true
 
 前一篇文章介绍了 [FoundationDB 架构 - 事务数据的存储](https://mp.weixin.qq.com/s?__biz=MzU4ODgyOTg5NA==&amp;mid=2247483728&amp;idx=1&amp;sn=87b85f293fe91bc57f589a09be84b7a2&amp;chksm=fdd784f9caa00def578dfacc61ef7ba1ab31f64b87826c9f279bae385bf44022f9923e853dd6&token=1055659193&lang=zh_CN#rd) FoundationDB 数据是如何存储的。这篇文章将介绍如何从 FoundationDB 中读取已写入的数据。
 
-![读请求路径](FDB-arch-read-txn-imgs/read-path.png)
+![读请求路径](assets/FDB-arch-read-txn-imgs/read-path.png)
 
 ## 开启事务
 

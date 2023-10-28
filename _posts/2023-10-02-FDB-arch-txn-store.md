@@ -15,7 +15,7 @@ Commit proxy 检查完事务冲突后，将可提交的 mutations 打包到一�
 
 ## TLog
 
-![TLog 内部结构](FDB-arch-txn-store-imgs/TLog.png)
+![TLog 内部结构](assets/FDB-arch-txn-store-imgs/TLog.png)
 
 TLog 首先需要将日志按照事务提交顺序持久化。和 resolver 一样，TLog 收到的 `TLogCommitRequest` 请求可能和事务的 commit version 不同，它会在内存中对请求进行排序再进行持久化。
 
@@ -29,7 +29,7 @@ FoundationDB 会为每个 storage 分配一个 tag，key 到 storage 的映射�
 
 ## Storage
 
-![Storage 内部结构](FDB-arch-txn-store-imgs/Storage.png)
+![Storage 内部结构](assets/FDB-arch-txn-store-imgs/Storage.png)
 
 Storage 会通过 `TLogPeekRequest` 从 TLog 拉取最新的日志。这些日志暂存在 storage 的内存中，最终持久化到 key value store 中。
 
