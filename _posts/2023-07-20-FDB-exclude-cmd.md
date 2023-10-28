@@ -1,3 +1,9 @@
+---
+layout: post
+title: FoundationDB 架构 - 写事务处理流程
+mathjax: true
+---
+
 # 背景
 
 从[FoundationDB 源码阅读：maintenace 模式的作用](https://mp.weixin.qq.com/s?__biz=MzU4ODgyOTg5NA==&mid=2247483676&idx=1&sn=3f8175c1b2996a9690ac620e053b9034&chksm=fdd784b5caa00da338f85dc606152eda51c25bdd7c052370fdc6de3dc789fede709a6437f7fe&=873428723&=zh_CN#rd)中可知 FDB 的 `maintenance` 模式并不会主动触发 recruit 流程，如果待操作的机器上有 transaction system 的进程，那么重启操作将会引起 3~5s 的服务中断，原因是等待直到 failure detectors 判断机器故障后，cluster controller 才会触发 recruit 流程。
