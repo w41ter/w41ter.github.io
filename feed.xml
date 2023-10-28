@@ -1,6 +1,6 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.2.2">Jekyll</generator><link href="/feed.xml" rel="self" type="application/atom+xml" /><link href="/" rel="alternate" type="text/html" /><updated>2023-10-28T15:34:17+08:00</updated><id>/feed.xml</id><title type="html">W41ter’s Bistro</title><subtitle>Focus on distributed storage system, compiler.</subtitle><entry><title type="html">FoundationDB 架构 - 只读事务</title><link href="/2023/10/28/FDB-arch-read-txn.html" rel="alternate" type="text/html" title="FoundationDB 架构 - 只读事务" /><published>2023-10-28T00:00:00+08:00</published><updated>2023-10-28T00:00:00+08:00</updated><id>/2023/10/28/FDB-arch-read-txn</id><content type="html" xml:base="/2023/10/28/FDB-arch-read-txn.html"><![CDATA[<p>前一篇文章介绍了 <a href="https://mp.weixin.qq.com/s?__biz=MzU4ODgyOTg5NA==&amp;mid=2247483728&amp;idx=1&amp;sn=87b85f293fe91bc57f589a09be84b7a2&amp;chksm=fdd784f9caa00def578dfacc61ef7ba1ab31f64b87826c9f279bae385bf44022f9923e853dd6&amp;token=1055659193&amp;lang=zh_CN#rd">FoundationDB 架构 - 事务数据的存储</a> FoundationDB 数据是如何存储的。这篇文章将介绍如何从 FoundationDB 中读取已写入的数据。</p>
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.2.2">Jekyll</generator><link href="/feed.xml" rel="self" type="application/atom+xml" /><link href="/" rel="alternate" type="text/html" /><updated>2023-10-28T15:43:09+08:00</updated><id>/feed.xml</id><title type="html">W41ter’s Bistro</title><subtitle>Focus on distributed storage system, compiler.</subtitle><entry><title type="html">FoundationDB 架构 - 只读事务</title><link href="/2023/10/28/FDB-arch-read-txn.html" rel="alternate" type="text/html" title="FoundationDB 架构 - 只读事务" /><published>2023-10-28T00:00:00+08:00</published><updated>2023-10-28T00:00:00+08:00</updated><id>/2023/10/28/FDB-arch-read-txn</id><content type="html" xml:base="/2023/10/28/FDB-arch-read-txn.html"><![CDATA[<p>前一篇文章介绍了 <a href="https://mp.weixin.qq.com/s?__biz=MzU4ODgyOTg5NA==&amp;mid=2247483728&amp;idx=1&amp;sn=87b85f293fe91bc57f589a09be84b7a2&amp;chksm=fdd784f9caa00def578dfacc61ef7ba1ab31f64b87826c9f279bae385bf44022f9923e853dd6&amp;token=1055659193&amp;lang=zh_CN#rd">FoundationDB 架构 - 事务数据的存储</a> FoundationDB 数据是如何存储的。这篇文章将介绍如何从 FoundationDB 中读取已写入的数据。</p>
 
-<p><img src="FDB-arch-read-txn-imgs/read-path.png" alt="读请求路径" /></p>
+<p><img src="assets/FDB-arch-read-txn-imgs/read-path.png" alt="读请求路径" /></p>
 
 <h2 id="开启事务">开启事务</h2>
 
@@ -35,7 +35,7 @@
 
 <h2 id="tlog">TLog</h2>
 
-<p><img src="FDB-arch-txn-store-imgs/TLog.png" alt="TLog 内部结构" /></p>
+<p><img src="assets/FDB-arch-txn-store-imgs/TLog.png" alt="TLog 内部结构" /></p>
 
 <p>TLog 首先需要将日志按照事务提交顺序持久化。和 resolver 一样，TLog 收到的 <code class="language-plaintext highlighter-rouge">TLogCommitRequest</code> 请求可能和事务的 commit version 不同，它会在内存中对请求进行排序再进行持久化。</p>
 
@@ -49,7 +49,7 @@
 
 <h2 id="storage">Storage</h2>
 
-<p><img src="FDB-arch-txn-store-imgs/Storage.png" alt="Storage 内部结构" /></p>
+<p><img src="assets/FDB-arch-txn-store-imgs/Storage.png" alt="Storage 内部结构" /></p>
 
 <p>Storage 会通过 <code class="language-plaintext highlighter-rouge">TLogPeekRequest</code> 从 TLog 拉取最新的日志。这些日志暂存在 storage 的内存中，最终持久化到 key value store 中。</p>
 
@@ -65,11 +65,11 @@
 
 <p>快照隔离是一种事务隔离级别，它属于多版本并发控制（multiversion concurreny control, MVCC），它的每个事务读都只读取该事务开始时已经提交的数据的快照。</p>
 
-<p><img src="FDB-arch-txn-conflicts-imgs/isolation-level-and-their-relationship.png" alt="A diagram of the isolation levels and their relationships. From a critique of ANSI Isolation" /></p>
+<p><img src="assets/FDB-arch-txn-conflicts-imgs/isolation-level-and-their-relationship.png" alt="A diagram of the isolation levels and their relationships. From a critique of ANSI Isolation" /></p>
 
 <p>不同事务访问相同资源时会产生竞争，处理竞争的方式可能会影响事务吞吐，比如加读写锁会让读写请求间相互等待。快照隔离可以避免读写竞争，从而提升事务的吞吐。因为在快照隔离中，任何改动都会生成一份新的快照，而后者对于已经持有数据快照的事务读是不可见的，所以只要能够维护数据快照，事务读请求就不会被阻塞。</p>
 
-<p><img src="FDB-arch-txn-conflicts-imgs/snapshot-read.png" alt="Snapshot Read" /></p>
+<p><img src="assets/FDB-arch-txn-conflicts-imgs/snapshot-read.png" alt="Snapshot Read" /></p>
 
 <p>能避免读写竞争的优点让快照隔离有了非常广泛的应用，但它仍然不完美，离理想的可序列化仍然有差距。在论文 A Critique of ANSI Isolation 中就详细介绍了快照隔离和它存在的幻象（Phantoms）： Write Skew。</p>
 
@@ -104,7 +104,7 @@
 
 <p>下面来看一个处理冲突的具体例子。</p>
 
-<p><img src="FDB-arch-txn-conflicts-imgs/resolve-txn-conflicts.png" alt="处理事务冲突" /></p>
+<p><img src="assets/FDB-arch-txn-conflicts-imgs/resolve-txn-conflicts.png" alt="处理事务冲突" /></p>
 
 <p>假设有两个事务 1,2 分别在时刻 200, 100 开始，事务 1 读取 <code class="language-plaintext highlighter-rouge">a,b</code> 修改 <code class="language-plaintext highlighter-rouge">c</code>，事务 2 读取 <code class="language-plaintext highlighter-rouge">a,c</code> 修改 <code class="language-plaintext highlighter-rouge">b</code>；它们分别发送给不同的 commit proxy 完成提交，其中事务 1 拿到的提交时间为 300，事务 2 为 400，所以 resolver 先处理事务 1，再处理事务 2。</p>
 
@@ -122,7 +122,7 @@
 
 <p>在与 FoundationDB 集群交互前，client 需要先执行 open database。</p>
 
-<p><img src="FDB-arch-txn-imgs/open-database.png" alt="Open Database" /></p>
+<p><img src="assets/FDB-arch-txn-imgs/open-database.png" alt="Open Database" /></p>
 
 <p>执行 open database 时，client 会从 <code class="language-plaintext highlighter-rouge">fdb.cluster</code> 文件中获取 <code class="language-plaintext highlighter-rouge">connection string</code>，后者指向了集群中的 coordinators；client 发送 <code class="language-plaintext highlighter-rouge">OpenDatabaseCoordRequest</code> 请求给 coordinator 进行验证，并获取 <code class="language-plaintext highlighter-rouge">ClientDBInfo</code>。</p>
 
@@ -140,7 +140,7 @@
 
 <p>最后，可以提交的事务会写入 TLog 中完成持久化，再异步地发送到存储系统中。</p>
 
-<p><img src="FDB-arch-txn-imgs/commit-txn.png" alt="Commit Transaction" /></p>
+<p><img src="assets/FDB-arch-txn-imgs/commit-txn.png" alt="Commit Transaction" /></p>
 
 <p>上图展示了一个写事务提交的完整交互流程，接下来将按照上图详细分析各个流程。</p>
 
@@ -199,7 +199,7 @@
 
 <p>总的来说，FoundationDB 的架构可以分成三部分：控制系统，事务系统以及存储系统。</p>
 
-<p><img src="FDB-arch-overview-imgs/architecture.png" alt="FoundationDB Architecture" /></p>
+<p><img src="assets/FDB-arch-overview-imgs/architecture.png" alt="FoundationDB Architecture" /></p>
 
 <p>控制系统部分提供了类似 zookeeper, etcd 等元数据管理系统的功能。它使用 disk paxos 实现选举、协调与元数据多副本的一致性。</p>
 
@@ -213,7 +213,7 @@
 
 <h2 id="元数据">元数据</h2>
 
-<p><img src="FDB-arch-overview-imgs/metadata.png" alt="Metadata" /></p>
+<p><img src="assets/FDB-arch-overview-imgs/metadata.png" alt="Metadata" /></p>
 
 <p>FoundationDB 的元数据组织也可以按架构分成三部分。每个 FoundationDB 集群有一个唯一的地址，保存在 <code class="language-plaintext highlighter-rouge">fdb.cluster</code> 文件中；通过这个地址，可以定位到控制系统。</p>
 
@@ -228,11 +228,11 @@
 
 <h2 id="数据组织">数据组织</h2>
 
-<p><img src="FDB-arch-overview-imgs/keyspace.png" alt="Key space" /></p>
+<p><img src="assets/FDB-arch-overview-imgs/keyspace.png" alt="Key space" /></p>
 
 <p>FoundationDB 将 key space 划分成两部分，其中前缀为 <code class="language-plaintext highlighter-rouge">0xFF</code> 的被保留为系统空间，也就是记录在事务系统中的存储系统的元数据。</p>
 
-<p>剩余的 <code class="language-plaintext highlighter-rouge">[0x00, 0xFF)</code> 则用于存储用户数据。用户数据会按照 range 切分成一个个 shard，一个 shard 有多个副本，保存在不同的 storage server 上。</p>]]></content><author><name></name></author><summary type="html"><![CDATA[FoundationDB 是一款分布式强一致、高可扩展的 key value 数据库，它提供多版本并发控制（MVCC），同时提供了可序列化快照隔离级别（SSI）。 这里将从架构、元数据组织、数据组织三个方面，简述 FoundationDB 的架构设计，更详细的设计细节会在后续文章中介绍。 架构 总的来说，FoundationDB 的架构可以分成三部分：控制系统，事务系统以及存储系统。 控制系统部分提供了类似 zookeeper, etcd 等元数据管理系统的功能。它使用 disk paxos 实现选举、协调与元数据多副本的一致性。 存储系统是依赖单机 key value store 构建的一个多副本的 key value store。底层的 kv store 支持多种实现，目前有：sqlite （default），redwood 和 rocksdb。其中 redwood 是一款用于替代 sqlite 的基于 btree 的 kv store，目前主要是 snowflake 在负责开发。根据反馈，使用 redwood 作为引擎底座，在性能上比依赖 sqlite 的版本强上不少。 最复杂的是事务系统，它所涉及的组件最多。事务系统主要解决两个问题： 写入事务的持久化，类似于单机 RDMS 的 WAL 判断事务间是否存在冲突，是否能够提交。 元数据 FoundationDB 的元数据组织也可以按架构分成三部分。每个 FoundationDB 集群有一个唯一的地址，保存在 fdb.cluster 文件中；通过这个地址，可以定位到控制系统。 description:ID@IP:PORT,IP:PORT,... 控制系统中记录了事务系统的元数据，TLog 的位置、当前事务系统的版本号，都记录在控制系统中；client 也能通过查询控制系统，获取到事务系统的路由表。 事务系统中又记录着存储系统的元数据，key 到 storage 的映射就保存在事务系统中。 通过上述的层级关系，任何一个 client 或 server 只要能拿到 fdb.cluster，就能访问到集群中的任何一个节点。 数据组织 FoundationDB 将 key space 划分成两部分，其中前缀为 0xFF 的被保留为系统空间，也就是记录在事务系统中的存储系统的元数据。 剩余的 [0x00, 0xFF) 则用于存储用户数据。用户数据会按照 range 切分成一个个 shard，一个 shard 有多个副本，保存在不同的 storage server 上。]]></summary></entry><entry><title type="html">FoundationDB 架构 - 写事务处理流程</title><link href="/2023/07/20/FDB-exclude-cmd.html" rel="alternate" type="text/html" title="FoundationDB 架构 - 写事务处理流程" /><published>2023-07-20T00:00:00+08:00</published><updated>2023-07-20T00:00:00+08:00</updated><id>/2023/07/20/FDB-exclude-cmd</id><content type="html" xml:base="/2023/07/20/FDB-exclude-cmd.html"><![CDATA[<h1 id="背景">背景</h1>
+<p>剩余的 <code class="language-plaintext highlighter-rouge">[0x00, 0xFF)</code> 则用于存储用户数据。用户数据会按照 range 切分成一个个 shard，一个 shard 有多个副本，保存在不同的 storage server 上。</p>]]></content><author><name></name></author><summary type="html"><![CDATA[FoundationDB 是一款分布式强一致、高可扩展的 key value 数据库，它提供多版本并发控制（MVCC），同时提供了可序列化快照隔离级别（SSI）。 这里将从架构、元数据组织、数据组织三个方面，简述 FoundationDB 的架构设计，更详细的设计细节会在后续文章中介绍。 架构 总的来说，FoundationDB 的架构可以分成三部分：控制系统，事务系统以及存储系统。 控制系统部分提供了类似 zookeeper, etcd 等元数据管理系统的功能。它使用 disk paxos 实现选举、协调与元数据多副本的一致性。 存储系统是依赖单机 key value store 构建的一个多副本的 key value store。底层的 kv store 支持多种实现，目前有：sqlite （default），redwood 和 rocksdb。其中 redwood 是一款用于替代 sqlite 的基于 btree 的 kv store，目前主要是 snowflake 在负责开发。根据反馈，使用 redwood 作为引擎底座，在性能上比依赖 sqlite 的版本强上不少。 最复杂的是事务系统，它所涉及的组件最多。事务系统主要解决两个问题： 写入事务的持久化，类似于单机 RDMS 的 WAL 判断事务间是否存在冲突，是否能够提交。 元数据 FoundationDB 的元数据组织也可以按架构分成三部分。每个 FoundationDB 集群有一个唯一的地址，保存在 fdb.cluster 文件中；通过这个地址，可以定位到控制系统。 description:ID@IP:PORT,IP:PORT,... 控制系统中记录了事务系统的元数据，TLog 的位置、当前事务系统的版本号，都记录在控制系统中；client 也能通过查询控制系统，获取到事务系统的路由表。 事务系统中又记录着存储系统的元数据，key 到 storage 的映射就保存在事务系统中。 通过上述的层级关系，任何一个 client 或 server 只要能拿到 fdb.cluster，就能访问到集群中的任何一个节点。 数据组织 FoundationDB 将 key space 划分成两部分，其中前缀为 0xFF 的被保留为系统空间，也就是记录在事务系统中的存储系统的元数据。 剩余的 [0x00, 0xFF) 则用于存储用户数据。用户数据会按照 range 切分成一个个 shard，一个 shard 有多个副本，保存在不同的 storage server 上。]]></summary></entry><entry><title type="html">FoundationDB exclude command</title><link href="/2023/07/20/FDB-exclude-cmd.html" rel="alternate" type="text/html" title="FoundationDB exclude command" /><published>2023-07-20T00:00:00+08:00</published><updated>2023-07-20T00:00:00+08:00</updated><id>/2023/07/20/FDB-exclude-cmd</id><content type="html" xml:base="/2023/07/20/FDB-exclude-cmd.html"><![CDATA[<h1 id="背景">背景</h1>
 
 <p>从<a href="https://mp.weixin.qq.com/s?__biz=MzU4ODgyOTg5NA==&amp;mid=2247483676&amp;idx=1&amp;sn=3f8175c1b2996a9690ac620e053b9034&amp;chksm=fdd784b5caa00da338f85dc606152eda51c25bdd7c052370fdc6de3dc789fede709a6437f7fe&amp;=873428723&amp;=zh_CN#rd">FoundationDB 源码阅读：maintenace 模式的作用</a>中可知 FDB 的 <code class="language-plaintext highlighter-rouge">maintenance</code> 模式并不会主动触发 recruit 流程，如果待操作的机器上有 transaction system 的进程，那么重启操作将会引起 3~5s 的服务中断，原因是等待直到 failure detectors 判断机器故障后，cluster controller 才会触发 recruit 流程。</p>
 

@@ -86,7 +86,7 @@
 
 <p>总的来说，FoundationDB 的架构可以分成三部分：控制系统，事务系统以及存储系统。</p>
 
-<p><img src="FDB-arch-overview-imgs/architecture.png" alt="FoundationDB Architecture" /></p>
+<p><img src="assets/FDB-arch-overview-imgs/architecture.png" alt="FoundationDB Architecture" /></p>
 
 <p>控制系统部分提供了类似 zookeeper, etcd 等元数据管理系统的功能。它使用 disk paxos 实现选举、协调与元数据多副本的一致性。</p>
 
@@ -100,7 +100,7 @@
 
 <h2 id="元数据">元数据</h2>
 
-<p><img src="FDB-arch-overview-imgs/metadata.png" alt="Metadata" /></p>
+<p><img src="assets/FDB-arch-overview-imgs/metadata.png" alt="Metadata" /></p>
 
 <p>FoundationDB 的元数据组织也可以按架构分成三部分。每个 FoundationDB 集群有一个唯一的地址，保存在 <code class="language-plaintext highlighter-rouge">fdb.cluster</code> 文件中；通过这个地址，可以定位到控制系统。</p>
 
@@ -115,7 +115,7 @@
 
 <h2 id="数据组织">数据组织</h2>
 
-<p><img src="FDB-arch-overview-imgs/keyspace.png" alt="Key space" /></p>
+<p><img src="assets/FDB-arch-overview-imgs/keyspace.png" alt="Key space" /></p>
 
 <p>FoundationDB 将 key space 划分成两部分，其中前缀为 <code class="language-plaintext highlighter-rouge">0xFF</code> 的被保留为系统空间，也就是记录在事务系统中的存储系统的元数据。</p>
 

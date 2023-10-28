@@ -82,7 +82,7 @@
 
 <p>在与 FoundationDB 集群交互前，client 需要先执行 open database。</p>
 
-<p><img src="FDB-arch-txn-imgs/open-database.png" alt="Open Database" /></p>
+<p><img src="assets/FDB-arch-txn-imgs/open-database.png" alt="Open Database" /></p>
 
 <p>执行 open database 时，client 会从 <code class="language-plaintext highlighter-rouge">fdb.cluster</code> 文件中获取 <code class="language-plaintext highlighter-rouge">connection string</code>，后者指向了集群中的 coordinators；client 发送 <code class="language-plaintext highlighter-rouge">OpenDatabaseCoordRequest</code> 请求给 coordinator 进行验证，并获取 <code class="language-plaintext highlighter-rouge">ClientDBInfo</code>。</p>
 
@@ -100,7 +100,7 @@
 
 <p>最后，可以提交的事务会写入 TLog 中完成持久化，再异步地发送到存储系统中。</p>
 
-<p><img src="FDB-arch-txn-imgs/commit-txn.png" alt="Commit Transaction" /></p>
+<p><img src="assets/FDB-arch-txn-imgs/commit-txn.png" alt="Commit Transaction" /></p>
 
 <p>上图展示了一个写事务提交的完整交互流程，接下来将按照上图详细分析各个流程。</p>
 

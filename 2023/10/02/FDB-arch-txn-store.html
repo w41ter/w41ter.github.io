@@ -89,7 +89,7 @@
 
 <h2 id="tlog">TLog</h2>
 
-<p><img src="FDB-arch-txn-store-imgs/TLog.png" alt="TLog 内部结构" /></p>
+<p><img src="assets/FDB-arch-txn-store-imgs/TLog.png" alt="TLog 内部结构" /></p>
 
 <p>TLog 首先需要将日志按照事务提交顺序持久化。和 resolver 一样，TLog 收到的 <code class="language-plaintext highlighter-rouge">TLogCommitRequest</code> 请求可能和事务的 commit version 不同，它会在内存中对请求进行排序再进行持久化。</p>
 
@@ -103,7 +103,7 @@
 
 <h2 id="storage">Storage</h2>
 
-<p><img src="FDB-arch-txn-store-imgs/Storage.png" alt="Storage 内部结构" /></p>
+<p><img src="assets/FDB-arch-txn-store-imgs/Storage.png" alt="Storage 内部结构" /></p>
 
 <p>Storage 会通过 <code class="language-plaintext highlighter-rouge">TLogPeekRequest</code> 从 TLog 拉取最新的日志。这些日志暂存在 storage 的内存中，最终持久化到 key value store 中。</p>
 
