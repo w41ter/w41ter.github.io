@@ -4,18 +4,54 @@ title: FoundationDB 架构 - fault tolerance
 mathjax: true
 ---
 
+前两篇文章已经完整地介绍了 FoundationDB 的扩展能力，这一篇文章将介绍 FoundationDB 架构的最后一部分：FoundationDB 的容错。
+
+从实现机制上讲，FoundationDB 的容错可以按照数据组织方式划分为三部分：控制系统容错、事务系统容错、存储系统容错。
+
+![旧图，FoundationDB architecture overview](./FDB-arch-fault-tolerance-imgs/architecture.png)
+
 ## 控制系统
 
-控制的容灾能力建设总体可以分成两部分：key-value store 和选举。它们背后都依赖于分布式一致性协议 paxos。这里不会介绍 paxos 协议的细节，有兴趣的读者可以阅读论文《paxos made simple》。
+控制系统中参与容错的重要角色是 coordinator，它背后的分布式一致性算法 paxos 为它提供了容错能力。大多数分布式系统工作在异步、非拜占庭消息模型下，依靠多副本提供容错能力；paxos 算法解决了该模型下多副本间数据的一致性问题。在 paxos 算法的加持下，FoundationDB 在只要集群中仍有多于半数的 coordinator 节点存活时（无故障、无网络隔离），就能对外提供服务。由于 paxos 不是本文重点，所以不做更多介绍，更多关于 paxos 算法的细节可以阅读论文《paxos made simple》。
 
-控制系统的主体是拥有 coordinator 角色的 fdbserver，用户在使用 FoundationDB 时，会通过 fdbcli 设置几个进程作为 coordinator。Coordinator 会向其他 coordinator 发送 `CandidacyRequest`，同时每个 coordinator 会按照一定规则从多个请求中，选择出一个合适的作为 `Nonime`；最后，获得多数派（超过半数）投票的 coordinator 会成为 leader。新 leader 上任后，会定期广播心跳请求给其他节点，以抑制后者发起选举的流程；如果 leader 因为网络隔离、宕机等原因与其他节点失联，则剩余节点会再次发起选举，直至选出一个新的 leader。
+> The Paxos algorithm, when presented in plain English, is very simple.  Leslie Lamport
 
-// TODO: 这里可以介绍一些 coordinator 的亲和性。
+FoundationDB 中的 coordinator 角色是用户手动设置的，下面是一个例子：
 
-除了选举外，coordinator 还会运行名叫 `GenerationReg` 的服务，后者实际上是一个有 WAL 的全内存的 key-value store，它只负责存储一种信息，clusterKey => DbState 的映射。对 `GenerationReg` 的读写请求通过 `replicateRead` 和 `replicateWrite` 实现。DbState 中记录的是事务系统的元数据。这点会在后面介绍。
+```
+user@host$ fdbcli
+Using cluster file `/etc/foundationdb/fdb.cluster'.
 
-coordinator 是用户手动配置的，因此如果任何一个 coordinator 宕机，都需要人工设置新的 coordinator 进行替换。而 FoudationDB 通过 fdb.cluster 记录了当前的 coordinator，并将它作为服务发现机制；为了维护服务发现机制，新 coordinator 会通过xx广播给集群中的每个节点，这些节点又更新各自的 fdb.cluster 文件，包括 client 在内（对于 client，只要有写权限，就会更新该文件）。
+The database is available.
 
+Welcome to the fdbcli. For help, type `help'.
+fdb> coordinators 10.0.4.1:4500 10.0.4.2:4500 10.0.4.3:4500
+Coordinators changed
+```
+
+用户设置的 coordinators 会与 cluster key 一起组成 cluster 的唯一标识，并保存到 `fdb.cluster` 文件中；sdk 可以通过该文件找到 coordinator 并操作 FoundationDB 集群。
+
+### 选主
+
+Coordinator 的第一个职责是协调并选举出一个合适的 controller 成为 leader，只有成为 leader 的 controller 才能开始工作；controller 负责管理整个 FoundationDB 集群，并使之能够对外提供服务。新加入集群中的节点如果一段时间未接收到来自 leader 的心跳，则会触发新一轮选举，直到选出新的 leader 为止。
+
+![election](./FDB-arch-fault-tolerance-imgs/election.png)
+
+选举开始时，controller 会发送 `CandidacyRequest` 给所有 coordinator。Coordinator 会按照一定规则选择出优先级最高的 controller 作为被提名人（Nominee）广播给 controller。当某个 controller 在一轮选举中收到超过半数节点的提名就会成为 leader。新 leader 上任后，会定期广播心跳给其余节点，以抑制后者发起新选举的流程。
+
+### Coordinated State
+
+Coordinator 的第二个职责是负责提供元数据的容错。
+
+![Coordinated State](./FDB-arch-fault-tolerance-imgs/generation-reg.png)
+
+每个 coordinator 会提供 `GenerationReg` 的读写服务，它扮演了 paxos 算法中的 acceptor 角色：对于读写请求，会各自携带一个读写 generation，而 `GenerationReg` 保证了只响应不小于已经恢复的 generation 的请求。Leader controller 则通过组件 `CoordinatedState` 读写 `GenerationReg`。`CoordinatedState` 组件扮演了 paxos 算法中的 proposal 角色，它通过 `ReplicatedWrite` 和 `ReplicatedRead` 来保证对 `GenerationRegs` 读写的线性一致性。
+
+`GenerationReg` 和 `CoordinatedState` 一起组成了一个线性一致的 key-value store。实际上，这个 key-value store 中只存储了一条记录：`ClusterKey` => `DbCoreState`。其中 `ClusterKey` 是记录在 `fdb.cluster` 中的 `description` 和 `id`，`DBCoreState` 中则记录了事务系统的元数据，其中最核心的是 TLog 的拓扑以及数据分布。
+
+### 服务发现
+
+`fdb.cluster` 在 FoundationDB 中负责提供集群的服务发现。因为 coordinator 是用户手动配置的，因此如果任何一个 coordinator 宕机，都需要人工设置新的 coordinators 进行替换。当 coordinators 发生变更时，`fdb.cluster` 中记录的内容也需要同步变更。FoundationDB 的 client 会监控集群 leader 的变化，一旦发现 leader 中记录的 coordinators 与本地文件中记录的不同，则会用新的记录更新本地 `fdb.cluster` 文件。对于 sdk，只有 `fdb.cluster` 有读写权限时才会主动更新。
 
 ## 事务系统
 
